@@ -1,0 +1,8 @@
+### Healthcheck (API corriendo)
+GET http://127.0.0.1:8000/health
+
+### Ping de datos
+GET http://127.0.0.1:8000/datos/ping
+
+### Ping de jobs
+GET http://127.0.0.1:8000/jobs/ping

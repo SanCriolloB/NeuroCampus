@@ -1,0 +1,6 @@
+/* Estilos globales mínimos para la "pantalla vacía" del Día 1 */
+html, body, #root { height: 100%; margin: 0; }
+body { 
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 
+               Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji"; 
+}

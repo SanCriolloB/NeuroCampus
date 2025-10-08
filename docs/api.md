@@ -1,4 +1,4 @@
-# NeuroCampus API — v0.2.0
+# NeuroCampus API — v0.3.0
 
 ---
 
@@ -13,6 +13,7 @@
 
 ### Códigos de estado (uso común)
 - `200 OK` → operación síncrona exitosa (devuelve resultado)
+- `201 Created` → recurso creado (ej. upload)
 - `202 Accepted` → operación encolada/asíncrona (devuelve `job_id`)
 - `400 Bad Request` → validación/entrada inválida
 - `404 Not Found` → recurso o `job_id` inexistente
@@ -26,7 +27,7 @@
 ### 1.1 GET `/datos/esquema`
 
 Devuelve el esquema del dataset esperado para carga inicial.  
-La respuesta se construye a partir de `schemas/plantilla_dataset.schema.json` y `schemas/features.quantitativas.json`.
+La respuesta se construye a partir de `schemas/plantilla_dataset.schema.json` y `schemas/features.quantitativas.json`(con fallback en memoria).
 
 **Ejemplo de respuesta (mock Día 2):**
 ```json
@@ -56,7 +57,7 @@ La respuesta se construye a partir de `schemas/plantilla_dataset.schema.json` y 
 ### 1.2 POST `/datos/upload`
 
 Permite subir un archivo CSV o XLSX con los datos de evaluación docente.  
-La carga se valida según `schemas/plantilla_dataset.schema.json`.
+La carga se valida según `schemas/plantilla_dataset.schema.json`(nivel mínimo, mock hasta persistencia real).
 
 **Body (multipart/form-data)**
 - `file`: Archivo CSV/XLSX a subir.
@@ -91,39 +92,33 @@ Estos valores son **calculados automáticamente por el software** durante la eta
 
 ### 1.3 POST `/datos/validar`
 
-Ejecuta validaciones de calidad (esquema→tipos→dominio→duplicados→calidad) sin almacenar.
+Valida un archivo de datos **sin** almacenarlo. Ejecuta cadena: **esquema → tipos → dominio → duplicados → calidad**.  
+Soporta **CSV/XLSX/Parquet** y funciona con **Pandas** o **Polars** (configurable).
 
-**Body**
-```json
-{
-  "periodo": "2024-2",
-  "inline_data_csv": "base64-CSV-o-URL-opcional",
-  "rules": { "strict_types": true, "duplicate_keys": ["docente_id", "asignatura_id", "grupo"] }
-}
-```
+**Body (multipart/form-data)**
+- `file`: Archivo `CSV | XLSX | Parquet`.
+- `fmt` (opcional): fuerza el lector, uno de `"csv" | "xlsx" | "parquet"`.
 
 **200 — Response**
 ```json
 {
-  "summary": { "rows": 1250, "errors": 5, "warnings": 18 },
-  "checks": [
-    { "name": "schema", "status": "PASS", "details": {} },
-    { "name": "dtype", "status": "WARN", "details": { "score_global": "coercidos 12 valores" } },
-    { "name": "domain", "status": "PASS", "details": {} },
-    { "name": "duplicates", "status": "FAIL", "details": { "rows": [10, 87, 344] } },
-    { "name": "quality", "status": "WARN", "details": { "comentario": "vacíos 35%" } }
-  ],
-  "recommendations": [
-    "Eliminar duplicados por docente_id+asignatura_id+grupo",
-    "Revisar coerción de score_global"
+  "summary": { "rows": 1250, "errors": 5, "warnings": 18, "engine": "pandas" },
+  "issues": [
+    { "code": "MISSING_COLUMN", "severity": "error", "column": "pregunta_7", "row": null, "message": "Columna requerida ausente: pregunta_7" },
+    { "code": "BAD_TYPE", "severity": "warning", "column": "pregunta_1", "row": null, "message": "Tipo esperado int64 vs observado object" },
+    { "code": "DOMAIN_VIOLATION", "severity": "error", "column": "periodo", "row": null, "message": "Valor fuera de dominio en periodo: 2024-13" }
   ]
 }
 ```
 
-**Notas:**
-- La respuesta es generada desde un mock, sin procesamiento real.
-- El backend solo verifica la estructura de la petición y genera una respuesta de ejemplo.
-- En versiones posteriores se incluirán validaciones automáticas contra el esquema.
+**Códigos**
+- `200` validado con éxito
+- `400` error al procesar archivo / formato inválido
+
+**Notas**
+- El engine por defecto es **`pandas`**, configurable con `NC_DF_ENGINE=polars`.
+- No persiste ni transforma el archivo; es solo validación para reporte en UI.
+- El contrato de respuesta corresponde a `DatosValidarResponse` (Pydantic).
 
 ---
 
@@ -341,7 +336,8 @@ vivirán en backend/src/neurocampus/app/schemas/.
 -->
 
 - `DatosUploadResponse`: `dataset_id:string`, `rows_ingested:int`, `stored_as:string`, `warnings:string[]`
-- `ValidacionRespuesta`: `summary:{rows,int errors,int warnings}`, `checks:[{name,status,details}]`
+- `DatosValidarResponse`: `summary{rows:int,errors:int,warnings:int,engine:string}`, `issues[ValidIssue]`
+- `ValidIssue`: `code,severity("error"|"warning"),column?,row?,message`
 - `EntrenarRequest`: `nombre,tipo,metodologia,dataset_id,params{...}`
 - `ModeloEstadoItem`: `nombre,tipo,dataset_id,status,metrics?,error?,artifact_uri?`
 - `PublicarRequest`: `nombre,canal`
@@ -357,24 +353,31 @@ vivirán en backend/src/neurocampus/app/schemas/.
 <!--
 Snippets rápidos para probar los contratos desde terminal.
 -->
-**Ejemplo con `curl`**
+
+**Validar sin almacenar (CSV)**
 ```bash
-curl -X POST http://127.0.0.1:8000/datos/upload   -F "file=@examples/dataset_ejemplo.csv"   -F "periodo=2024-2"   -F "overwrite=false"
+curl -X POST http://127.0.0.1:8000/datos/validar   
+  -F "file=@examples/dataset_ejemplo.csv"
 ```
 
+**Validar forzando formato XLSX**
+```bash
+curl -X POST http://127.0.0.1:8000/datos/validar   
+  -F "file=@examples/plantilla.xlsx"   
+  -F "fmt=xlsx"
+```
 
 **Subir datos**
 ```bash
-curl -X POST http://localhost:8000/datos/upload \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@./examples/dataset_ejemplo.csv" \
+curl -X POST http://localhost:8000/datos/upload   
+  -F "file=@./examples/dataset_ejemplo.csv"   
   -F periodo=2024-2
 ```
 
 **Entrenar RBM**
 ```bash
-curl -X POST http://localhost:8000/modelos/entrenar \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/modelos/entrenar   
+  -H "Content-Type: application/json"   
   -d '{
     "nombre":"rbm_r1_2024_2","tipo":"rbm_restringida","metodologia":"PeriodoActual","dataset_id":"2024-2",
     "params":{"hidden_units":128,"learning_rate":0.01,"epochs":30,"batch_size":256,"regularization":"l2","seed":42}
@@ -383,8 +386,8 @@ curl -X POST http://localhost:8000/modelos/entrenar \
 
 **Predicción online**
 ```bash
-curl -X POST http://localhost:8000/prediccion/online \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/prediccion/online   
+  -H "Content-Type: application/json"   
   -d '{
     "modelo":"rbm_r1_2024_2",
     "payload":{"periodo":"2024-2","docente_id":"DOC123","asignatura_id":"QCH-201","grupo":"A","score_global":4.3,"comentario":"Buena comunicación"}
@@ -393,18 +396,17 @@ curl -X POST http://localhost:8000/prediccion/online \
 
 ---
 
-## 7 Notas de versión v0.2.0
+## 7 Notas de versión v0.3.0
 
-- Se añade endpoint `/datos/validar`.
-- Se amplía documentación de `/modelos`, `/prediccion` y `/jobs`.
-- Se unifica estructura de respuestas mock y esquema de errores.
-- Se actualiza versión del contrato a `v0.2.0` para reflejar la integración del Día 2.
-- Los endpoints `/modelos/*` y `/prediccion/*` se documentan para el MVP de Día 3.
+- **Nuevo:** `POST /datos/validar` (multipart) para validar CSV/XLSX/Parquet sin almacenar.
+- **Contrato:** respuesta con `summary{rows,errors,warnings,engine}` e `issues[]`.
+- **Config:** soporte de engine `pandas`/`polars` (env `NC_DF_ENGINE`).
+- **Docs:** se actualiza `/datos/esquema` a versión `v0.3.0` en ejemplos.
+- **Mantiene**: endpoints de `/modelos`, `/prediccion` y `/jobs` documentados para MVP.
 
 ---
 
 ## 8 Referencias internas
 
-- Estructura del repositorio y rutas planificadas en backend y frontend.
-- Árbol base con `docs/api.md` y módulos `/datos`, `/modelos`, `/prediccion`, `/jobs`.
-- Mockups/pestañas de la UI que consumen estos endpoints (Datos, Modelos, Predicciones, Jobs).
+- Estructura del repositorio y módulos de backend/frontend.
+- Mockups/pestaña **Datos** para presentar KPIs y tabla de issues de validación.

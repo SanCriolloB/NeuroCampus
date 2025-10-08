@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neurocampus.local/schemas/plantilla_dataset.schema.json",
+  "title": "Plantilla de Evaluación Docente — basada en dataset_unificado_comentarios",
+  "description": "Esquema de columnas esperado para carga de evaluaciones. Se alinea a las columnas reales del CSV y añade 'periodo'.",
+  "version": "v0.1.0",
+  "type": "object",
+  "properties": {
+    "periodo": {
+      "type": "string",
+      "pattern": "^\\d{4}-(1|2)$",
+      "description": "Periodo académico AAAA-1|AAAA-2 (ej. 2024-2)"
+    },
+
+    "ID": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Identificador de fila/registro (fuente CSV)"
+    },
+    "codigo_materia": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Código/ID de la asignatura (del CSV). Se tipa como string para evitar problemas de precisión."
+    },
+    "grupo": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9999,
+      "description": "Grupo/curso (entero; observado 1–13)."
+    },
+    "materia": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Nombre de la asignatura"
+    },
+    "cedula_profesor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identificador del profesor (del CSV). Se tipa como string por su magnitud."
+    },
+    "profesor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Nombre completo del profesor"
+    },
+
+    "pregunta_1":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 1 (0–50)" },
+    "pregunta_2":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 2 (0–50)" },
+    "pregunta_3":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 3 (0–50)" },
+    "pregunta_4":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 4 (0–50)" },
+    "pregunta_5":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 5 (0–50)" },
+    "pregunta_6":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 6 (0–50)" },
+    "pregunta_7":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 7 (0–50)" },
+    "pregunta_8":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 8 (0–50)" },
+    "pregunta_9":  { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 9 (0–50)" },
+    "pregunta_10": { "type": "number", "minimum": 0, "maximum": 50, "description": "Ítem 10 (0–50)" },
+
+    "Sugerencias:": {
+      "type": ["string", "null"],
+      "maxLength": 5000,
+      "description": "Campo cualitativo (comentarios). En el CSV presenta ~69% nulos."
+    }
+  },
+
+  "required": [
+    "periodo",
+    "codigo_materia",
+    "grupo",
+    "materia",
+    "cedula_profesor",
+    "profesor",
+    "pregunta_1",
+    "pregunta_2",
+    "pregunta_3",
+    "pregunta_4",
+    "pregunta_5",
+    "pregunta_6",
+    "pregunta_7",
+    "pregunta_8",
+    "pregunta_9",
+    "pregunta_10"
+  ],
+  "additionalProperties": false
+}

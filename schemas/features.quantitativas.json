@@ -1,0 +1,24 @@
+{
+  "$id": "https://neurocampus.local/schemas/features.quantitativas.json",
+  "title": "Catálogo de features cuantitativas — basado en dataset_unificado_comentarios",
+  "version": "v0.2.0",
+  "items": [
+    { "name": "pregunta_1",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 1" },
+    { "name": "pregunta_2",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 2" },
+    { "name": "pregunta_3",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 3" },
+    { "name": "pregunta_4",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 4" },
+    { "name": "pregunta_5",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 5" },
+    { "name": "pregunta_6",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 6" },
+    { "name": "pregunta_7",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 7" },
+    { "name": "pregunta_8",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 8" },
+    { "name": "pregunta_9",  "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 9" },
+    { "name": "pregunta_10", "dtype": "number", "range": [0, 50],  "source": "dataset",      "present_in_dataset": true,  "description": "Ítem 10" },
+
+    { "name": "score_promedio_10it", "dtype": "number", "range": [0, 50],  "source": "derivado",     "present_in_dataset": false, "computed": true, "computed_from": ["pregunta_1","pregunta_2","pregunta_3","pregunta_4","pregunta_5","pregunta_6","pregunta_7","pregunta_8","pregunta_9","pregunta_10"], "description": "Promedio simple de pregunta_1..10" },
+    { "name": "score_total_10it",    "dtype": "number", "range": [0, 500], "source": "derivado",     "present_in_dataset": false, "computed": true, "computed_from": ["pregunta_1","pregunta_2","pregunta_3","pregunta_4","pregunta_5","pregunta_6","pregunta_7","pregunta_8","pregunta_9","pregunta_10"], "description": "Suma de pregunta_1..10" },
+
+    { "name": "comentario.sent_pos", "dtype": "number", "range": [0, 1],   "source": "derivado_pln", "present_in_dataset": false, "computed": true, "computed_from": "Sugerencias:", "description": "Prob. sentimiento POSITIVO del comentario" },
+    { "name": "comentario.sent_neg", "dtype": "number", "range": [0, 1],   "source": "derivado_pln", "present_in_dataset": false, "computed": true, "computed_from": "Sugerencias:", "description": "Prob. sentimiento NEGATIVO del comentario" },
+    { "name": "comentario.sent_neu", "dtype": "number", "range": [0, 1],   "source": "derivado_pln", "present_in_dataset": false, "computed": true, "computed_from": "Sugerencias:", "description": "Prob. sentimiento NEUTRAL del comentario" }
+  ]
+}

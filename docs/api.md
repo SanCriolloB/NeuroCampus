@@ -59,9 +59,9 @@ Permite subir un archivo CSV o XLSX con los datos de evaluación docente.
 La carga se valida según `schemas/plantilla_dataset.schema.json`.
 
 **Body (multipart/form-data)**
-- `file`: CSV/XLSX
-- `periodo`: string (p.ej. `2024-2`)
-- `overwrite`: boolean (default `false`)
+- `file`: Archivo CSV/XLSX a subir.
+- `periodo`: Cadena que indica el periodo académico (ej. `"2024-2"`).
+- `overwrite`: Booleano, indica si se debe sobrescribir un dataset existente.
 
 **Importante:**  
 Los campos derivados de PLN — `comentario.sent_pos`, `comentario.sent_neg`, `comentario.sent_neu` — **no deben incluirse** en el archivo cargado.  
@@ -119,6 +119,11 @@ Ejecuta validaciones de calidad (esquema→tipos→dominio→duplicados→calida
   ]
 }
 ```
+
+**Notas:**
+- La respuesta es generada desde un mock, sin procesamiento real.
+- El backend solo verifica la estructura de la petición y genera una respuesta de ejemplo.
+- En versiones posteriores se incluirán validaciones automáticas contra el esquema.
 
 ---
 
@@ -262,9 +267,8 @@ Predicción unitaria para UI y por lotes para procesamiento offline.
 
 ## 4 /jobs
 
-<!--
-Ejecución y monitoreo de trabajos asíncronos (pipelines de datos, entrenamiento, predicciones batch).
--->
+*(Reservado para próximos días de desarrollo)*  
+Manejará las tareas asíncronas, tales como validación, generación de features, análisis PLN o entrenamiento de modelos.
 
 ### 4.1 POST `/jobs/run`
 
@@ -353,6 +357,11 @@ vivirán en backend/src/neurocampus/app/schemas/.
 <!--
 Snippets rápidos para probar los contratos desde terminal.
 -->
+**Ejemplo con `curl`**
+```bash
+curl -X POST http://127.0.0.1:8000/datos/upload   -F "file=@examples/dataset_ejemplo.csv"   -F "periodo=2024-2"   -F "overwrite=false"
+```
+
 
 **Subir datos**
 ```bash
@@ -384,25 +393,17 @@ curl -X POST http://localhost:8000/prediccion/online \
 
 ---
 
-## 7 Notas de versión v0.1.0
+## 7 Notas de versión v0.2.0
 
-<!--
-Qué incluye esta versión del contrato y advertencia de cambios antes del release.
--->
-
-- Incluye contratos base de `/datos`, `/modelos`, `/prediccion`, `/jobs`.
-- `prediccion/online` retorna `explicacion.features_top` como placeholder.
-- `jobs/*` expone `steps` y `logs_tail` mínimos para UI de monitoreo.
-- **Sujeto a cambios** antes de `release/0.1.0`.
+- Se añade endpoint `/datos/validar`.
+- Se amplía documentación de `/modelos`, `/prediccion` y `/jobs`.
+- Se unifica estructura de respuestas mock y esquema de errores.
+- Se actualiza versión del contrato a `v0.2.0` para reflejar la integración del Día 2.
+- Los endpoints `/modelos/*` y `/prediccion/*` se documentan para el MVP de Día 3.
 
 ---
 
-## 8 Referencias internas (alineación con repo y UI)
-
-<!--
-Estas referencias son para mantener trazabilidad con otros artefactos del proyecto
-(estructura de repo, plan de trabajo y mockups). No requieren enlaces externos.
--->
+## 8 Referencias internas
 
 - Estructura del repositorio y rutas planificadas en backend y frontend.
 - Árbol base con `docs/api.md` y módulos `/datos`, `/modelos`, `/prediccion`, `/jobs`.

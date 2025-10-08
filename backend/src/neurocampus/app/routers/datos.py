@@ -31,7 +31,7 @@ from ..schemas.datos import (
 )
 
 # Orquestador de validación (lectura + cadena de validadores)
-from ..data.facades.datos_facade import validar_archivo  # Día 3
+from neurocampus.data.facades.datos_facade import validar_archivo  # Día 3
 
 # Cada router es independiente y luego se registra en main.py
 router = APIRouter()

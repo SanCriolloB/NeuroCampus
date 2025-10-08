@@ -11,6 +11,10 @@ Actualizado (Día 2):
   * DatosUploadResponse
 - Se mantiene UploadResumen (del Día 1) para métricas/uso interno.
 
+Actualizado (Día 3):
+- Se añaden contratos explícitos para /datos/validar:
+  * ValidIssue, ValidSummary, DatosValidarResponse
+
 NOTA: Los campos derivados de PLN (comentario.sent_pos, .sent_neg, .sent_neu)
 NO forman parte del dataset de entrada. Se calcularán en una etapa posterior
 (Día 6) y por tanto NO aparecen como columnas requeridas en el esquema.
@@ -90,22 +94,52 @@ class DatosUploadResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# (Opcional) Placeholders para /datos/validar — previsto Día 3
+# Día 3 — Contratos para /datos/validar
 # ---------------------------------------------------------------------------
 
-class ValidacionSummary(BaseModel):
-    rows: int = Field(..., ge=0)
-    errors: int = Field(..., ge=0)
-    warnings: int = Field(..., ge=0)
+class ValidIssue(BaseModel):
+    """
+    Elemento de la lista de hallazgos de validación.
+    - code: identificador breve de la regla (p.ej., MISSING_COLUMN, BAD_TYPE)
+    - severity: severidad del hallazgo (error | warning)
+    - column: columna asociada (si aplica)
+    - row: índice de fila asociado (si aplica)
+    - message: descripción legible del hallazgo
+    """
+    code: str = Field(..., description="Código del hallazgo (p.ej., MISSING_COLUMN)")
+    severity: Literal["error", "warning"] = Field(
+        ..., description="Severidad del hallazgo"
+    )
+    column: Optional[str] = Field(
+        None, description="Columna asociada al hallazgo (si aplica)"
+    )
+    row: Optional[int] = Field(
+        None, description="Índice de fila asociado (si aplica)"
+    )
+    message: str = Field(..., description="Descripción legible del hallazgo")
 
 
-class ValidacionCheck(BaseModel):
-    name: str
-    status: Literal["PASS", "WARN", "FAIL"]
-    details: dict = Field(default_factory=dict)
+class ValidSummary(BaseModel):
+    """
+    Resumen de la validación para KPIs de UI.
+    - rows: número total de filas del dataset recibido
+    - errors: cantidad total de hallazgos con severidad 'error'
+    - warnings: cantidad total de hallazgos con severidad 'warning'
+    - engine: motor de DataFrame usado ('pandas' | 'polars')
+    """
+    rows: int = Field(..., ge=0, description="Número de filas del dataset")
+    errors: int = Field(..., ge=0, description="Cantidad de errores")
+    warnings: int = Field(..., ge=0, description="Cantidad de advertencias")
+    engine: str = Field(..., description="Engine de DataFrame utilizado")
 
 
-class ValidacionRespuesta(BaseModel):
-    summary: ValidacionSummary
-    checks: List[ValidacionCheck]
-    recommendations: List[str] = Field(default_factory=list)
+class DatosValidarResponse(BaseModel):
+    """
+    Respuesta de POST /datos/validar.
+    Contiene un resumen y el listado de issues detectados por la cadena de validación.
+    """
+    summary: ValidSummary = Field(..., description="KPIs de validación")
+    issues: List[ValidIssue] = Field(
+        default_factory=list,
+        description="Listado de hallazgos (errores/advertencias)"
+    )

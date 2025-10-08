@@ -8,17 +8,30 @@ Día 2: se añaden endpoints:
 Notas:
 - Los sentimientos de comentarios (comentario.sent_pos/neg/neu) NO se suben en el dataset.
   Se calcularán en una etapa de PLN posterior (Día 6), por eso no aparecen como columnas requeridas.
+
+Día 3: se añade endpoint:
+- POST /datos/validar → valida un archivo CSV/XLSX/Parquet SIN almacenarlo y retorna
+  un reporte con summary e issues (errores/advertencias) para que la UI lo presente.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List
+import io  # Día 3: para envolver bytes en BytesIO y mantener interfaz tipo archivo
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 # Modelos Pydantic del dominio 'datos' (definidos en schemas/datos.py)
-from ..schemas.datos import DatosUploadResponse, EsquemaCol, EsquemaResponse
+from ..schemas.datos import (
+    DatosUploadResponse,
+    EsquemaCol,
+    EsquemaResponse,
+    DatosValidarResponse,  # Día 3: contrato de respuesta para /datos/validar
+)
+
+# Orquestador de validación (lectura + cadena de validadores)
+from neurocampus.data.facades.datos_facade import validar_archivo  # Día 3
 
 # Cada router es independiente y luego se registra en main.py
 router = APIRouter()
@@ -167,3 +180,30 @@ async def upload_dataset(
         stored_as=stored_uri,
         warnings=[],
     )
+
+
+# ---------------------------------------------------------------------------
+# Día 3 — /datos/validar
+# ---------------------------------------------------------------------------
+
+@router.post("/validar", response_model=DatosValidarResponse)
+async def validar_datos(
+    file: UploadFile = File(...),
+    fmt: str | None = Form(None),  # opcional: "csv" | "xlsx" | "parquet"
+) -> DatosValidarResponse:
+    """
+    Valida un archivo de datos SIN almacenarlo.
+    - Acepta CSV/XLSX/Parquet.
+    - Si se especifica 'fmt', fuerza el lector; de lo contrario se infiere por extensión.
+    - Devuelve KPIs de validación (rows, errors, warnings, engine) y el listado de issues.
+    """
+    try:
+        # FastAPI entrega bytes; los envolvemos en un buffer compatible con .seek()
+        raw = await file.read()
+        buffer = io.BytesIO(raw)
+
+        report = validar_archivo(buffer, file.filename, fmt)
+        # 'report' ya cumple con el contrato DatosValidarResponse (summary + issues).
+        return report  # FastAPI hará la validación contra el schema Pydantic
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Validación falló: {e}")

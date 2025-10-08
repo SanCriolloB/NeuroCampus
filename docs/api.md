@@ -1,11 +1,4 @@
-<!--
-NeuroCampus API — v0.1.0 (borrador Día 1)
-Contratos HTTP para el MVP del backend (FastAPI).
-Versionado semántico: v0.y.z (minor inestable hasta 1.0.0).
-Base URL recomendada (local): http://localhost:8000
--->
-
-# NeuroCampus API — v0.1.0
+# NeuroCampus API — v0.2.0
 
 ---
 
@@ -23,35 +16,37 @@ Base URL recomendada (local): http://localhost:8000
 - `202 Accepted` → operación encolada/asíncrona (devuelve `job_id`)
 - `400 Bad Request` → validación/entrada inválida
 - `404 Not Found` → recurso o `job_id` inexistente
+- `409 Conflict` → conflicto lógico (p.ej. dataset existente con overwrite=false)
 - `500 Internal Server Error` → error no controlado
 
 ---
 
 ## 1 /datos
 
-<!--
-Módulo de ingesta y validación de datasets. Primero se consulta un esquema,
-luego se pueden validar datos sin persistir o subir definitivamente.
--->
-
 ### 1.1 GET `/datos/esquema`
 
-<!-- Devuelve el esquema de la plantilla de datos (columnas, tipos, dominios, requeridos). -->
+Devuelve el esquema del dataset esperado para carga inicial.  
+La respuesta se construye a partir de `schemas/plantilla_dataset.schema.json` y `schemas/features.quantitativas.json`.
 
-**Query (opcional)**
-- `version`: string (p.ej. `v0.1.0`) — si se omite, retorna la activa.
-
-**200 — Response**
+**Ejemplo de respuesta (mock Día 2):**
 ```json
 {
-  "version": "v0.1.0",
+  "version": "v0.2.0",
   "columns": [
-    { "name": "periodo", "dtype": "string", "required": true, "domain": ["2024-1", "2024-2"] },
-    { "name": "docente_id", "dtype": "string", "required": true },
-    { "name": "asignatura_id", "dtype": "string", "required": true },
-    { "name": "grupo", "dtype": "string", "required": false },
-    { "name": "score_global", "dtype": "number", "required": true, "range": [0, 5] },
-    { "name": "comentario", "dtype": "string", "required": false, "max_len": 5000 }
+    { "name": "periodo", "dtype": "string", "required": true },
+    { "name": "codigo_materia", "dtype": "string", "required": true },
+    { "name": "grupo", "dtype": "integer", "required": true },
+    { "name": "pregunta_1", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_2", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_3", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_4", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_5", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_6", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_7", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_8", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_9", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_10", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "Sugerencias:", "dtype": "string", "required": false, "max_len": 5000 }
   ]
 }
 ```
@@ -60,12 +55,17 @@ luego se pueden validar datos sin persistir o subir definitivamente.
 
 ### 1.2 POST `/datos/upload`
 
-<!-- Sube un dataset para ingesta/almacenamiento (validación básica de formato). -->
+Permite subir un archivo CSV o XLSX con los datos de evaluación docente.  
+La carga se valida según `schemas/plantilla_dataset.schema.json`.
 
 **Body (multipart/form-data)**
 - `file`: CSV/XLSX
 - `periodo`: string (p.ej. `2024-2`)
 - `overwrite`: boolean (default `false`)
+
+**Importante:**  
+Los campos derivados de PLN — `comentario.sent_pos`, `comentario.sent_neg`, `comentario.sent_neu` — **no deben incluirse** en el archivo cargado.  
+Estos valores son **calculados automáticamente por el software** durante la etapa de análisis de sentimientos (Día 6).
 
 **201 — Response**
 ```json
@@ -91,7 +91,7 @@ luego se pueden validar datos sin persistir o subir definitivamente.
 
 ### 1.3 POST `/datos/validar`
 
-<!-- Ejecuta validaciones de calidad (esquema→tipos→dominio→duplicados→calidad) sin almacenar. -->
+Ejecuta validaciones de calidad (esquema→tipos→dominio→duplicados→calidad) sin almacenar.
 
 **Body**
 ```json

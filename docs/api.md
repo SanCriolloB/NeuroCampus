@@ -34,9 +34,9 @@ La respuesta se construye a partir de `schemas/plantilla_dataset.schema.json` (c
 {
   "version": "v0.3.0",
   "columns": [
-    { "name": "periodo", "dtype": "string", "required": true },
+    { "name": "periodo", "dtype": "string", "required": true, "pattern": "^[0-9]{4}-(1|2)$" },
     { "name": "codigo_materia", "dtype": "string", "required": true },
-    { "name": "grupo", "dtype": "integer", "required": true },
+    { "name": "grupo", "dtype": "integer", "required": true, "pattern": "^[A-Za-z0-9_-]{1,10}$" },
     { "name": "pregunta_1", "dtype": "number", "required": true, "range": [0, 50] },
     { "name": "pregunta_2", "dtype": "number", "required": true, "range": [0, 50] },
     { "name": "pregunta_3", "dtype": "number", "required": true, "range": [0, 50] },
@@ -51,6 +51,22 @@ La respuesta se construye a partir de `schemas/plantilla_dataset.schema.json` (c
   ]
 }
 ```
+**Atributos de columnas**
+- `dtype`: tipo esperado (`string`, `integer`, `number`, `boolean`, `date`, etc.).  
+- `domain` (opcional): `{ "allowed": [...]} | { "min": num, "max": num }`  
+- `pattern` (opcional): expresión **regex** que el valor debe cumplir (JSON Schema: `pattern`).  
+  Ejemplo: `"pattern": "^[0-9]{4}-(1|2)$"` para el campo `periodo`.
+
+**Notas de normalización**
+- Encabezados se normalizan (espacios↔`_`, acentos, “:”) y se soportan sinónimos (`codigo_materia ≡ código asignatura`).  
+- Se aplica coerción de tipos previa para reducir falsos `BAD_TYPE`.
+
+#### Patrones sugeridos
+| Columna | Patrón (regex) | Descripción |
+|----------|----------------|--------------|
+| `periodo` | `^[0-9]{4}-(1|2)$` | Año y semestre (ej. 2024-1) |
+| `grupo` | `^[A-Za-z0-9_-]{1,10}$` | Grupo académico (letras/números) |
+| `pregunta_1..pregunta_10` | `^pregunta_[1-9][0-9]?$` | Campos de evaluación normalizados |
 
 ---
 
@@ -98,6 +114,13 @@ Soporta **CSV/XLSX/Parquet** y funciona con **Pandas** o **Polars** (configurabl
 **Body (multipart/form-data)**
 - `file`: Archivo `CSV | XLSX | Parquet`.
 - `fmt` (opcional): fuerza el lector, uno de `"csv" | "xlsx" | "parquet"`.
+```json
+{
+  "periodo": "2024-2",
+  "inline_data_csv": "base64-CSV-o-URL-opcional",
+  "rules": { "strict_types": true, "duplicate_keys": ["docente_id", "asignatura_id", "grupo"] }
+}
+```
 
 **200 — Response**
 ```json
@@ -106,7 +129,8 @@ Soporta **CSV/XLSX/Parquet** y funciona con **Pandas** o **Polars** (configurabl
   "issues": [
     { "code": "MISSING_COLUMN", "severity": "error", "column": "pregunta_7", "row": null, "message": "Columna requerida ausente: pregunta_7" },
     { "code": "BAD_TYPE", "severity": "warning", "column": "codigo_materia", "row": null, "message": "Tipo esperado string vs observado int64" },
-    { "code": "DOMAIN_VIOLATION", "severity": "error", "column": "periodo", "row": null, "message": "Valor fuera de dominio en periodo: 2024-13" }
+    { "code": "DOMAIN_VIOLATION", "severity": "error", "column": "periodo", "row": null, "message": "Valor fuera de dominio en periodo: 2024-13" },
+    { "code": "PATTERN_MISMATCH", "severity": "error", "column": "periodo", "row": 42, "message": "Valor '2024-3' no cumple ^[0-9]{4}-(1|2)$" }
   ]
 }
 ```
@@ -115,10 +139,17 @@ Soporta **CSV/XLSX/Parquet** y funciona con **Pandas** o **Polars** (configurabl
 - `200` validado con éxito
 - `400` error al procesar archivo / formato inválido
 
+**Issues — códigos posibles**
+- `MISSING_COLUMN`, `BAD_TYPE`, `DOMAIN_VIOLATION`, `RANGE_VIOLATION`, `DUPLICATE_ROW`, `HIGH_NULL_RATIO`, **`PATTERN_MISMATCH`**.  
+- `PATTERN_MISMATCH`: el valor no cumple la expresión regular definida en el esquema.
+
 **Notas**
 - El engine por defecto es **`pandas`**, configurable con `NC_DF_ENGINE=polars`.
 - No persiste ni transforma el archivo; es solo validación para reporte en UI.
 - El contrato de respuesta corresponde a `DatosValidarResponse` (Pydantic).
+- Encabezados se normalizan (espacios/acentos).  
+- Tipos y patrones se validan tras coerción inicial de datos.  
+- La salida incluye `summary` (totales) y `issues[]` (detalle fila/columna).
 
 #### 🆕 Normalización de encabezados y equivalencias
 La validación **tolera nombres de columnas con espacios o con `_`**, acentos y signos como `:`.  

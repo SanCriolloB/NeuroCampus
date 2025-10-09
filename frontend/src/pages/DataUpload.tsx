@@ -12,6 +12,8 @@ import {
   uploadDatos,
   EsquemaCol,
   UploadResponse,
+  dtypePrincipal,
+  describeRestricciones,
 } from "../services/datos";
 
 export default function DataUpload() {
@@ -68,6 +70,7 @@ export default function DataUpload() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Encabezado */}
       <header className="space-y-1">
         <h1 className="text-2xl font-bold">Datos — Carga de Evaluaciones</h1>
         <p className="text-sm opacity-80">
@@ -150,9 +153,19 @@ export default function DataUpload() {
               {!fetching && columns.map((c) => (
                 <tr key={c.name} className="border-t">
                   <td className="p-2">{c.name}</td>
-                  <td className="p-2">{c.dtype}</td>
+                  {/* Si tu servicio expone dtype como string|string[], mostramos el principal */}
+                  <td className="p-2">
+                    {typeof dtypePrincipal === "function"
+                      ? dtypePrincipal(c.dtype as any)
+                      : (c as any).dtype}
+                  </td>
                   <td className="p-2">{c.required ? "Sí" : "No"}</td>
-                  <td className="p-2">{c.description || "-"}</td>
+                  <td className="p-2">
+                    {/* Mostrar restricciones si el servicio las provee (domain/range/pattern/max_len) */}
+                    {typeof describeRestricciones === "function"
+                      ? describeRestricciones(c)
+                      : c.description || "-"}
+                  </td>
                 </tr>
               ))}
               {fetching && (
@@ -164,9 +177,22 @@ export default function DataUpload() {
             </tbody>
           </table>
         </div>
-        <p className="text-xs opacity-70">
-          *Los campos de PLN <em>no</em> van en la plantilla (se calcularán más adelante).
-        </p>
+        {/* Notas de UX mínimas (Día 2) para alinear con validadores del backend */}
+        <div className="text-xs opacity-80 space-y-1">
+          <p>
+            *Los campos de PLN <em>no</em> van en la plantilla (se calcularán más adelante).
+          </p>
+          <p>
+            *Los encabezados con espacios, acentos o “:” se aceptan y se{" "}
+            <strong>normalizan automáticamente</strong> (p. ej.{" "}
+            <code>“Código Materia”</code> → <code>codigo_materia</code>).
+          </p>
+          <p>
+            *Se aplica <strong>coerción de tipos</strong> previa y se pueden exigir{" "}
+            <strong>patrones (regex)</strong> por columna (p. ej.{" "}
+            <code>periodo</code> = <code>^[0-9]{4}-(1|2)$</code>).
+          </p>
+        </div>
       </section>
     </div>
   );

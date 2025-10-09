@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List
-import io  # Día 3: para envolver bytes en BytesIO y mantener interfaz tipo archivo
+import io  # Día 3: envolver bytes en BytesIO para mantener interfaz file-like
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
@@ -30,11 +30,12 @@ from ..schemas.datos import (
     DatosValidarResponse,  # Día 3: contrato de respuesta para /datos/validar
 )
 
-# Orquestador de validación (lectura + cadena de validadores)
-from neurocampus.data.facades.datos_facade import validar_archivo  # Día 3
+# Orquestador de validación (lectura + cadena de validadores) — **import absoluto**
+from neurocampus.data.facades.datos_facade import validar_archivo  # Día 3 (abs import)
 
-# Cada router es independiente y luego se registra en main.py
-router = APIRouter()
+# Si en main.py NO se usa include_router con prefix, puedes añadir prefix aquí.
+# Dejamos solo 'tags' para no duplicar prefijos si main ya lo gestiona.
+router = APIRouter(tags=["datos"])
 
 
 @router.get("/ping")
@@ -49,10 +50,9 @@ def ping() -> dict:
 # Día 2 — /datos/esquema y /datos/upload
 # ---------------------------------------------------------------------------
 
-# Fallback mínimo para que la UI pueda trabajar incluso si no existe el archivo
-# schemas/plantilla_dataset.schema.json. Ajusta aquí si cambian los campos base.
+# Fallback mínimo por si no existe 'schemas/plantilla_dataset.schema.json'
 _FALLBACK_SCHEMA: Dict[str, Any] = {
-    "version": "v0.2.0",
+    "version": "v0.3.0",
     "columns": [
         {"name": "periodo", "dtype": "string", "required": True},
         {"name": "codigo_materia", "dtype": "string", "required": True},
@@ -102,7 +102,6 @@ def get_esquema(version: str | None = None) -> EsquemaResponse:
 
             # Mapear JSON Schema → contrato ligero para la UI
             for name, spec in props.items():
-                # dtype simple: mapea 'number'→number; cualquier otro→string (ajusta si agregas types)
                 js_type = spec.get("type", "string")
                 if js_type == "number":
                     dtype = "number"
@@ -133,7 +132,7 @@ def get_esquema(version: str | None = None) -> EsquemaResponse:
 
                 columns.append(EsquemaCol(**col))
 
-            return EsquemaResponse(version=str(data.get("version", "v0.2.0")), columns=columns)
+            return EsquemaResponse(version=str(data.get("version", "v0.3.0")), columns=columns)
 
         except Exception:
             # Si el archivo existe pero hay un problema de parseo, caemos al fallback
@@ -166,13 +165,6 @@ async def upload_dataset(
     if not periodo:
         raise HTTPException(status_code=400, detail="periodo es requerido")
 
-    # En un próximo día:
-    # - Validar cabeceras contra schemas/plantilla_dataset.schema.json
-    # - Guardar el archivo como CSV/Parquet
-    # - Registrar metadatos en un catálogo
-    # - Manejar 'overwrite'
-
-    # Respuesta de ejemplo compatible con el contrato
     stored_uri = f"localfs://neurocampus/datasets/{periodo}.parquet"
     return DatosUploadResponse(
         dataset_id=periodo,
@@ -198,12 +190,12 @@ async def validar_datos(
     - Devuelve KPIs de validación (rows, errors, warnings, engine) y el listado de issues.
     """
     try:
-        # FastAPI entrega bytes; los envolvemos en un buffer compatible con .seek()
+        # FastAPI entrega bytes; envolver en BytesIO para interfaz de archivo (seek/read)
         raw = await file.read()
         buffer = io.BytesIO(raw)
 
         report = validar_archivo(buffer, file.filename, fmt)
         # 'report' ya cumple con el contrato DatosValidarResponse (summary + issues).
-        return report  # FastAPI hará la validación contra el schema Pydantic
+        return report  # FastAPI validará contra el schema Pydantic
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Validación falló: {e}")

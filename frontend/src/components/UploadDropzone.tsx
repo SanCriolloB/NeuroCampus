@@ -1,7 +1,7 @@
+// frontend/src/components/UploadDropzone.tsx
 /**
- * UploadDropzone — Componente funcional (Día 2).
- * - Sin dependencias externas.
- * - Soporta arrastrar/soltar y selector nativo.
+ * UploadDropzone — Componente funcional (Día 2 + ajustes Día 3).
+ * - Arrastrar/soltar y selector nativo.
  * - Validación mínima: extensión y tamaño.
  * - Accesible (teclado y ARIA).
  *
@@ -14,7 +14,7 @@ import React, { useCallback, useRef, useState } from "react";
 type Props = {
   onFileSelected: (file: File) => void;
   /** Extensiones permitidas, separadas por coma (coinciden con atributo accept del input) */
-  accept?: string; // ".csv,.xlsx"
+  accept?: string; // ".csv,.xlsx,.parquet"
   /** Tamaño máximo en MB (por defecto 10MB) */
   maxSizeMB?: number;
   /** Desactivar interacción (ej. mientras se envía el formulario) */
@@ -30,7 +30,7 @@ function extFromName(name: string) {
 
 export default function UploadDropzone({
   onFileSelected,
-  accept = ".csv,.xlsx",
+  accept = ".csv,.xlsx,.parquet",  // ← 🆕 incluye parquet por defecto
   maxSizeMB = 10,
   disabled = false,
   label = "Arrastra tu archivo CSV/XLSX aquí o selecciónalo:",
@@ -130,6 +130,11 @@ export default function UploadDropzone({
             type="button"
             className="px-4 py-2 rounded-xl shadow"
             disabled={disabled}
+            // ← 🆕 Click explícito al input; evita depender solo del contenedor
+            onClick={(e) => {
+              e.stopPropagation();
+              inputRef.current?.click();
+            }}
           >
             Seleccionar archivo
           </button>
@@ -139,6 +144,7 @@ export default function UploadDropzone({
           ref={inputRef}
           type="file"
           accept={accept}
+          multiple={false}          // ← 🆕 explícito (solo un archivo)
           className="hidden"
           onChange={onInputChange}
           disabled={disabled}

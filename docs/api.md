@@ -1,3 +1,337 @@
+# NeuroCampus API — v0.4.0 (con Apéndice v0.3.0)
+
+Este documento contiene primero la **especificación v0.4.0** (vigente) y, como **Apéndice**, la **v0.3.0 completa** para referencia histórica y compatibilidad.
+
+# NeuroCampus API — v0.4.0
+
+> **Release focus (Día 4)**: Plantilla de entrenamiento + estrategias RBM (general/restringida) instrumentadas con eventos de observabilidad `training.*`, y contratos mínimos conectados en `/modelos`.
+
+---
+
+## Convenciones
+- **Base URL**: `http://127.0.0.1:8000`
+- **Auth**: (TBD)
+- **Formato**: `application/json; charset=utf-8`
+- **Fechas**: ISO-8601 (`YYYY-MM-DDTHH:mm:ssZ`)
+- **Errores**: cuerpo `{ "error": string, "code"?: string }`
+- **Números**: `float64` (salvo que se indique lo contrario)
+- **Nombres**: `snake_case` en claves de JSON
+
+### Códigos de estado (uso común)
+- `200 OK` → operación síncrona exitosa o **aceptada** con ejecución en background (caso `/modelos/entrenar`).
+- `201 Created` → recurso creado
+- `202 Accepted` → reservado para colas externas (futuro)
+- `400 Bad Request` → validación/entrada inválida
+- `404 Not Found` → recurso o `job_id` inexistente
+- `409 Conflict` → conflicto lógico
+- `500 Internal Server Error` → error no controlado
+
+---
+
+## 1 /datos
+
+### 1.1 GET `/datos/esquema`
+
+Devuelve el esquema del dataset esperado para carga inicial.  
+La respuesta se construye a partir de `schemas/plantilla_dataset.schema.json` (con fallback en memoria).
+
+**Ejemplo de respuesta:**
+```json
+{
+  "version": "v0.3.0",
+  "columns": [
+    { "name": "periodo", "dtype": "string", "required": true, "pattern": "^[0-9]{4}-(1|2)$" },
+    { "name": "codigo_materia", "dtype": "string", "required": true },
+    { "name": "grupo", "dtype": "integer", "required": true, "pattern": "^[A-Za-z0-9_-]{1,10}$" },
+    { "name": "pregunta_1", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_2", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_3", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_4", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_5", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_6", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_7", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_8", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_9", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "pregunta_10", "dtype": "number", "required": true, "range": [0, 50] },
+    { "name": "Sugerencias:", "dtype": "string", "required": false, "max_len": 5000 }
+  ]
+}
+```
+**Atributos de columnas**
+- `dtype`: tipo esperado (`string`, `integer`, `number`, `boolean`, `date`, etc.).  
+- `domain` (opcional): `{ "allowed": [...]} | { "min": num, "max": num }`  
+- `pattern` (opcional): expresión **regex** que el valor debe cumplir (JSON Schema: `pattern`).
+
+**Notas de normalización**
+- Encabezados se normalizan (espacios↔`_`, acentos, “:”) y se soportan sinónimos (`codigo_materia ≡ código asignatura`).  
+- Se aplica coerción de tipos previa para reducir falsos `BAD_TYPE`.
+
+#### Patrones sugeridos
+| Columna | Patrón (regex) | Descripción |
+|----------|----------------|--------------|
+| `periodo` | `^[0-9]{4}-(1|2)$` | Año y semestre (ej. 2024-1) |
+| `grupo` | `^[A-Za-z0-9_-]{1,10}$` | Grupo académico (letras/números) |
+| `pregunta_1..pregunta_10` | `^pregunta_[1-9][0-9]?$` | Campos de evaluación normalizados |
+
+---
+
+### 1.2 POST `/datos/upload`
+
+Permite subir un archivo CSV o XLSX con los datos de evaluación docente.  
+La carga se valida según `schemas/plantilla_dataset.schema.json` (nivel mínimo, mock hasta persistencia real).
+
+**Body (multipart/form-data)**
+- `file`: Archivo CSV/XLSX a subir.
+- `periodo`: Cadena que indica el periodo académico (ej. `"2024-2"`).
+- `overwrite`: Booleano, indica si se debe sobrescribir un dataset existente.
+
+**201 — Response**
+```json
+{
+  "dataset_id": "2024-2",
+  "rows_ingested": 1250,
+  "stored_as": "s3://neurocampus/datasets/2024-2.parquet",
+  "warnings": ["col 'grupo' vacío en 32 filas"]
+}
+```
+
+**409 — Response** (overwrite=false y ya existe)
+```json
+{
+  "error": {
+    "code": "CONFLICT",
+    "message": "Dataset 2024-2 ya existe"
+  }
+}
+```
+
+---
+
+### 1.3 POST `/datos/validar`
+
+Valida un archivo de datos **sin** almacenarlo. Ejecuta cadena: **esquema → tipos → dominio → duplicados → calidad**.  
+Soporta **CSV/XLSX/Parquet** y funciona con **Pandas** o **Polars** (configurable).
+
+**Body (multipart/form-data)**
+- `file`: Archivo `CSV | XLSX | Parquet`.
+- `fmt` (opcional): fuerza el lector, uno de `"csv" | "xlsx" | "parquet"`.
+```json
+{
+  "periodo": "2024-2",
+  "inline_data_csv": "base64-CSV-o-URL-opcional",
+  "rules": { "strict_types": true, "duplicate_keys": ["docente_id", "asignatura_id", "grupo"] }
+}
+```
+
+**200 — Response**
+```json
+{
+  "summary": { "rows": 1250, "errors": 5, "warnings": 18, "engine": "pandas" },
+  "issues": [
+    { "code": "MISSING_COLUMN", "severity": "error", "column": "pregunta_7", "row": null, "message": "Columna requerida ausente: pregunta_7" },
+    { "code": "BAD_TYPE", "severity": "warning", "column": "codigo_materia", "row": null, "message": "Tipo esperado string vs observado int64" },
+    { "code": "DOMAIN_VIOLATION", "severity": "error", "column": "periodo", "row": null, "message": "Valor fuera de dominio en periodo: 2024-13" },
+    { "code": "PATTERN_MISMATCH", "severity": "error", "column": "periodo", "row": 42, "message": "Valor '2024-3' no cumple ^[0-9]{4}-(1|2)$" }
+  ]
+}
+```
+
+**Notas**
+- El engine por defecto es **`pandas`**, configurable con `NC_DF_ENGINE=polars`.
+- No persiste ni transforma el archivo; es solo validación para reporte en UI.
+- Encabezados se normalizan (espacios/acentos) y se aplica **coerción de tipos** antes de reportar `BAD_TYPE`.
+- La salida incluye `summary` (totales) y `issues[]` (detalle fila/columna).
+- Resolución de esquema: `NC_SCHEMA_PATH` permite forzar la ruta.
+
+---
+
+## 2 /modelos  _(v0.4.0)_
+
+> Esta versión introduce un **contrato mínimo** para lanzar entrenamientos asíncronos con **RBM general** o **RBM restringida**, instrumentados con eventos `training.*`.  
+> Los contratos previos de v0.3.0 para `/modelos/entrenar` y listados se **reorganizan**; ver **Notas de versión** al final.
+
+### 2.1 POST `/modelos/entrenar`  _(nuevo contrato v0.4.0)_
+
+Lanza un entrenamiento en **background** a partir de una **plantilla de entrenamiento** y una **estrategia** RBM.
+
+**Body (JSON)**
+```json
+{
+  "modelo": "rbm_general | rbm_restringida",
+  "data_ref": "localfs://datasets/ultimo.parquet",
+  "epochs": 5,
+  "hparams": { "lr": 0.01, "batch_size": 64 }
+}
+```
+
+**200 — Response**
+```json
+{ "job_id": "4b25f9d3-3b2e-4a2f-9d7a-3a4b9b8f2f21", "status": "running", "message": "Entrenamiento lanzado" }
+```
+
+**Errores**
+- `400` parámetros inválidos (p.ej. modelo no soportado)
+- `500` error encolando/arrancando el job
+
+**Observabilidad (emitida por el job)**
+- `training.started` → `{ correlation_id, model, params }`
+- `training.epoch_end` → `{ correlation_id, epoch, loss, metrics }`
+- `training.completed` → `{ correlation_id, final_metrics }`
+- `training.failed` → `{ correlation_id, error }`
+
+> Los eventos se enrutan a **logging** por defecto. Futuras integraciones podrán publicar a Kafka/Rabbit u otro sink.
+
+---
+
+### 2.2 GET `/modelos/estado/{job_id}`  _(nuevo contrato v0.4.0)_
+
+Devuelve el **estado** del entrenamiento y la última métrica conocida.
+
+**200 — Response**
+```json
+{
+  "job_id": "4b25f9d3-3b2e-4a2f-9d7a-3a4b9b8f2f21",
+  "status": "running | completed | failed | unknown",
+  "metrics": { "recon_error": 0.42 }
+}
+```
+
+**404 — Response**
+```json
+{ "error": "Job no encontrado" }
+```
+
+---
+
+### 2.3 (Opcional / futuro)
+- `GET /modelos/estado` (listado/paginado) — **pendiente** de rediseño para Días 5–6.
+- `POST /modelos/publicar` — mantendrá el espíritu de v0.3.0, pero se moverá tras consolidar el registro de artefactos.
+
+---
+
+## 3 Observabilidad de entrenamiento (D4)
+
+- Bus de eventos **in-memory** (pub/sub) emite `training.*` desde la **plantilla de entrenamiento**.
+- Destino por defecto: `log_handler` → `logging.INFO`.
+- Se conecta al iniciar la app (`startup`) mediante `wire_logging_destination()`.
+- No interrumpe el entrenamiento si un handler falla (best-effort).
+
+**Esquema de eventos**
+```json
+{
+  "training.started":   { "correlation_id": "uuid", "model": "rbm_general", "params": { "...": "..." } },
+  "training.epoch_end": { "correlation_id": "uuid", "epoch": 1, "loss": 0.98, "metrics": { "recon_error": 0.98 } },
+  "training.completed": { "correlation_id": "uuid", "final_metrics": { "recon_error": 0.11 } },
+  "training.failed":    { "correlation_id": "uuid", "error": "mensaje" }
+}
+```
+
+---
+
+## 4 Ejemplos de uso (curl)
+
+**Lanzar entrenamiento (RBM general)**
+```bash
+curl -X POST http://127.0.0.1:8000/modelos/entrenar   -H "Content-Type: application/json"   -d '{"modelo":"rbm_general","epochs":3,"hparams":{"lr":0.01}}'
+```
+
+**Consultar estado del job**
+```bash
+curl http://127.0.0.1:8000/modelos/estado/<JOB_ID>
+```
+
+**Validar sin almacenar (CSV)**
+```bash
+curl -X POST http://127.0.0.1:8000/datos/validar -F "file=@examples/dataset_ejemplo.csv"
+```
+
+**Subir datos**
+```bash
+curl -X POST http://127.0.0.1:8000/datos/upload -F "file=@./examples/dataset_ejemplo.csv" -F periodo=2024-2
+```
+
+---
+## 5 /jobs  *(sin cambios vs v0.3.0)*
+
+*(Reservado para próximos días de desarrollo)*
+
+### 4.1 POST `/jobs/run`
+
+**Body**
+```json
+{
+  "command": "entrenamiento_completo",
+  "args": { "dataset_id": "2024-2", "tipo": "rbm_restringida" }
+}
+```
+
+**202 — Response**
+```json
+{ "job_id": "job_pipe_01H8ZM...", "status": "QUEUED" }
+```
+
+---
+
+### 4.2 GET `/jobs/status/{id}`
+
+**200 — Response**
+```json
+{
+  "job_id": "job_pipe_01H8ZM...",
+  "status": "RUNNING",
+  "started_at": "2025-09-09T10:05:00Z",
+  "steps": [
+    { "name": "cargar_dataset", "status": "DONE", "duration_s": 5 },
+    { "name": "unificar_historico", "status": "DONE", "duration_s": 11 },
+    { "name": "entrenar", "status": "RUNNING", "progress": 0.6 }
+  ],
+  "logs_tail": [
+    "epoch=18/30 loss=0.42 acc=0.85",
+    "epoch=19/30 loss=0.41 acc=0.86"
+  ]
+}
+```
+
+---
+
+### 4.3 GET `/jobs/list`
+
+**Query**
+- `kind`: enum(`train`,`predict`,`pipeline`) (opcional)
+- `limit`: int (default 50)
+
+**200 — Response**
+```json
+{
+  "items": [
+    { "job_id": "job_train_01H8ZK...", "status": "COMPLETED", "ended_at": "2025-09-09T10:18:12Z" },
+    { "job_id": "job_pred_01H8ZL...", "status": "FAILED", "error": "Archivo inválido" }
+  ]
+}
+```
+
+---
+
+
+## 5 Notas de versión
+
+### v0.4.0
+- **Nuevo (D4):** contratos mínimos `/modelos/entrenar` y `/modelos/estado/{job_id}` con **RBM general/restringida** y eventos `training.*`.
+- **Nuevo (D4):** sección de **Observabilidad de entrenamiento** y esquema de eventos.
+- **Ajuste:** `/modelos/entrenar` ahora acepta `{modelo,data_ref,epochs,hparams}`; se deja para futuro el manejo avanzado de `nombre`, `metodologia` y `dataset_id`.
+- **Compat:** `/datos/*` se mantiene como en v0.3.0.
+- **Pendiente:** rediseño de listado `/modelos/estado` y `POST /modelos/publicar` para incorporar registro de artefactos y canales.
+
+### v0.3.0 (resumen histórico)
+- `POST /datos/validar` (multipart) y mejoras de lectura/normalización/coerción de tipos.
+- Documentación de equivalencias de encabezados y JSON Schema.
+
+---
+
+# Apéndice A — Especificación completa v0.3.0 (sin cambios)
+
+> Esta sección conserva íntegramente la versión anterior para evitar pérdida de información y facilitar comparaciones de contratos.
+
 # NeuroCampus API — v0.3.0
 
 ---

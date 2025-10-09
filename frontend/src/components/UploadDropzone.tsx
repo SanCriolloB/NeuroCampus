@@ -141,13 +141,14 @@ export default function UploadDropzone({
           <span className="text-sm opacity-70">({allowedExts.join(", ")}, máx. {maxSizeMB}MB)</span>
         </div>
         <input
-          ref={inputRef}
-          type="file"
-          accept={accept}
-          multiple={false}          // ← 🆕 explícito (solo un archivo)
-          className="hidden"
-          onChange={onInputChange}
-          disabled={disabled}
+            ref={inputRef}
+            type="file"
+            accept={accept}
+            multiple={false}
+            className="hidden"
+            style={{ display: "none" }}  // ← fuerza que no se vea aunque falle Tailwind
+            onChange={onInputChange}
+            disabled={disabled}
         />
       </div>
 

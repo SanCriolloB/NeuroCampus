@@ -133,60 +133,57 @@ export default function DataUpload() {
 
       {/* Formulario */}
       <form onSubmit={onSubmit} className="space-y-4">
-        {/* ⚠️ IMPORTANTE: ÚNICO selector de archivo */}
-        {/* Tu Dropzone actual usa onFileSelected; lo respetamos */}
-        <UploadDropzone onFileSelected={setFile} accept=".csv,.xlsx,.parquet" />
+      {/* ÚNICO selector de archivo */}
+      <UploadDropzone onFileSelected={setFile} accept=".csv,.xlsx,.parquet" />
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-          <label className="block">
-            <span className="text-sm">Periodo</span>
-            <input
-              className="w-full border rounded-xl p-2"
-              value={periodo}
-              onChange={(e) => setPeriodo(e.target.value)}
-              placeholder="2024-2"
-            />
-          </label>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+        <label className="block">
+          <span className="text-sm">Periodo</span>
+          <input
+            className="w-full border rounded-xl p-2"
+            value={periodo}
+            onChange={(e) => setPeriodo(e.target.value)}
+            placeholder="2024-2"
+          />
+        </label>
 
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={overwrite}
-              onChange={(e) => setOverwrite(e.target.checked)}
-            />
-            <span className="text-sm">Sobrescribir si existe</span>
-          </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={overwrite}
+            onChange={(e) => setOverwrite(e.target.checked)}
+          />
+          <span className="text-sm">Sobrescribir si existe</span>
+        </label>
 
-          <div className="flex gap-2 justify-start md:justify-end">
-            <button
-              className="px-4 py-2 rounded-xl shadow"
-              disabled={submitting}
-              type="submit"
-            >
-              {submitting ? "Subiendo…" : "Subir dataset"}
-            </button>
+        <div className="flex gap-2 justify-start md:justify-end">
+          <button
+            className="px-4 py-2 rounded-xl shadow"
+            disabled={submitting}
+            type="submit"
+          >
+            {submitting ? "Subiendo…" : "Subir dataset"}
+          </button>
 
-            {/* Validación en seco */}
-            <button
-              type="button"
-              className="px-4 py-2 rounded-xl border"
-              disabled={valLoading || !file} // se habilita cuando hay archivo
-              onClick={onValidate}
-              title="Valida el archivo sin almacenarlo"
-            >
-              {valLoading ? "Validando…" : "Validar sin guardar"}
-            </button>
+          <button
+            type="button"
+            className="px-4 py-2 rounded-xl border"
+            disabled={valLoading || !file}
+            onClick={onValidate}
+          >
+            {valLoading ? "Validando…" : "Validar sin guardar"}
+          </button>
 
-            <button
-              type="button"
-              className="px-4 py-2 rounded-xl border"
-              onClick={onClear}
-            >
-              Limpiar
-            </button>
-          </div>
+          <button
+            type="button"
+            className="px-4 py-2 rounded-xl border"
+            onClick={onClear}
+          >
+            Limpiar
+          </button>
         </div>
-      </form>
+      </div>
+    </form>
 
       {/* Errores de carga */}
       {error && <div className="p-3 rounded-xl bg-red-100">{error}</div>}

@@ -2,8 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://neurocampus.local/schemas/plantilla_dataset.schema.json",
   "title": "Plantilla de Evaluación Docente — basada en dataset_unificado_comentarios",
-  "description": "Esquema de columnas esperado para carga de evaluaciones. Se alinea a las columnas reales del CSV y añade 'periodo'.",
-  "version": "v0.1.0",
+  "description": "Esquema de columnas esperado para carga/validación de evaluaciones.",
+  "version": "v0.3.0",
+  "$comment": "El validador normaliza encabezados (minúsculas, sin acentos, espacios↔'_', sin puntuación) y acepta sinónimos; ver x-aliases.",
   "type": "object",
   "properties": {
     "periodo": {
@@ -15,29 +16,37 @@
     "ID": {
       "type": "integer",
       "minimum": 0,
-      "description": "Identificador de fila/registro (fuente CSV)"
+      "description": "Identificador de fila/registro (si existiera en el CSV; no requerido)."
     },
+
     "codigo_materia": {
       "type": "string",
       "minLength": 1,
-      "description": "Código/ID de la asignatura (del CSV). Se tipa como string para evitar problemas de precisión."
+      "description": "Código/ID de la asignatura. Se tipa como string para evitar problemas de precisión.",
+      "x-aliases": ["codigo materia", "codigomateria", "cod_materia", "codigo_asignatura", "codigo asignatura"]
     },
+
     "grupo": {
       "type": "integer",
       "minimum": 1,
       "maximum": 9999,
-      "description": "Grupo/curso (entero; observado 1–13)."
+      "description": "Grupo/curso (entero; observado ~1–13).",
+      "x-aliases": ["grupo_id"]
     },
+
     "materia": {
       "type": "string",
       "minLength": 1,
       "description": "Nombre de la asignatura"
     },
+
     "cedula_profesor": {
       "type": "string",
       "minLength": 1,
-      "description": "Identificador del profesor (del CSV). Se tipa como string por su magnitud."
+      "description": "Identificador del profesor (string por magnitud y ceros a la izquierda).",
+      "x-aliases": ["cedula profesor", "cedula", "cedula_docente", "cedula docente", "docente_id"]
     },
+
     "profesor": {
       "type": "string",
       "minLength": 1,
@@ -58,7 +67,8 @@
     "Sugerencias:": {
       "type": ["string", "null"],
       "maxLength": 5000,
-      "description": "Campo cualitativo (comentarios). En el CSV presenta ~69% nulos."
+      "description": "Campo cualitativo (comentarios). Puede venir vacío/nulo.",
+      "x-aliases": ["Sugerencias", "sugerencias"]
     }
   },
 
@@ -80,5 +90,6 @@
     "pregunta_9",
     "pregunta_10"
   ],
+
   "additionalProperties": false
 }

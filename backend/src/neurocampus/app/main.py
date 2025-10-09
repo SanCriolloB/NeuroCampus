@@ -11,13 +11,10 @@ Responsabilidades:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import logging
 
 # Routers del dominio
 from .routers import datos, jobs, modelos
-
-# Observabilidad: destino por defecto (logs) para eventos training.*
-# Nota: sube un nivel desde 'app' hacia 'observability'
-from ..observability.destinos.log_handler import wire_logging_destination
 
 # Instancia de la aplicación (título visible en /docs y /openapi.json)
 app = FastAPI(title="NeuroCampus API", version="0.4.0")
@@ -34,6 +31,27 @@ app.add_middleware(
     allow_methods=["*"],            # importante: permite OPTIONS del preflight
     allow_headers=["*"],
 )
+
+def _wire_observability_safe() -> None:
+    """
+    Conecta el handler de logging a los eventos training.* si el módulo existe.
+    Si no existe (aún no creado), la app sigue funcionando sin observabilidad.
+    """
+    log = logging.getLogger("neurocampus")
+    try:
+        # Preferimos import absoluto con --app-dir backend/src
+        from neurocampus.observability.destinos.log_handler import wire_logging_destination
+        wire_logging_destination()
+        log.info("Observability wiring OK: training.* -> logging.INFO")
+    except ModuleNotFoundError as e:
+        log.warning(
+            "Observability module not found: %s. La API arrancará sin logging de training.* "
+            "(crea backend/src/neurocampus/observability/destinos/log_handler.py y __init__.py).",
+            e,
+        )
+    except Exception as e:
+        log.warning("Fallo conectando observabilidad (se ignora para no bloquear): %s", e)
+
 
 @app.on_event("startup")
 def _startup_observability_wiring() -> None:

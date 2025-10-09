@@ -241,3 +241,13 @@ export function describeRestricciones(col: EsquemaCol): string {
   }
   return parts.join(" · ");
 }
+
+// Tipos aceptados
+export type ArchivoFormato = "csv" | "xlsx" | "parquet";
+
+// ✅ Asegúrate de exportarla como *named export*
+export function inferFormatFromFilename(name?: string): ArchivoFormato | undefined {
+  if (!name) return undefined;
+  const ext = name.split(".").pop()?.toLowerCase();
+  return ext === "csv" || ext === "xlsx" || ext === "parquet" ? (ext as ArchivoFormato) : undefined;
+}

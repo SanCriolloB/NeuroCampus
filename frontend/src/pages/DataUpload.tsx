@@ -1,52 +1,57 @@
 // src/pages/DataUpload.tsx
-// Pantalla de “Datos” — Día 2 (Miembro B) + Integración de validación (Día 3 — Miembro B)
-// - Consulta GET /datos/esquema
-// - Formulario: archivo + periodo + overwrite
-// - POST /datos/upload (mock) y muestra respuesta
-// - POST /datos/validar (nuevo) para validar sin guardar y mostrar reporte
-// - Usa el componente UploadDropzone (drag&drop + selector nativo)
+// Pantalla de Datos — Día 2 base + Integración de validación (Día 3)
+// - GET /datos/esquema (tabla de columnas esperadas)
+// - POST /datos/upload (subir dataset)
+// - POST /datos/validar (validación en seco con reporte)
+// - Un ÚNICO UploadDropzone (no hay <input type="file"> adicional)
 
 import React, { useEffect, useState } from "react";
 import UploadDropzone from "../components/UploadDropzone";
-import {
-  getEsquema,
-  uploadDatos,
-  EsquemaCol,
-  UploadResponse,
-  dtypePrincipal,
-  describeRestricciones,
-  // nuevos imports del servicio de validación:
-  validarDatos,
-  ValidacionResponse,
-  inferFormatFromFilename
-} from "../services/datos";
-
 import ValidationReport from "../components/ValidationReport";
 
+import {
+  // esquema + utilidades que ya usabas
+  getEsquema,
+  EsquemaCol,
+  UploadResponse,
+  uploadDatos,
+  dtypePrincipal,
+  describeRestricciones,
+  // validación v0.3.0
+  validarDatos,
+  ValidacionResponse,
+  inferFormatFromFilename,
+} from "../services/datos";
+
 export default function DataUpload() {
+  // --- Esquema / metadatos
   const [columns, setColumns] = useState<EsquemaCol[]>([]);
   const [version, setVersion] = useState<string>("");
-  const [file, setFile] = useState<File | null>(null);
-  const [periodo, setPeriodo] = useState("2024-2");
-  const [overwrite, setOverwrite] = useState(false);
 
-  const [fetching, setFetching] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
+  // --- Formulario
+  const [file, setFile] = useState<File | null>(null);
+  const [periodo, setPeriodo] = useState<string>("2024-2");
+  const [overwrite, setOverwrite] = useState<boolean>(false);
+
+  // --- Estados de UI
+  const [fetching, setFetching] = useState<boolean>(true);
+  const [submitting, setSubmitting] = useState<boolean>(false);
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // NUEVO: estado para validación
+  // --- Validación (nuevo Día 3)
   const [validRes, setValidRes] = useState<ValidacionResponse | null>(null);
-  const [valLoading, setValLoading] = useState(false);
+  const [valLoading, setValLoading] = useState<boolean>(false);
   const [valError, setValError] = useState<string | null>(null);
 
+  // Cargar esquema al montar
   useEffect(() => {
     (async () => {
       setFetching(true);
       try {
         const schema = await getEsquema();
-        setColumns(Array.isArray(schema.columns) ? schema.columns : []);
-        setVersion(schema.version ?? "");
+        setColumns(Array.isArray(schema?.columns) ? schema.columns : []);
+        setVersion(schema?.version ?? "");
       } catch {
         setError("No se pudo obtener el esquema.");
       } finally {
@@ -55,18 +60,18 @@ export default function DataUpload() {
     })();
   }, []);
 
+  // Subir dataset (NO valida; para eso está el botón aparte)
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setResult(null);
-    // La validación "en seco" es separada; aquí solo subimos el dataset.
 
     if (!file) {
-      setError("Selecciona un archivo CSV/XLSX.");
+      setError("Selecciona un archivo CSV/XLSX/Parquet.");
       return;
     }
     if (!periodo) {
-      setError("Ingresa un periodo (ej. 2024-2).");
+      setError("Ingresa un periodo (p. ej. 2024-2).");
       return;
     }
 
@@ -74,15 +79,14 @@ export default function DataUpload() {
     try {
       const r = await uploadDatos({ file, periodo, overwrite });
       setResult(r);
-      // Si sube bien, no modificamos el resultado de validación previa (si existía).
     } catch {
-      setError("Error al subir el archivo (revisa backend y/o CORS).");
+      setError("Error al subir el archivo (verifica backend y CORS).");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // NUEVO: validar sin guardar
+  // Validar sin guardar (usa /datos/validar)
   const onValidate = async () => {
     setValError(null);
     setValidRes(null);
@@ -94,12 +98,10 @@ export default function DataUpload() {
 
     setValLoading(true);
     try {
-      // Inferimos formato por extensión (opcional)
-      const fmt = inferFormatFromFilename(file?.name);
+      const fmt = inferFormatFromFilename(file.name); // csv|xlsx|parquet|undefined
       const res = await validarDatos(file, fmt);
       setValidRes(res);
     } catch (e: any) {
-      // Intentamos extraer mensaje de error del backend, si existe
       const msg =
         e?.response?.data?.detail ||
         e?.message ||
@@ -112,10 +114,10 @@ export default function DataUpload() {
 
   const onClear = () => {
     setFile(null);
+    setResult(null);
+    setError(null);
     setValidRes(null);
     setValError(null);
-    setError(null);
-    setResult(null);
   };
 
   return (
@@ -124,15 +126,18 @@ export default function DataUpload() {
       <header className="space-y-1">
         <h1 className="text-2xl font-bold">Datos — Carga de Evaluaciones</h1>
         <p className="text-sm opacity-80">
-          Esquema versión <strong>{version || "…"}</strong> (GET <code>/datos/esquema</code>)
+          Esquema versión <strong>{version || "…"}</strong>{" "}
+          <span className="opacity-60">(GET /datos/esquema)</span>
         </p>
       </header>
 
-      {/* Formulario de carga */}
+      {/* Formulario */}
       <form onSubmit={onSubmit} className="space-y-4">
-        {/* Nota: en tu versión el dropzone usa onFileSelected (no onPick) */}
+        {/* ⚠️ IMPORTANTE: ÚNICO selector de archivo */}
+        {/* Tu Dropzone actual usa onFileSelected; lo respetamos */}
         <UploadDropzone onFileSelected={setFile} accept=".csv,.xlsx,.parquet" />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
           <label className="block">
             <span className="text-sm">Periodo</span>
             <input
@@ -152,7 +157,7 @@ export default function DataUpload() {
             <span className="text-sm">Sobrescribir si existe</span>
           </label>
 
-          <div className="flex items-end gap-2">
+          <div className="flex gap-2 justify-start md:justify-end">
             <button
               className="px-4 py-2 rounded-xl shadow"
               disabled={submitting}
@@ -161,18 +166,17 @@ export default function DataUpload() {
               {submitting ? "Subiendo…" : "Subir dataset"}
             </button>
 
-            {/* NUEVO: validar sin guardar */}
+            {/* Validación en seco */}
             <button
               type="button"
               className="px-4 py-2 rounded-xl border"
-              disabled={valLoading || !file}
+              disabled={valLoading || !file} // se habilita cuando hay archivo
               onClick={onValidate}
               title="Valida el archivo sin almacenarlo"
             >
               {valLoading ? "Validando…" : "Validar sin guardar"}
             </button>
 
-            {/* NUEVO: limpiar selección y reporte */}
             <button
               type="button"
               className="px-4 py-2 rounded-xl border"
@@ -207,13 +211,15 @@ export default function DataUpload() {
         </div>
       )}
 
-      {/* NUEVO: errores de validación */}
-      {valError && <div className="p-3 rounded-xl bg-red-50 text-red-700">{valError}</div>}
+      {/* Errores de validación */}
+      {valError && (
+        <div className="p-3 rounded-xl bg-red-50 text-red-700">{valError}</div>
+      )}
 
-      {/* NUEVO: reporte de validación (KPIs + tabla de issues con filtros) */}
+      {/* Reporte de validación (KPIs + tabla filtrable) */}
       <ValidationReport data={validRes} />
 
-      {/* Tabla de esquema (ya estaba) */}
+      {/* Tabla de esquema */}
       <section className="space-y-2">
         <h2 className="font-semibold">Columnas esperadas (plantilla)</h2>
         <div className="overflow-auto border rounded-xl">
@@ -230,7 +236,6 @@ export default function DataUpload() {
               {!fetching && columns.map((c) => (
                 <tr key={c.name} className="border-t">
                   <td className="p-2">{c.name}</td>
-                  {/* Si tu servicio expone dtype como string|string[], mostramos el principal */}
                   <td className="p-2">
                     {typeof dtypePrincipal === "function"
                       ? dtypePrincipal(c.dtype as any)
@@ -238,7 +243,6 @@ export default function DataUpload() {
                   </td>
                   <td className="p-2">{c.required ? "Sí" : "No"}</td>
                   <td className="p-2">
-                    {/* Mostrar restricciones si el servicio las provee (domain/range/pattern/max_len) */}
                     {typeof describeRestricciones === "function"
                       ? describeRestricciones(c)
                       : c.description || "-"}
@@ -254,21 +258,11 @@ export default function DataUpload() {
             </tbody>
           </table>
         </div>
-        {/* Notas de UX mínimas (Día 2) alineadas con las validaciones backend */}
+
         <div className="text-xs opacity-80 space-y-1">
-          <p>
-            *Los campos de PLN <em>no</em> van en la plantilla (se calcularán más adelante).
-          </p>
-          <p>
-            *Los encabezados con espacios, acentos o “:” se aceptan y se{" "}
-            <strong>normalizan automáticamente</strong> (p. ej.{" "}
-            <code>“Código Materia”</code> → <code>codigo_materia</code>).
-          </p>
-          <p>
-            *Se aplica <strong>coerción de tipos</strong> previa y se pueden exigir{" "}
-            <strong>patrones (regex)</strong> por columna (p. ej.{" "}
-            <code>periodo</code> = <code>^[0-9]{4}-(1|2)$</code>).
-          </p>
+          <p>*Los campos de PLN no van en la plantilla (se calcularán más adelante).</p>
+          <p>*Los encabezados con espacios, acentos o “:” se aceptan y se normalizan automáticamente.</p>
+          <p>*Se aplica coerción de tipos previa y se pueden exigir patrones (regex) por columna.</p>
         </div>
       </section>
     </div>

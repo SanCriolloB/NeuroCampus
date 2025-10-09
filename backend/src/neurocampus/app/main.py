@@ -60,7 +60,7 @@ def _startup_observability_wiring() -> None:
     De esta forma, los eventos training.* emitidos por la plantilla de entrenamiento
     quedarán registrados en logs sin necesidad de tocar el resto del código.
     """
-    wire_logging_destination()
+    _wire_observability_safe()
 
 @app.get("/health")
 def health() -> dict:

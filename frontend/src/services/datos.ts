@@ -184,17 +184,16 @@ export async function uploadDatos(params: {
  *    - La UI puede usar 'issues' para resaltar columnas/filas problemáticas,
  *      y 'summary' para mostrar totales en cards/badges.
  * ====================================================================== */
-export async function validarDatos(
-  file: File,
-  fmt?: "csv" | "xlsx" | "parquet"
-): Promise<ValidacionResponse> {
+export async function validarDatos(file: File, fmt?: "csv" | "xlsx" | "parquet") {
   const form = new FormData();
   form.append("file", file);
   if (fmt) form.append("fmt", fmt);
+  // O, si prefieres: intenta inferir por extensión antes de agregar fmt.
 
+  // NO forzar Content-Type; el navegador añade el boundary:
   const { data } = await apiClient.post<ValidacionResponse>("/datos/validar", form);
 
-  // Fallbacks defensivos para robustez en UI
+  // Fallbacks defensivos (conservar tu enfoque):
   return {
     summary: data?.summary ?? { rows: 0, errors: 0, warnings: 0, engine: "" },
     issues: Array.isArray(data?.issues) ? data.issues : [],

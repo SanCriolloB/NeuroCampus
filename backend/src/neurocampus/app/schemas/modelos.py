@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 class EntrenarRequest(BaseModel):
     modelo: str = Field(..., pattern="^(rbm_general|rbm_restringida)$")
@@ -16,3 +16,5 @@ class EstadoResponse(BaseModel):
     job_id: str
     status: str
     metrics: Dict[str, float] = {}
+    history: List[Dict[str, Any]] = []   # <- nuevo
+    # (opcional) error: Optional[str] = None

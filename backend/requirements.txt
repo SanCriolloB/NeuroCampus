@@ -6,3 +6,4 @@ polars>=0.20
 pyarrow>=15
 openpyxl>=3.1
 python-multipart>=0.0.9
+torch>=2.3

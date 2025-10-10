@@ -1,6 +1,71 @@
+# Apéndice A — Arquitectura (Día 2, referencia histórica)
+
+# Arquitectura — NeuroCampus (Día 2)
+<!--
+Objetivo del día 2:
+- Ampliar la arquitectura con los esquemas de datos y la capa de ingesta.
+- Documentar el flujo de datos y aclarar el tratamiento de los comentarios cualitativos.
+-->
+
+## 1. Visión general
+- **Dominio**: análisis educativo (datasets, modelos, predicción, jobs).
+- **Estilo**: servicios modulares (FastAPI) + SPA (React/Vite).
+- **Tronco común**: contratos HTTP con JSON (+ TypeScript types para FE).
+
+## 2. Capas y módulos
+- **Data** (ingesta/validación): adapters a almacenamiento, validaciones, esquemas JSON.
+- **Models** (entrenamiento/publicación): ciclo de vida del modelo.
+- **Prediction** (online/batch): entradas limpias → salidas con postproceso.
+- **Jobs** (orquestación/estado): seguimiento de tareas asíncronas.
+
+## 3. Patrones (acordados)
+- **Strategy**, **Template Method**, **Facade**, **Chain of Responsibility**, **Observer**, **Command**, **Adapter**.
+<!-- Nota: se detallarán con ejemplos en días 2–6. -->
+
+## 4. Diagramas (borradores)
+### 4.1 Componentes (mermaid)
+```mermaid
+flowchart LR
+  UI[React SPA] -->|REST JSON| API[FastAPI]
+  subgraph FastAPI
+    D[Data] --- M[Models] --- P[Prediction] --- J[Jobs]
+  end
+  D -->|valida| DS[(Storage)]
+  M -->|snapshot| REG[(Model Registry)]
+  P -->|lee modelos| REG
+  J -->|publica eventos| BUS[(Event Bus)]
+```
+
+---
+
+## 5. Ingesta sin SQL (Día 2)
+- La UI (DataUpload) consulta **GET /datos/esquema** para construir el formulario dinámico.
+- **POST /datos/upload** (mock) valida formato mínimo y devuelve `dataset_id` y `rows_ingested` (placeholder).
+- Persistencia: **no SQL** por ahora; se utiliza almacenamiento de archivos (CSV/XLSX/Parquet).
+- Los esquemas están definidos en `schemas/plantilla_dataset.schema.json` y `schemas/features.quantitativas.json`.
+
+### 5.1 Procesamiento de comentarios (PLN)
+- Los campos `comentario.sent_pos`, `comentario.sent_neg` y `comentario.sent_neu` **no forman parte del dataset original**.
+- El sistema genera estos valores automáticamente durante la **etapa de Procesamiento de Lenguaje Natural (PLN)**, prevista para el **Día 6**.
+- Su cálculo se basa en el texto contenido en la columna `Sugerencias:` de cada registro.
+- Los resultados se almacenan como atributos adicionales del dataset procesado y no son requeridos en la validación de `POST /datos/upload`.
+- De esta manera se mantiene la separación de responsabilidades:
+  - Día 2 → Ingesta y validación del esquema base (sin sentimientos).
+  - Día 6 → Análisis de sentimientos y enriquecimiento de los datos.
+
+---
+
+## 6. Próximos pasos
+- Día 3: agregar `/datos/validar` con reglas dinámicas.
+- Día 4: conectar Jobs y Modelos.
+- Día 5: flujo de predicción en frontend.
+- Día 6: incorporar análisis de sentimientos (PLN).
+
 # Arquitectura — NeuroCampus (v0.4.0 con Apéndice Día 2)
 
 Primero la arquitectura **v0.4.0 (vigente)** y al final un **Apéndice** con la versión **Día 2** completa, sin cambios.
+
+---
 
 # Arquitectura — NeuroCampus (v0.4.0, Día 4)
 
@@ -121,67 +186,101 @@ sequenceDiagram
 - **Día 6**: incorporar **PLN** (sentimientos) y enriquecer dataset/visualizaciones.
 - **Día 6–7**: evaluar sinks de observabilidad (Prometheus/Grafana, Kafka) y dashboard de Jobs.
 
----
+## Anexo — Cambios acumulados Día 4 (v0.4.0)
+> Fecha de actualización: 2025-10-10 14:15:36
 
-# Apéndice A — Arquitectura (Día 2, referencia histórica)
+Este anexo se agrega **al final** del documento existente y detalla los cambios
+introducidos el **Día 4** para alinear Arquitectura con la implementación actual
+(Plantilla de Entrenamiento + Estrategias RBM + Observabilidad `training.*`).
 
-# Arquitectura — NeuroCampus (Día 2)
-<!--
-Objetivo del día 2:
-- Ampliar la arquitectura con los esquemas de datos y la capa de ingesta.
-- Documentar el flujo de datos y aclarar el tratamiento de los comentarios cualitativos.
--->
+## 1) Objetivos y alcance (Día 4)
+- **Objetivo**: Establecer la **PlantillaEntrenamiento** (Template Method) y las **Estrategias** de modelo (RBM general/restringida), conectadas a un **EventBus in-memory** que publica eventos `training.*` durante el ciclo de entrenamiento.
+- **Listo cuando**: El **flujo de entrenamiento** y las **métricas/eventos** están documentados y conectados con los **contratos de API** expuestos por `/modelos`.
 
-## 1. Visión general
-- **Dominio**: análisis educativo (datasets, modelos, predicción, jobs).
-- **Estilo**: servicios modulares (FastAPI) + SPA (React/Vite).
-- **Tronco común**: contratos HTTP con JSON (+ TypeScript types para FE).
+## 2) Componentes introducidos/actualizados
+- **Models**
+  - `PlantillaEntrenamiento`: orquesta `epochs`, recibe una `EstrategiaEntrenamiento` y emite eventos.
+  - `RBMGeneral` / `RBMRestringida`: implementan `setup()` y `train_step()` (CD-k).
+- **Observability**
+  - `EventBus` (pub/sub in-memory) y `log_handler` (sink por defecto).
+  - Eventos: `training.started`, `training.epoch_end`, `training.completed`, `training.failed`.
+- **API / Routers**
+  - `/modelos/entrenar` (POST) lanza el job y devuelve `job_id`.
+  - `/modelos/estado/{job_id}` (GET) consolida `status`, `metrics` y `history[]` desde eventos.
+- **Frontend**
+  - Vista **Models**: lanza entrenamiento y grafica curva `recon_error` por época.
 
-## 2. Capas y módulos
-- **Data** (ingesta/validación): adapters a almacenamiento, validaciones, esquemas JSON.
-- **Models** (entrenamiento/publicación): ciclo de vida del modelo.
-- **Prediction** (online/batch): entradas limpias → salidas con postproceso.
-- **Jobs** (orquestación/estado): seguimiento de tareas asíncronas.
+## 3) Patrones (Día 4)
+- **Template Method**: `PlantillaEntrenamiento.run()` controla el ciclo y emite eventos.
+- **Strategy**: `RBMGeneral` / `RBMRestringida` encapsulan el algoritmo (RBM con CD-k).
+- **Observer**: `EventBus` suscribe handlers (logging) sin acoplarse a la plantilla.
+- **Adapter / Facade**: Routers para simplificar el acceso desde FE.
 
-## 3. Patrones (acordados)
-- **Strategy**, **Template Method**, **Facade**, **Chain of Responsibility**, **Observer**, **Command**, **Adapter**.
-<!-- Nota: se detallarán con ejemplos en días 2–6. -->
+## 4) Diagramas (Mermaid)
 
-## 4. Diagramas (borradores)
-### 4.1 Componentes (mermaid)
+### 4.1 Componentes (actualizado D4)
 ```mermaid
 flowchart LR
   UI[React SPA] -->|REST JSON| API[FastAPI]
   subgraph FastAPI
-    D[Data] --- M[Models] --- P[Prediction] --- J[Jobs]
+    D[Data] --- M[Models] --- P[Prediction] --- J[Jobs] --- OBS[Observability]
   end
-  D -->|valida| DS[(Storage)]
+  D -->|valida/ingesta| DS[(Storage)]
   M -->|snapshot| REG[(Model Registry)]
   P -->|lee modelos| REG
-  J -->|publica eventos| BUS[(Event Bus)]
+  M -->|emite training.*| BUS[(Event Bus in-memory)]
+  OBS -->|handlers| LOG[(Logging INFO)]
+  J -->|tareas genéricas| BUS
 ```
 
----
+### 4.2 Secuencia — Entrenamiento RBM + eventos
+```mermaid
+sequenceDiagram
+  participant FE as Frontend
+  participant API as FastAPI (/modelos)
+  participant TPL as PlantillaEntrenamiento
+  participant STR as Estrategia (RBM gen/res)
+  participant BUS as EventBus
+  participant LOG as log_handler
 
-## 5. Ingesta sin SQL (Día 2)
-- La UI (DataUpload) consulta **GET /datos/esquema** para construir el formulario dinámico.
-- **POST /datos/upload** (mock) valida formato mínimo y devuelve `dataset_id` y `rows_ingested` (placeholder).
-- Persistencia: **no SQL** por ahora; se utiliza almacenamiento de archivos (CSV/XLSX/Parquet).
-- Los esquemas están definidos en `schemas/plantilla_dataset.schema.json` y `schemas/features.quantitativas.json`.
+  FE->>API: POST /modelos/entrenar {modelo, data_ref, epochs, hparams}
+  API-->>FE: 200 {job_id, status: running}
+  API->>TPL: background run(job_id, data_ref, epochs, hparams)
 
-### 5.1 Procesamiento de comentarios (PLN)
-- Los campos `comentario.sent_pos`, `comentario.sent_neg` y `comentario.sent_neu` **no forman parte del dataset original**.
-- El sistema genera estos valores automáticamente durante la **etapa de Procesamiento de Lenguaje Natural (PLN)**, prevista para el **Día 6**.
-- Su cálculo se basa en el texto contenido en la columna `Sugerencias:` de cada registro.
-- Los resultados se almacenan como atributos adicionales del dataset procesado y no son requeridos en la validación de `POST /datos/upload`.
-- De esta manera se mantiene la separación de responsabilidades:
-  - Día 2 → Ingesta y validación del esquema base (sin sentimientos).
-  - Día 6 → Análisis de sentimientos y enriquecimiento de los datos.
+  TPL->>BUS: training.started {correlation_id=job_id, model, params}
+  BUS->>LOG: log(INFO)
 
----
+  loop epochs
+    TPL->>STR: train_step(epoch)
+    STR-->>TPL: loss, metrics
+    TPL->>BUS: training.epoch_end {correlation_id, epoch, loss, metrics}
+    BUS->>LOG: log(INFO)
+  end
 
-## 6. Próximos pasos
-- Día 3: agregar `/datos/validar` con reglas dinámicas.
-- Día 4: conectar Jobs y Modelos.
-- Día 5: flujo de predicción en frontend.
-- Día 6: incorporar análisis de sentimientos (PLN).
+  TPL->>BUS: training.completed {correlation_id, final_metrics}
+  BUS->>LOG: log(INFO)
+
+  FE->>API: GET /modelos/estado/{job_id}
+  API-->>FE: 200 {status, metrics, history[]}
+```
+
+## 5) Contratos relevantes y trazabilidad
+- **POST `/modelos/entrenar`**: inicia job y conecta `correlation_id == job_id` para eventos.
+- **GET `/modelos/estado/{job_id}`**: agrega `history[]` (un punto por `epoch_end`) y snapshot de `metrics` (o `final_metrics`).
+- **Hparams**: normalizados a *minúsculas* en el router para robustez.
+- Ver detalle de campos/ejemplos en **docs/api.md (v0.4.0)**.
+
+## 6) Decisiones no‑funcionales (D4)
+- **Simplicidad**: EventBus in-memory y logging como sink por defecto.
+- **Resiliencia**: un handler fallido no detiene el entrenamiento (best‑effort).
+- **Privacidad**: eventos no cargan datos sensibles; solo metadatos y métricas.
+- **Extensibilidad**: futuros sinks (Prometheus/Grafana, Kafka/Rabbit) y más estrategias de modelo sin cambiar la plantilla.
+
+## 7) Integración Frontend
+- Lanza entrenamiento → `POST /modelos/entrenar` → recibe `job_id`.
+- Polling → `GET /modelos/estado/{job_id}` cada 1–2 s hasta `completed|failed`.
+- UI muestra: `status`, `job_id`, curva `recon_error`/`loss`, y errores si los hay.
+
+## 8) Compatibilidad
+- Se conserva el diseño de **Día 2–3** (ingesta y validación) sin cambios de ruptura.
+- `/jobs` sigue disponible para tareas genéricas; el estado de entrenamiento se consulta en `/modelos/estado`.

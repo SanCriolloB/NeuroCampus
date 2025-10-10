@@ -23,8 +23,9 @@ type Json = Record<string, unknown>;
 /** Construye querystring simple a partir de un objeto plano. */
 export function qs(params?: Record<string, string | number | boolean | null | undefined>) {
   if (!params) return "";
-  const search = Object.entries(params)
-    .filter(([, v]) => v !== undefined && v !== null)
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null);
+  if (!entries.length) return "";
+  const search = entries
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join("&");
   return search ? `?${search}` : "";
@@ -43,13 +44,12 @@ function extractErrorMessage(raw: string): { message: string; json?: any } {
       obj.title;
     return { message: typeof detail === "string" ? detail : JSON.stringify(obj), json: obj };
   } catch {
-    // no era JSON
     return { message: raw };
   }
 }
 
-/** Request genérico con manejo de FormData/JSON y errores enriquecidos. */
-async function request<T>(
+/** Hace la request y gestiona errores/timeout. Devuelve { data }. */
+async function request<T = unknown>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: FormData | Json,
@@ -57,43 +57,31 @@ async function request<T>(
 ): Promise<{ data: T }> {
   const isForm = typeof FormData !== "undefined" && body instanceof FormData;
 
-  // Si es FormData, NO seteamos 'Content-Type'; el navegador agrega el boundary.
-  let headers: HeadersInit = {
-    ...(init?.headers || {}),
-    ...(isForm ? {} : { "Content-Type": "application/json" }),
-  };
-
-  // Si por error setearon Content-Type con FormData, lo quitamos.
-  if (isForm && headers) {
-    const h = new Headers(headers);
-    if (h.has("Content-Type")) h.delete("Content-Type");
-    headers = h;
-  }
-
-  // Soporte opcional de timeout (AbortController)
   const controller = new AbortController();
-  const timeout = (init as any)?.timeoutMs as number | undefined;
-  let timer: any;
-  if (timeout && Number.isFinite(timeout)) {
-    timer = setTimeout(() => controller.abort(), timeout);
-  }
+  const timeoutMs = init?.timeoutMs ?? 30000;
+  const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
 
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
       method,
-      headers,
-      body: body
-        ? isForm
-          ? (body as FormData)
-          : JSON.stringify(body as Json)
-        : undefined,
       signal: controller.signal,
       ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(isForm ? {} : { "Content-Type": "application/json" }),
+      },
+      body:
+        method === "GET" || method === "DELETE"
+          ? // GET/DELETE típicamente sin body; si hay body JSON en DELETE, lo admitimos:
+            (method === "DELETE" && body && !isForm ? JSON.stringify(body) : undefined)
+          : isForm
+          ? (body as FormData)
+          : body !== undefined
+          ? JSON.stringify(body)
+          : undefined,
     });
   } catch (e: any) {
-    if (timer) clearTimeout(timer);
-    // Error de red / abort
     const err = new Error(`NETWORK ${e?.name || "Error"} — ${e?.message || "sin detalle"}`);
     // @ts-expect-error info útil
     err.cause = e;
@@ -107,13 +95,8 @@ async function request<T>(
     const raw = await res.text().catch(() => "");
     const { message, json } = extractErrorMessage(raw);
     const err = new Error(`HTTP ${res.status} ${res.statusText} — ${message}`);
-    // Adjuntamos metadatos útiles para debug/UI
-    // @ts-expect-error props extra en Error
-    err.status = res.status;
-    // @ts-expect-error
-    err.body = raw;
-    // @ts-expect-error
-    err.json = json;
+    // @ts-expect-error adjuntamos datos crudos por si el caller quiere inspeccionarlos
+    err.response = { status: res.status, statusText: res.statusText, body: raw, json };
     throw err;
   }
 
@@ -146,3 +129,11 @@ export const apiClient = {
     return request<T>("DELETE", path, body, init);
   },
 };
+
+/** 
+ * Compatibilidad: alias nombrado `api` y default export.
+ * - Permite `import api from "./apiClient"` (default).
+ * - Mantiene `import { apiClient } from "./apiClient"` (named).
+ */
+export const api = apiClient;
+export default api;

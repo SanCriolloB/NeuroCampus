@@ -1,8 +1,10 @@
 # backend/src/neurocampus/app/routers/modelos.py
+# Ajuste Día 5 (B): integrar selección de datos por metodología antes de entrenar,
+# conservando contrato y wiring existentes.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from ..schemas.modelos import EntrenarRequest, EntrenarResponse, EstadoResponse
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
 from ...models.strategies.modelo_rbm_general import RBMGeneral
@@ -10,6 +12,22 @@ from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...observability.bus_eventos import BUS  # capturamos eventos training.*
 from typing import Dict, Any
 import uuid
+
+# NUEVO: utilidades para selección de datos
+import pandas as pd
+from pathlib import Path
+try:
+    # Disponible tras agregar metodologia.py (Día 5 B)
+    from ...models.strategies.metodologia import SeleccionConfig, resolver_metodologia
+except Exception:
+    # Si aún no existe el módulo, definimos un shim mínimo para no romper import
+    class SeleccionConfig:  # type: ignore
+        def __init__(self, periodo_actual=None, ventana_n=4): ...
+    def resolver_metodologia(nombre: str):  # type: ignore
+        raise RuntimeError(
+            "El módulo de metodologías no está disponible. "
+            "Asegúrate de crear neurocampus/models/strategies/metodologia.py"
+        )
 
 router = APIRouter()
 
@@ -148,6 +166,73 @@ def _wire_job_observers(job_id: str) -> None:
     _OBS_WIRED_JOBS.add(job_id)
 
 
+# -----------------------------
+# Selección de datos (Día 5 B)
+# -----------------------------
+def _strip_localfs(uri: str) -> str:
+    """Convierte 'localfs://path/to/file' a ruta local 'path/to/file'."""
+    if isinstance(uri, str) and uri.startswith("localfs://"):
+        return uri.replace("localfs://", "", 1)
+    return uri
+
+
+def _resolve_data_path(req: EntrenarRequest) -> str:
+    """
+    Determina la ruta al dataset a usar:
+    - Si viene req.data_ref, la usa (admite esquema localfs://).
+    - Si no, intenta 'historico/unificado.parquet' (Día 5 A).
+    """
+    if getattr(req, "data_ref", None):
+        p = _strip_localfs(req.data_ref)  # type: ignore[arg-type]
+        return p
+    hist = Path("historico") / "unificado.parquet"
+    if hist.exists():
+        return str(hist)
+    raise HTTPException(status_code=400, detail="No hay data_ref ni histórico unificado disponible.")
+
+
+def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
+    """Lee un parquet local. (Extensible a otros esquemas si se requiere)."""
+    p = _strip_localfs(path_or_uri)
+    try:
+        return pd.read_parquet(p)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo leer el dataset: {e}")
+
+
+def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
+    """
+    Aplica la metodología de selección de datos y retorna
+    una ruta temporal (parquet) con el subconjunto elegido.
+    """
+    # 1) Resolver dataset fuente (data_ref o histórico unificado)
+    data_ref = _resolve_data_path(req)
+    df = _read_dataframe_any(data_ref)
+
+    # 2) Resolver metodología y config (con defaults robustos si el schema aún no se actualizó)
+    metodologia = getattr(req, "metodologia", None) or "periodo_actual"
+    periodo_actual = getattr(req, "periodo_actual", None)
+    ventana_n = getattr(req, "ventana_n", None) or 4
+
+    metodo = resolver_metodologia(str(metodologia).lower())
+    cfg = SeleccionConfig(periodo_actual=periodo_actual, ventana_n=int(ventana_n))
+
+    df_sel = metodo.seleccionar(df, cfg)
+    if df_sel.empty:
+        raise HTTPException(status_code=400, detail="Selección de datos vacía según la metodología/periodo.")
+
+    # 3) Persistir subconjunto para el entrenamiento
+    tmp_dir = Path("data/.tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_ref = tmp_dir / f"df_sel_{job_id}.parquet"
+    try:
+        df_sel.to_parquet(tmp_ref)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo materializar el subconjunto: {e}")
+
+    return str(tmp_ref)
+
+
 def _run_training(job_id: str, req: EntrenarRequest):
     # Elige estrategia
     estrategia = RBMGeneral() if req.modelo == "rbm_general" else RBMRestringida()
@@ -156,9 +241,12 @@ def _run_training(job_id: str, req: EntrenarRequest):
     # Asegurar wiring de observabilidad para este job antes de correr
     _wire_job_observers(job_id)
 
+    # NUEVO: preparar subconjunto seleccionado según metodología
+    selected_ref = _prepare_selected_data(req, job_id)
+
     # Ejecuta entrenamiento (emite training.* que recogerán los handlers)
     out = tpl.run(
-        req.data_ref,
+        selected_ref,  # <-- usar subconjunto
         req.epochs,
         {**(_normalize_hparams(req.hparams)), "job_id": job_id},
         model_name=req.modelo,
@@ -185,17 +273,26 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks):
         "metrics": {},
         "history": [],  # acumularemos aquí cada epoch_end
         "model": req.modelo,
-        "params": {"epochs": req.epochs, **hp_norm},
+        # Guardamos también la configuración de metodología para trazabilidad
+        "params": {
+            "epochs": req.epochs,
+            **hp_norm,
+            "metodologia": getattr(req, "metodologia", "periodo_actual"),
+            "periodo_actual": getattr(req, "periodo_actual", None),
+            "ventana_n": getattr(req, "ventana_n", None),
+            "data_ref": getattr(req, "data_ref", None) or "historico/unificado.parquet",
+        },
         "error": None,
     }
 
-    # Lanza en background con hparams normalizados
-    req_norm = EntrenarRequest(
-        modelo=req.modelo,
-        data_ref=req.data_ref,
-        epochs=req.epochs,
-        hparams=hp_norm
-    )
+    # Lanza en background con hparams normalizados, preservando otros campos del request
+    try:
+        # Pydantic v2
+        req_norm = req.model_copy(update={"hparams": hp_norm})  # type: ignore[attr-defined]
+    except AttributeError:
+        # Pydantic v1
+        req_norm = req.copy(update={"hparams": hp_norm})  # type: ignore
+
     bg.add_task(_run_training, job_id, req_norm)
 
     return EntrenarResponse(job_id=job_id, status="running", message="Entrenamiento lanzado")

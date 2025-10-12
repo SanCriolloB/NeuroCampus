@@ -11,6 +11,7 @@ from ..adapters.almacen_adapter import AlmacenAdapter
 # Lectura multi-formato y helpers de DF (con las firmas reales de tus adapters)
 from ..adapters.formato_adapter import read_file            # (fileobj, filename) -> DataFrame/like
 from ..adapters.dataframe_adapter import as_df              # (obj) -> DF normalizado al engine
+from ..chain.validadores import validate
 
 import pandas as pd                                         # escritura parquet, manipulación tabular
 
@@ -233,3 +234,14 @@ class UnificacionStrategy:
         self._write_parquet(pdf, out_uri)
 
         return out_uri, {"periodos": sel, "rows": int(len(pdf))}
+    
+    # --- Alias estable para el façade de datos (no rompe nada existente) ---
+    def validate(*args, **kwargs):
+        for name in ("run_validations", "run", "validar", "validar_archivo"):
+            func = globals().get(name)
+            if callable(func):
+                return func(*args, **kwargs)
+        raise ImportError(
+            "validadores.py no define ninguna función compatible: "
+            "run_validations | run | validar | validar_archivo"
+        )

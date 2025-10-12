@@ -1033,3 +1033,185 @@ curl -s -X POST http://127.0.0.1:8000/modelos/entrenar \\
 - **Nuevo (D5-B):** parámetros `metodologia`, `periodo_actual`, `ventana_n` en `POST /modelos/entrenar`.
 - **Nuevo (D5-B):** definición de metodologías y ejemplos.
 - **Sin cambios:** `GET /modelos/estado/{job_id}`. Observabilidad `training.*` se mantiene.
+
+# API v0.5.0 (draft) — Predicción
+
+> **Estado:** Borrador aprobado por Miembro A en *Día 6* para implementación por Miembro B.  
+> **Propósito:** Definir contratos de predicción sin imponer detalles internos de la cadena/modelo.  
+> **Compatibilidad:** No rompe endpoints existentes; añade `/prediccion/online` y `/prediccion/batch`.
+
+---
+
+## Convenciones generales
+- **Formato:** JSON; para cargas masivas también `multipart/form-data` (archivo `csv` o `parquet`).
+- **Codificación:** UTF-8.
+- **Headers:** `Content-Type: application/json` (o `multipart/form-data` para archivo).
+- **Tiempo de respuesta objetivo (no contractual):** \< 200 ms en *online* para payloads típicos.
+- **Selección de modelo:** por defecto usa el **campeón** de la familia indicada (`opciones.use_champion = true`). Se puede forzar un `job_id` explícito.
+- **Campos de sentimiento (`sentiment_prob`)** se calculan en Día 6 (PLN) y **no** provienen de origen histórico.
+- **Versionado del contrato:** `v0.5.0 (draft)` hasta que Miembro B publique implementación; luego subirá a `v0.6.0` con detalles finales.
+
+---
+
+## POST /prediccion/online
+
+### Descripción
+Predicción **en línea** para **un único registro** (UI y casos interactivos).
+
+### Request (JSON)
+```json
+{
+  "features_numericas": {
+    "pregunta_1": 45,
+    "pregunta_2": 50
+  },
+  "comentario": "Me gustó la clase, pero el ritmo fue rápido",
+  "opciones": {
+    "family": "sentiment_desempeno",
+    "job_id": null,
+    "use_champion": true
+  }
+}
+```
+
+#### Campos
+- `features_numericas` (objeto numérico): Diccionario *feature_name → valor numérico*. Requerido.
+- `comentario` (string): Texto libre opcional para análisis semántico / sentimiento.
+- `opciones.family` (string): Familia de modelo/ensamble. Por defecto `"sentiment_desempeno"` (definida en docs metodológicos).
+- `opciones.job_id` (string|null): ID de entrenamiento específico. Si se define, ignora `use_champion`.
+- `opciones.use_champion` (bool): `true` por defecto; usa el modelo campeón de la familia.
+
+### Response 200 (JSON)
+```json
+{
+  "label": "Álgebra",
+  "confianza": 0.72,
+  "scores": { "Álgebra": 0.72, "Cálculo": 0.18, "Geometría": 0.10 },
+  "sentiment_prob": { "pos": 0.66, "neu": 0.24, "neg": 0.10 },
+  "metadata": {
+    "family": "sentiment_desempeno",
+    "champion_job_id": "2025-10-06_17-22-10_rbfn_v3",
+    "latencia_ms": 18
+  }
+}
+```
+
+#### Códigos de estado
+- `200 OK` — Predicción exitosa.
+- `400 Bad Request` — Payload inválido (tipos, faltantes mínimos).
+- `503 Service Unavailable` — No hay modelo publicado para la familia / job_id dado.
+
+---
+
+## POST /prediccion/batch
+
+### Descripción
+Predicción **por lotes** para **varios registros**. Soporta:
+1) **JSON** con arreglo `registros`, ó  
+2) **Archivo** `csv`/`parquet` vía `multipart/form-data`.
+
+### Request A (JSON)
+```json
+{
+  "registros": [
+    {
+      "features_numericas": { "pregunta_1": 45, "pregunta_2": 50 },
+      "comentario": "Buen ritmo, algunos temas difíciles"
+    },
+    {
+      "features_numericas": { "pregunta_1": 12, "pregunta_2": 30 },
+      "comentario": ""
+    }
+  ],
+  "opciones": { "family": "sentiment_desempeno", "use_champion": true }
+}
+```
+
+### Request B (multipart/form-data)
+```
+file: dataset.csv | dataset.parquet
+opciones: {"family":"sentiment_desempeno","use_champion":true}
+```
+
+#### Requisitos de archivos
+- **CSV:** encabezados con nombres de features; una columna opcional `comentario`. Ejemplo:
+  ```csv
+  pregunta_1,pregunta_2,comentario
+  45,50,"Buen ritmo, algunos temas difíciles"
+  12,30,""
+  ```
+- **Parquet:** columnas *feature_name* (numéricas) y opcional `comentario` (string).
+
+### Response 200 (JSON)
+```json
+{
+  "items": [
+    {
+      "index": 0,
+      "label": "Álgebra",
+      "confianza": 0.72,
+      "scores": { "Álgebra": 0.72, "Cálculo": 0.18, "Geometría": 0.10 },
+      "sentiment_prob": { "pos": 0.66, "neu": 0.24, "neg": 0.10 }
+    },
+    {
+      "index": 1,
+      "label": "Geometría",
+      "confianza": 0.61,
+      "scores": { "Álgebra": 0.28, "Cálculo": 0.11, "Geometría": 0.61 },
+      "sentiment_prob": { "pos": 0.22, "neu": 0.58, "neg": 0.20 }
+    }
+  ],
+  "resumen": {
+    "n": 2,
+    "latencia_prom_ms": 22,
+    "distribucion_labels": { "Álgebra": 1, "Geometría": 1 }
+  }
+}
+```
+
+#### Códigos de estado
+- `200 OK` — Lote procesado.
+- `400 Bad Request` — Formato inválido (JSON/archivo) o columnas inconsistentes.
+- `422 Unprocessable Entity` — Datos bien formados pero no consumibles (p.ej., valores no numéricos en features).
+- `503 Service Unavailable` — No hay modelo publicado.
+
+---
+
+## Reglas y observaciones adicionales
+
+- **Compatibilidad hacia adelante:** Nuevos campos en `metadata` podrán añadirse sin romper clientes; evite depender estrictamente de su presencia.
+- **Límites razonables:** `online` procesa un registro; `batch` recomienda ≤ 50k filas por solicitud (límites exactos los define despliegue).
+- **Selección de modelo:**
+  - Si `job_id != null` → se usa ese artefacto.
+  - En otro caso → se usa el **campeón** de `family` (`use_champion: true` por defecto).
+- **Sentimiento:** `sentiment_prob` ∈ [0,1] y suma ≈ 1. Puede omitirse si la familia no lo calcula.
+- **Trazabilidad:** el sistema publicará eventos `prediction.requested|completed|failed` (ver `docs/arquitectura.md`).
+
+---
+
+## Ejemplos de integración (cURL)
+
+**Online**
+```bash
+curl -X POST https://{host}/prediccion/online   -H "Content-Type: application/json"   -d '{
+    "features_numericas": {"pregunta_1":45,"pregunta_2":50},
+    "comentario":"Me gustó la clase, pero el ritmo fue rápido",
+    "opciones":{"family":"sentiment_desempeno","use_champion":true}
+  }'
+```
+
+**Batch (JSON)**
+```bash
+curl -X POST https://{host}/prediccion/batch   -H "Content-Type: application/json"   -d '{
+    "registros":[
+      {"features_numericas":{"pregunta_1":45,"pregunta_2":50},"comentario":"Buen ritmo"},
+      {"features_numericas":{"pregunta_1":12,"pregunta_2":30},"comentario":""}
+    ],
+    "opciones":{"family":"sentiment_desempeno","use_champion":true}
+  }'
+```
+
+**Batch (archivo CSV)**
+```bash
+curl -X POST https://{host}/prediccion/batch   -H "Content-Type: multipart/form-data"   -F "file=@dataset.csv"   -F 'opciones={"family":"sentiment_desempeno","use_champion":true}'
+```

@@ -235,13 +235,29 @@ class UnificacionStrategy:
 
         return out_uri, {"periodos": sel, "rows": int(len(pdf))}
     
-    # --- Alias estable para el façade de datos (no rompe nada existente) ---
-    def validate(*args, **kwargs):
-        for name in ("run_validations", "run", "validar", "validar_archivo"):
-            func = globals().get(name)
-            if callable(func):
-                return func(*args, **kwargs)
-        raise ImportError(
-            "validadores.py no define ninguna función compatible: "
-            "run_validations | run | validar | validar_archivo"
-        )
+# --- Alias estable para el façade de datos ---
+def validate(df, schema_path=None, *args, **kwargs):
+    """
+    Punto de entrada estable para 'datos_facade.py'.
+    Acepta (df, schema_path) y reenvía a la función real que ya tengas:
+    run_validations | run | validar | validar_archivo.
+    """
+    for name in ("run_validations", "run", "validar", "validar_archivo"):
+        func = globals().get(name)
+        if callable(func):
+            try:
+                # intento 1: función que acepta (df, schema_path, ...)
+                return func(df, schema_path, *args, **kwargs)
+            except TypeError:
+                # intento 2: función que sólo acepta (df, ...)
+                return func(df, *args, **kwargs)
+    raise ImportError(
+        "validadores.py no define ninguna función compatible: "
+        "run_validations | run | validar | validar_archivo"
+    )
+
+# (Opcional) export explícito
+try:
+    __all__ = list(__all__) + ["validate"]  # type: ignore[name-defined]
+except NameError:
+    __all__ = ["validate"]

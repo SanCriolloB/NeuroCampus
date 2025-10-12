@@ -890,3 +890,146 @@ curl -s http://127.0.0.1:8000/modelos/estado/<JOB_ID> | jq
 - Este anexo **no elimina** contratos anteriores (v0.3.0). Mantener ambos durante el MVP.
 - La UI de **Models** usa `/modelos/entrenar` y hace *polling* a `/modelos/estado/{job_id}` para graficar `recon_error` por época.
 - Los campos y nombres aquí documentados **ya están implementados** en backend (router y plantilla).
+
+## Anexo — Cambios acumulados Día 5 (v0.4.1)
+> Fecha de actualización: 2025-10-12 16:46:29 -05
+
+Este anexo **no borra** lo especificado en v0.4.0; agrega y aclara los cambios del **Día 5 — Miembro B** para la
+selección de datos por **metodología** (PeriodoActual, Acumulado, Ventana) usada antes del entrenamiento.
+
+### 1. Alcance
+- **Objetivo**: incorporar en el backend la selección de datos por metodología y exponerla en el contrato de `/modelos/entrenar`.
+- **Listo cuando**: `/modelos/entrenar` acepta `metodologia`, `periodo_actual`, `ventana_n`; la documentación incluye descripción, parámetros y ejemplos.
+
+---
+
+## 2. /modelos — contrato v0.4.1 (superset de v0.4.0)
+
+### 2.1 POST `/modelos/entrenar` — *añadidos Día 5*
+Lanza un entrenamiento en background de **RBM General** o **RBM Restringida**. Se agrega una **fase de selección de datos** previa al entrenamiento.
+
+**Body (JSON)**
+```json
+{
+  "modelo": "rbm_general | rbm_restringida",
+  "data_ref": "localfs://datasets/ultimo.parquet",
+  "epochs": 5,
+  "hparams": {
+    "n_visible": null,
+    "n_hidden": 32,
+    "lr": 0.01,
+    "batch_size": 64,
+    "cd_k": 1,
+    "momentum": 0.5,
+    "weight_decay": 0.0,
+    "seed": 42
+  },
+  "metodologia": "periodo_actual | acumulado | ventana",
+  "periodo_actual": "YYYY-SEM (p.ej. \"2024-2\")",
+  "ventana_n": 4
+}
+```
+
+**Notas**
+- Si **no** se envía `data_ref`, el backend intentará usar `historico/unificado.parquet` (generado en Día 5 A).
+- `metodologia` por defecto es `"periodo_actual"` si se omite.
+- `periodo_actual` es opcional. Si se omite, el backend **infiere** el máximo `periodo` presente en el dataset.
+- `ventana_n` aplica solo si `metodologia = "ventana"` (entero ≥ 1, default **4**).
+- La columna `periodo` debe cumplir el patrón `^[0-9]{4}-(1|2)$` (ej.: `2024-1`, `2024-2`).
+
+**200 — Response**
+```json
+{ "job_id": "uuid", "status": "running", "message": "Entrenamiento lanzado" }
+```
+
+**Errores**
+- `400` selección vacía según la metodología/periodo o dataset inaccesible.
+- `400` `metodologia` desconocida.
+- `500` error al materializar el subconjunto previo al entrenamiento.
+
+**Observabilidad**
+- Se mantienen los eventos `training.*` de v0.4.0 (`started`, `epoch_end`, `completed`, `failed`).
+
+---
+
+### 2.2 GET `/modelos/estado/{job_id}` — *sin cambios funcionales*
+Devuelve estado, `metrics` y `history[]` (siempre que el job esté corriendo o terminado).  
+*La configuración de metodología se registra para trazabilidad interna pero no se expone en este endpoint.*
+
+**200 — Response (ejemplo)**
+```json
+{
+  "job_id": "uuid",
+  "status": "running | completed | failed | unknown",
+  "metrics": { "recon_error": 0.42 },
+  "history": [
+    { "epoch": 1, "loss": 0.93, "recon_error": 0.93, "grad_norm": 0.12, "time_epoch_ms": 4.2 },
+    { "epoch": 2, "loss": 0.51, "recon_error": 0.51, "grad_norm": 0.09, "time_epoch_ms": 3.8 }
+  ]
+}
+```
+
+---
+
+## 3. Selección de datos — definición de metodologías
+
+- **periodo_actual**: usa **solo** las filas cuyo `periodo` coincide con `periodo_actual`.  
+  Si no se provee `periodo_actual`, se toma el **máximo** `periodo` presente en el dataset.
+
+- **acumulado**: usa **todas** las filas con `periodo` **≤** `periodo_actual`.  
+  Si no se provee `periodo_actual`, se usa el máximo presente.
+
+- **ventana**: usa los **últimos N** periodos **≤** `periodo_actual` (o ≤ máximo presente si se omite).  
+  `N = ventana_n` (default 4).
+
+---
+
+## 4. Ejemplos (curl)
+
+**1) Periodo actual (inferencia automática)**
+```bash
+curl -s -X POST http://127.0.0.1:8000/modelos/entrenar \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "modelo":"rbm_general",
+    "epochs":3,
+    "metodologia":"periodo_actual"
+  }'
+```
+
+**2) Acumulado hasta 2024-2**
+```bash
+curl -s -X POST http://127.0.0.1:8000/modelos/entrenar \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "modelo":"rbm_restringida",
+    "epochs":5,
+    "metodologia":"acumulado",
+    "periodo_actual":"2024-2"
+  }'
+```
+
+**3) Ventana (últimos 6 periodos)** 
+```bash
+curl -s -X POST http://127.0.0.1:8000/modelos/entrenar \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "modelo":"rbm_general",
+    "epochs":5,
+    "metodologia":"ventana",
+    "ventana_n":6
+  }'
+```
+
+---
+
+## 5. Compatibilidad
+- **Backward-compatible** con v0.4.0: las llamadas existentes siguen funcionando (por defecto `metodologia="periodo_actual"`).
+- El **fallback** de `data_ref` a `historico/unificado.parquet` permite usar el histórico unificado del Día 5 A sin cambiar clientes.
+
+---
+
+## 6. Notas de versión v0.4.1
+- **Nuevo (D5-B):** parámetros `metodologia`, `periodo_actual`, `ventana_n` en `POST /modelos/entrenar`.
+- **Nuevo (D5-B):** definición de metodologías y ejemplos.
+- **Sin cambios:** `GET /modelos/estado/{job_id}`. Observabilidad `training.*` se mantiene.

@@ -284,3 +284,118 @@ sequenceDiagram
 ## 8) Compatibilidad
 - Se conserva el diseño de **Día 2–3** (ingesta y validación) sin cambios de ruptura.
 - `/jobs` sigue disponible para tareas genéricas; el estado de entrenamiento se consulta en `/modelos/estado`.
+
+
+---
+
+# Anexo — Cambios Día 5 (A): Unificación de Datos Históricos
+> Fecha de actualización: 2025-10-12  | Versión v0.5.0-data-A
+
+## 1) Objetivos y alcance
+- **Objetivo:** Consolidar y normalizar los datasets históricos en un único recurso unificado que sirva como fuente de verdad para las metodologías de entrenamiento (PeriodoActual / Acumulado / Ventana).  
+- **Listo cuando:**  
+  - Existe el archivo `/historico/unificado.parquet` generado correctamente.  
+  - Las rutas de almacenamiento y lectura están documentadas en esta arquitectura.  
+  - Los modelos y metodologías pueden acceder al recurso unificado sin duplicar lógica.
+
+## 2) Componentes nuevos / actualizados
+
+| Componente | Ubicación | Descripción |
+|:------------|:-----------|:------------|
+| **UnificacionStrategy** | `backend/src/neurocampus/data/strategies/unificacion.py` | Concatena, normaliza y deduplica datasets por período; genera archivos `.parquet` en `/historico`. |
+| **Adapters de datos** | `data/adapters/{almacen,dataframe,formato}_adapter.py` | Capa de abstracción para almacenamiento (LocalFS / S3-like) y lectura multi-formato (CSV/XLSX/Parquet). |
+| **Scripts** | `scripts/test_unificacion_quick.py` | Prueba rápida de unificación para verificar estructura y generación de `unificado.parquet`. |
+| **Documentación** | `docs/arquitectura.md` (este archivo) | Se añaden rutas y flujo de unificación de datasets. |
+
+## 3) Rutas y recursos de almacenamiento
+
+```
+storage/
+ ├── datasets/
+ │   ├── 2024-1/
+ │   │   └── data.csv
+ │   ├── 2024-2/
+ │   │   └── data.csv
+ │   └── 2025-1/
+ │       └── data.xlsx
+ └── historico/
+     ├── unificado.parquet                ← recurso consolidado
+     ├── periodo_actual/
+     │   └── 2025-1.parquet              ← último período
+     └── ventanas/
+         └── unificado_2024-1_2025-1.parquet
+```
+
+## 4) Flujo de unificación (Día 5 — A)
+
+```mermaid
+flowchart TD
+    subgraph DataLayer [Capa Data]
+      A[Adapters almacen/formato/dataframe] --> B[UnificacionStrategy]
+    end
+    B --> C[(storage/datasets/{AAAA-SEM})]
+    B --> D[(storage/historico/*.parquet)]
+    D -->|lee| M[Models / Metodologías]
+```
+
+### Secuencia simplificada
+1. `UnificacionStrategy.listar_periodos()` → detecta subcarpetas `datasets/{AAAA-SEM}`.  
+2. Por cada período lee el archivo (`.parquet > .csv > .xlsx`) con `read_file()`.  
+3. Normaliza encabezados (vía `normalizar_encabezados`) y añade columna `periodo`.  
+4. Concatena todos los periodos (`acumulado()`), elimina duplicados (`_dedupe_concat`).  
+5. Guarda `historico/unificado.parquet`.  
+6. Otras modalidades:  
+   - **`periodo_actual()`** → solo último período.  
+   - **`ventana()`** → rango o N últimos periodos.
+
+## 5) Interfaces y consumo por metodologías
+- Las metodologías de entrenamiento (Día 5 — B) usan estas rutas:  
+  - **PeriodoActual:** `storage/historico/periodo_actual/<AAAA-SEM>.parquet`  
+  - **Acumulado:** `storage/historico/unificado.parquet`  
+  - **Ventana:** `storage/historico/ventanas/unificado_<desde>_<hasta>.parquet`  
+- `modelos_facade.py` y `metodologia.py` detectan estas rutas y cargan directamente el DataFrame con el adapter correspondiente.  
+
+## 6) Eventos y observabilidad
+- Durante la unificación se emiten eventos `data.unification.*` (opcional, si hay EventBus).  
+- Payload típico:  
+  ```json
+  {
+    "rows": 1234,
+    "duplicates_dropped": 45,
+    "elapsed_ms": 812,
+    "path": "storage/historico/unificado.parquet"
+  }
+  ```
+- Permite monitorear el proceso en logs y dashboards de Jobs.
+
+## 7) Ejemplo de uso desde scripts
+```bash
+# Ejecutar unificación completa
+python backend/src/neurocampus/data/strategies/unificacion.py
+
+# ó con el comando registrado en Jobs
+python backend/src/neurocampus/jobs/commands/cmd_unificar_historico.py
+```
+
+## 8) Prueba rápida local (Día 5)
+```bash
+python scripts/test_unificacion_quick.py
+```
+Salida esperada:
+```
+[OK] generado: historico/unificado.parquet { periodos: 3, rows: N }
+```
+
+## 9) Patrones utilizados
+- **Strategy:** `UnificacionStrategy` para métodos PeriodoActual/Acumulado/Ventana.  
+- **Adapter:** almacenamiento y formatos abstractos.  
+- **Facade:** `datos_facade.py` expone una API simple para modelos y jobs.  
+- **Command:** script de jobs para automatizar unificación.  
+
+## 10) Compatibilidad y siguientes pasos
+- No rompe contratos existentes; solo añade fuentes de datos para entrenamiento.  
+- Día 5 — B usará estas rutas para las estrategias de metodología.  
+- Día 6 añadirá enriquecimiento (PLN) a los datasets históricos.  
+- Día 7 automatizará la ejecución como Job (`cmd_unificar_historico`).  
+
+---

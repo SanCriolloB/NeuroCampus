@@ -399,3 +399,196 @@ Salida esperada:
 - Día 7 automatizará la ejecución como Job (`cmd_unificar_historico`).  
 
 ---
+
+# Apéndice — Observabilidad de Predicción `prediction.*` (v0.5.0 draft)
+
+> **Estado:** Borrador aprobado por **Miembro A** en *Día 6* para implementación por **Miembro B**.  
+> **Alcance:** Define **catálogo de eventos**, **esquemas** y **buenas prácticas** para el ciclo de **predicción**.  
+> **Compatibilidad:** Amplía la familia de eventos existentes (p. ej., `training.*`); no rompe integraciones.
+
+---
+
+## 1. Principios de diseño
+
+- **Inmutabilidad del evento:** los eventos no se editan; cualquier corrección se emite como un nuevo evento.  
+- **Idempotencia por `correlation_id`:** todos los eventos de un mismo request/lote comparten el mismo `correlation_id` (UUID v4).  
+- **Privacidad por diseño:** no incluir PII (p. ej., nombres, e‑mails, IP). Solo metadatos técnicos y agregaciones.  
+- **Compatibilidad hacia adelante:** se permite añadir campos **opcionales** sin romper consumidores.  
+- **Trazabilidad extremo a extremo:** cada solicitud de predicción debe producir al menos `prediction.requested` y uno de `prediction.completed` o `prediction.failed`.
+
+---
+
+## 2. Catálogo de eventos
+
+### 2.1 `prediction.requested`
+Emitido **al recibir** una solicitud de predicción (modo `online` o `batch`).
+
+**Payload (JSON):**
+```json
+{
+  "correlation_id": "uuid-...-req",
+  "family": "sentiment_desempeno",
+  "mode": "online",
+  "n_items": 1,
+  "ts": "2025-10-12T16:30:00Z"
+}
+```
+
+**Campos:**
+- `correlation_id` *(string, UUID, requerido)* — Identificador único compartido a lo largo del ciclo.  
+- `family` *(string, requerido)* — Familia/ensamble a usar (p. ej., `sentiment_desempeno`).  
+- `mode` *(string, requerido)* — `"online"` | `"batch"`.  
+- `n_items` *(int, requerido)* — Número de registros a predecir (1 en online).  
+- `ts` *(string, ISO‑8601, opcional pero recomendado)* — Timestamp de emisión (UTC).
+
+
+### 2.2 `prediction.completed`
+Emitido **al responder con éxito** una solicitud de predicción.
+
+**Payload (JSON):**
+```json
+{
+  "correlation_id": "uuid-...-req",
+  "latencia_ms": 18,
+  "n_items": 1,
+  "distribucion_labels": { "Álgebra": 1 },
+  "distribucion_sentiment": { "pos": 0.66, "neu": 0.24, "neg": 0.10 },
+  "ts": "2025-10-12T16:30:00Z"
+}
+```
+
+**Campos:**
+- `correlation_id` *(string, requerido)* — Debe coincidir con `prediction.requested`.  
+- `latencia_ms` *(int, requerido)* — Latencia total (servidor) del request/lote.  
+- `n_items` *(int, requerido)* — Número de registros efectivamente procesados.  
+- `distribucion_labels` *(objeto, opcional)* — Conteo por etiqueta predicha en el lote.  
+- `distribucion_sentiment` *(objeto, opcional)* — Promedios o agregados `{pos, neu, neg}`.  
+- `ts` *(string, ISO‑8601, opcional)* — Timestamp de emisión (UTC).
+
+
+### 2.3 `prediction.failed`
+Emitido ante **error** en cualquier etapa del proceso.
+
+**Payload (JSON):**
+```json
+{
+  "correlation_id": "uuid-...-req",
+  "error_code": "MODEL_NOT_AVAILABLE",
+  "error": "No hay campeón publicado para la familia solicitada",
+  "stage": "predict",
+  "ts": "2025-10-12T16:30:02Z"
+}
+```
+
+**Campos:**
+- `correlation_id` *(string, requerido)* — El mismo del ciclo.  
+- `error_code` *(string, requerido)* — Código canónico (ver tabla).  
+- `error` *(string, requerido)* — Mensaje resumen legible.  
+- `stage` *(string, opcional)* — `"vectorize" | "predict" | "postprocess" | "io"`.  
+- `ts` *(string, ISO‑8601, opcional)* — Timestamp de emisión (UTC).
+
+**Códigos canónicos sugeridos:**
+- `INVALID_PAYLOAD`, `UNSUPPORTED_MEDIA_TYPE`, `UNPROCESSABLE_ENTITY`  
+- `MODEL_NOT_AVAILABLE`, `MODEL_LOAD_FAILED`, `MODEL_TIMEOUT`  
+- `VECTORIZE_ERROR`, `POSTPROCESS_ERROR`  
+- `IO_ERROR`, `INTERNAL_ERROR`
+
+---
+
+## 3. Contrato del sobre (envelope)
+
+Todos los eventos se publican en el bus con:  
+- **`event`** *(string)* — nombre (`prediction.requested|completed|failed`)  
+- **`payload`** *(object)* — JSON conforme a los esquemas anteriores
+
+Ejemplo de publicación (pseudocódigo Python):
+```python
+publicador(event="prediction.completed", payload={
+    "correlation_id": "...",
+    "latencia_ms": 18,
+    "n_items": 1
+})
+```
+> Nota: si se dispone del helper `eventos_prediccion.py`, usar `emit_requested|emit_completed|emit_failed` para estandarizar nombres y shape.
+
+---
+
+## 4. Métricas derivadas sugeridas
+
+- **`prediction_requests_total`** *(counter)* — +1 por `prediction.requested` (labels: `mode`, `family`).  
+- **`prediction_completed_total`** *(counter)* — +1 por `prediction.completed` (labels: `mode`, `family`).  
+- **`prediction_failed_total`** *(counter)* — +1 por `prediction.failed` (labels: `stage`, `error_code`).  
+- **`prediction_latency_ms`** *(histogram)* — observado con `latencia_ms` (labels: `mode`, `family`).  
+- **`prediction_label_distribution`** *(gauge)* — derivada de `distribucion_labels` por ventana.  
+- **`prediction_sentiment_avg`** *(gauge)* — `{pos, neu, neg}` promediados por ventana.
+
+---
+
+## 5. Ejemplos de flujo
+
+### 5.1 Online (1 registro)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant API as /prediccion/online
+    participant M as Servicio de Modelo
+    participant OBS as Bus Observabilidad
+
+    C->>API: POST /prediccion/online {features, comentario}
+    API->>OBS: prediction.requested
+    API->>M: vectorize + predict
+    M-->>API: resultado (label, scores, sentiment)
+    API->>OBS: prediction.completed {latencia_ms, distribuciones}
+    API-->>C: 200 OK {label, confianza, sentiment_prob, ...}
+```
+
+### 5.2 Batch (N registros)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant API as /prediccion/batch
+    participant M as Servicio de Modelo
+    participant OBS as Bus Observabilidad
+
+    C->>API: POST /prediccion/batch {registros[] | archivo}
+    API->>OBS: prediction.requested {mode=batch, n_items=N}
+    API->>M: vectorize + predict (N)
+    M-->>API: resultados agregados
+    API->>OBS: prediction.completed {n_items=N, distribuciones}
+    API-->>C: 200 OK {items[], resumen}
+```
+
+### 5.3 Error (modelo no disponible)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant API as /prediccion/online
+    participant OBS as Bus Observabilidad
+
+    C->>API: POST /prediccion/online {...}
+    API->>OBS: prediction.requested
+    API->>OBS: prediction.failed {error_code=MODEL_NOT_AVAILABLE, stage=predict}
+    API-->>C: 503 Service Unavailable
+```
+
+---
+
+## 6. Buenas prácticas de implementación
+
+- **Generación de `correlation_id`:** si el cliente no lo provee, generarlo al recibir la solicitud. Propagarlo a logs.  
+- **Tiempos:** medir `latencia_ms` del ciclo completo en servidor (excluye red del cliente).  
+- **Batch:** llenar `distribucion_labels` con conteos y `distribucion_sentiment` con promedios por lote.  
+- **Errores:** usar `error_code` estable y documentado; mensajes cortos, sin PII.  
+- **Logs:** el `log_handler` debe registrar toda publicación; no duplicar PII en logs.  
+- **Backpressure:** si el bus está caído, **no** bloquear respuesta al cliente; degradar con logs locales y alerta.
+
+---
+
+## 7. Control de cambios
+
+- **v0.5.0 (draft)** — Definición inicial de `prediction.requested|completed|failed`, contratos de payload y guías de métricas.  
+- **v0.6.0 (planned)** — Ajustes menores tras implementación de Miembro B (campos concretos adicionales, sampling).
+

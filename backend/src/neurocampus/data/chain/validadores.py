@@ -11,7 +11,7 @@ from ..adapters.almacen_adapter import AlmacenAdapter
 # Lectura multi-formato y helpers de DF (con las firmas reales de tus adapters)
 from ..adapters.formato_adapter import read_file            # (fileobj, filename) -> DataFrame/like
 from ..adapters.dataframe_adapter import as_df              # (obj) -> DF normalizado al engine
-from ..chain.validadores import validate
+
 
 import pandas as pd                                         # escritura parquet, manipulación tabular
 

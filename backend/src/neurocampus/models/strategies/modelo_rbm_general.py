@@ -1,12 +1,19 @@
 # backend/src/neurocampus/models/strategies/modelo_rbm_general.py
 # RBM Student "general" con cabeza supervisada para {neg, neu, pos}.
 # - Preprocesa calif_1..calif_10: imputación + escalado a [0,1].
-# - Entrena RBM (CD-k) y cabeza softmax (PyTorch).
+# - (opcional) añade p_neg/p_neu/p_pos como features (hparam: use_text_probs=True).
+# - Entrena RBM (CD-k) y cabeza softmax (PyTorch) con pesos por clase.
 # - Expone predict_proba/predict y save/load.
 #
 # Uso esperado por el pipeline:
 #   strat = RBMGeneral()
-#   strat.setup(data_ref="data/labeled/evaluaciones_2025_teacher.parquet", hparams={...})
+#   strat.setup(data_ref="data/labeled/evaluaciones_2025_beto.parquet", hparams={
+#       "scale_mode": "scale_0_5",
+#       "n_hidden": 64,
+#       "cd_k": 2,
+#       "epochs_rbm": 2,
+#       "use_text_probs": True,   # <- para sumar p_neg/p_neu/p_pos
+#   })
 #   for epoch in range(1, N+1):
 #       loss, metrics = strat.train_step(epoch)
 #   proba = strat.predict_proba(X)   # en tiempo de inferencia
@@ -42,23 +49,31 @@ _INV_LABEL_MAP = {v: k for k, v in _LABEL_MAP.items()}
 _CLASSES = ["neg", "neu", "pos"]
 
 
-def _pick_calif_cols(df: pd.DataFrame, max_n: int = 10) -> List[str]:
-    """Toma calif_1..calif_10 si existen; si no, intenta numéricas sin metadatos."""
+def _pick_calif_cols(df: pd.DataFrame, max_n: int = 10, include_text_probs: bool = False) -> List[str]:
+    """
+    Devuelve columnas de entrada para el Student:
+      - Prioriza calif_1..calif_10
+      - Si no existen, toma numéricas (excluyendo metadatos típicos)
+      - (opcional) añade p_neg/p_neu/p_pos si include_text_probs=True
+    """
     califs = [c for c in df.columns if c.startswith("calif_")]
     if califs:
         # ordenar por índice numérico
-        def _idx(c): 
+        def _idx(c: str):
             try:
                 return int(c.split("_")[1])
             except Exception:
                 return 999
         califs = sorted(califs, key=_idx)[:max_n]
-        return califs
+    else:
+        # Fallback: numéricas excepto metadatos típicos
+        num = df.select_dtypes(include=["number"]).columns.tolist()
+        califs = [c for c in num if c.lower() not in _META_EXCLUDE][:max_n]
 
-    # Fallback: numéricas excepto metadatos típicos
-    num = df.select_dtypes(include=["number"]).columns.tolist()
-    num = [c for c in num if c.lower() not in _META_EXCLUDE]
-    return num[:max_n]
+    if include_text_probs and all(k in df.columns for k in ["p_neg", "p_neu", "p_pos"]):
+        califs = califs + ["p_neg", "p_neu", "p_pos"]
+
+    return califs
 
 
 @dataclass
@@ -243,9 +258,10 @@ class RBMGeneral:
                    "pos": "pos", "positive": "pos", "positivo": "pos"})
         return y.to_numpy()
 
-    def _prepare_xy(self, df: pd.DataFrame, accept_teacher: bool, threshold: float) -> Tuple[np.ndarray, Optional[np.ndarray], List[str]]:
+    def _prepare_xy(self, df: pd.DataFrame, accept_teacher: bool, threshold: float,
+                    include_text_probs: bool = False) -> Tuple[np.ndarray, Optional[np.ndarray], List[str]]:
         # features
-        feat_cols = _pick_calif_cols(df, max_n=10)
+        feat_cols = _pick_calif_cols(df, max_n=10, include_text_probs=include_text_probs)
         X = df[feat_cols].to_numpy(dtype=np.float32)
 
         # labels (opcional, si entrenamos con cabeza)
@@ -270,6 +286,7 @@ class RBMGeneral:
             - lr_rbm (float), lr_head (float), momentum (float), weight_decay (float)
             - seed (int), scale_mode {"minmax","scale_0_5"}
             - accept_teacher (bool), accept_threshold (float)
+            - use_text_probs (bool) -> añade p_neg/p_neu/p_pos como features si existen
         """
         # Hparams
         self.seed = int(hparams.get("seed", 42) or 42)
@@ -286,12 +303,14 @@ class RBMGeneral:
         self.scale_mode   = str(hparams.get("scale_mode", "minmax"))
         accept_teacher    = bool(hparams.get("accept_teacher", True))
         accept_threshold  = float(hparams.get("accept_threshold", 0.80))
+        include_text_probs = bool(hparams.get("use_text_probs", False))
 
         # Data
         df = self._load_df(data_ref) if data_ref else pd.DataFrame(
             {"calif_%d" % (i+1): np.random.rand(256).astype(np.float32) * 5.0 for i in range(10)}
         )
-        X_np, y_np, feat_cols = self._prepare_xy(df, accept_teacher, accept_threshold)
+        X_np, y_np, feat_cols = self._prepare_xy(df, accept_teacher, accept_threshold,
+                                                 include_text_probs=include_text_probs)
 
         # Vectorizer
         self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
@@ -352,15 +371,20 @@ class RBMGeneral:
                     if p.grad is not None:
                         p.data -= self.lr_rbm * p.grad
 
-        # 2) Cabeza supervisada (si hay y)
+        # 2) Cabeza supervisada (si hay y) — pesos por clase (inverso de frecuencia)
         if self.y is not None:
+            counts = torch.bincount(self.y, minlength=3).float()  # [n_neg, n_neu, n_pos]
+            weights = (counts.sum() / (counts + 1e-9))            # inverso de la frecuencia
+            weights = weights / weights.sum() * 3.0               # reescala para estabilidad numérica
+            weights = weights.to(self.device)
+
             self.head.train()
             for xb, yb in self._iter_minibatches(self.X, self.y):
                 with torch.no_grad():
                     H = self.rbm.hidden_probs(xb)
                 self.opt_head.zero_grad(set_to_none=True)
                 logits = self.head(H)
-                loss = F.cross_entropy(logits, yb)
+                loss = F.cross_entropy(logits, yb, weight=weights)
                 loss.backward()
                 self.opt_head.step()
                 cls_losses.append(float(loss.detach().cpu()))

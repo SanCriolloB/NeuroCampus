@@ -49,7 +49,7 @@ def main():
     df["_texto_lemmas"] = tokenizar_y_lematizar_batch(df["_texto_clean"].tolist(), batch_size=512)
 
     # 3) BETO
-    if args.beto-mode == "simple":
+    if args.beto_mode == "simple":
         # --- MODO SIMPLE (como el notebook) ---
         sentiment_analyzer = pipeline("sentiment-analysis", model=args.beto_model)
         df['Sugerencias_lemmatizadas'] = df['_texto_lemmas'].fillna('').astype(str)

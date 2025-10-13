@@ -1,165 +1,450 @@
 # backend/src/neurocampus/models/strategies/modelo_rbm_general.py
-# Implementación mínima de una RBM binaria con CD-k usando PyTorch.
-# Mantiene el contrato con PlantillaEntrenamiento.
+# RBM Student "general" con cabeza supervisada para {neg, neu, pos}.
+# - Preprocesa calif_1..calif_10: imputación + escalado a [0,1].
+# - Entrena RBM (CD-k) y cabeza softmax (PyTorch).
+# - Expone predict_proba/predict y save/load.
+#
+# Uso esperado por el pipeline:
+#   strat = RBMGeneral()
+#   strat.setup(data_ref="data/labeled/evaluaciones_2025_teacher.parquet", hparams={...})
+#   for epoch in range(1, N+1):
+#       loss, metrics = strat.train_step(epoch)
+#   proba = strat.predict_proba(X)   # en tiempo de inferencia
+#   yhat  = strat.predict(X)
 
 from __future__ import annotations
 import os
-import time
+import json
 import math
-import torch
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Tuple, Optional, List
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Tuple, Optional
+import torch
+from torch import nn, Tensor
+from torch.nn import functional as F
 
-Tensor = torch.Tensor
 
-def _resolve_path(ref: Optional[str]) -> Optional[str]:
-    if ref is None:
-        return None
-    if ref.startswith("localfs://"):
-        return ref.replace("localfs://", "", 1)
-    return ref  # asume ruta local
+# -------------------------
+# Utils de preprocesamiento
+# -------------------------
 
-def _load_matrix(path: Optional[str]) -> Optional[np.ndarray]:
-    if path is None:
-        return None
-    p = _resolve_path(path)
-    if p is None or not os.path.exists(p):
-        return None
-    # Soporta csv/xlsx/parquet básico (suficiente para smoke tests Día 4)
-    if p.endswith(".csv"):
-        df = pd.read_csv(p)
-    elif p.endswith(".xlsx"):
-        df = pd.read_excel(p)
-    elif p.endswith(".parquet"):
-        df = pd.read_parquet(p)
-    else:
-        df = pd.read_csv(p)  # fallback
-    # Selección naive: columnas numéricas → matriz [0,1] normalizada
-    num = df.select_dtypes(include=["number"])
-    if num.empty:
-        return None
-    # Normaliza a [0,1] (si las preguntas van 0..50 esto cuadra con el plan)
-    arr = num.to_numpy(dtype=np.float32)
-    arr = (arr - np.nanmin(arr, axis=0)) / (np.nanmax(arr, axis=0) - np.nanmin(arr, axis=0) + 1e-9)
-    arr = np.nan_to_num(arr, nan=0.0)
-    return arr
+_META_EXCLUDE = {
+    "id", "codigo", "codigo_materia", "codigo materia", "materia", "asignatura",
+    "grupo", "periodo", "semestre", "docente", "profesor", "fecha"
+}
 
-class RBM:
-    def __init__(self, n_visible: int, n_hidden: int, lr: float, momentum: float, weight_decay: float, cd_k: int, seed: int):
-        g = torch.Generator().manual_seed(seed)
-        self.n_visible = n_visible
-        self.n_hidden = n_hidden
-        self.W = torch.randn(n_visible, n_hidden, generator=g) * 0.01
-        self.b_v = torch.zeros(n_visible)
-        self.b_h = torch.zeros(n_hidden)
-        self.W_m = torch.zeros_like(self.W)  # momentum terms
-        self.bv_m = torch.zeros_like(self.b_v)
-        self.bh_m = torch.zeros_like(self.b_h)
-        self.lr = lr
-        self.momentum = momentum
-        self.weight_decay = weight_decay
-        self.cd_k = cd_k
+_LABEL_MAP = {"neg": 0, "neu": 1, "pos": 2}
+_INV_LABEL_MAP = {v: k for k, v in _LABEL_MAP.items()}
+_CLASSES = ["neg", "neu", "pos"]
 
-    def _sigmoid(self, x: Tensor) -> Tensor:
+
+def _pick_calif_cols(df: pd.DataFrame, max_n: int = 10) -> List[str]:
+    """Toma calif_1..calif_10 si existen; si no, intenta numéricas sin metadatos."""
+    califs = [c for c in df.columns if c.startswith("calif_")]
+    if califs:
+        # ordenar por índice numérico
+        def _idx(c): 
+            try:
+                return int(c.split("_")[1])
+            except Exception:
+                return 999
+        califs = sorted(califs, key=_idx)[:max_n]
+        return califs
+
+    # Fallback: numéricas excepto metadatos típicos
+    num = df.select_dtypes(include=["number"]).columns.tolist()
+    num = [c for c in num if c.lower() not in _META_EXCLUDE]
+    return num[:max_n]
+
+
+@dataclass
+class _Vectorizer:
+    """Imputación y escalado a [0,1]. Guarda stats para inferencia."""
+    mean_: Optional[np.ndarray] = None
+    min_: Optional[np.ndarray] = None
+    max_: Optional[np.ndarray] = None
+    mode: str = "minmax"  # "minmax" o "scale_0_5"
+
+    def fit(self, X: np.ndarray, mode: str = "minmax") -> "_Vectorizer":
+        self.mode = mode
+        # imputación por media
+        self.mean_ = np.nanmean(X, axis=0)
+        if self.mode == "scale_0_5":
+            self.min_ = np.zeros(X.shape[1], dtype=np.float32)
+            self.max_ = np.ones(X.shape[1], dtype=np.float32) * 5.0
+        else:
+            self.min_ = np.nanmin(X, axis=0)
+            self.max_ = np.nanmax(X, axis=0)
+        # fallback por si hay cols constantes
+        self.max_ = np.where((self.max_ - self.min_) < 1e-9, self.min_ + 1.0, self.max_)
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        X = X.astype(np.float32, copy=False)
+        # imputación
+        X = np.where(np.isnan(X), self.mean_[None, :], X)
+        if self.mode == "scale_0_5":
+            X = (X - 0.0) / 5.0
+        else:
+            X = (X - self.min_[None, :]) / (self.max_[None, :] - self.min_[None, :])
+        X = np.clip(X, 0.0, 1.0)
+        return X
+
+    def fit_transform(self, X: np.ndarray, mode: str = "minmax") -> np.ndarray:
+        return self.fit(X, mode=mode).transform(X)
+
+    # persistencia
+    def to_dict(self) -> Dict:
+        return {
+            "mean_": None if self.mean_ is None else self.mean_.tolist(),
+            "min_":  None if self.min_  is None else self.min_.tolist(),
+            "max_":  None if self.max_  is None else self.max_.tolist(),
+            "mode": self.mode,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "_Vectorizer":
+        v = cls()
+        v.mean_ = None if d["mean_"] is None else np.array(d["mean_"], dtype=np.float32)
+        v.min_  = None if d["min_"]  is None else np.array(d["min_"],  dtype=np.float32)
+        v.max_  = None if d["max_"]  is None else np.array(d["max_"],  dtype=np.float32)
+        v.mode  = d.get("mode", "minmax")
+        return v
+
+
+# -------------
+# Núcleo de RBM
+# -------------
+
+class _RBM(nn.Module):
+    """RBM Bernoulli-Bernoulli con CD-k (simple y suficiente para 10 calificaciones escaladas a [0,1])."""
+    def __init__(self, n_visible: int, n_hidden: int, cd_k: int = 1, seed: int = 42):
+        super().__init__()
+        g = torch.Generator().manual_seed(int(seed))
+        self.W   = nn.Parameter(torch.randn(n_visible, n_hidden, generator=g) * 0.01)
+        self.b_v = nn.Parameter(torch.zeros(n_visible))
+        self.b_h = nn.Parameter(torch.zeros(n_hidden))
+        self.cd_k = int(cd_k)
+
+    @staticmethod
+    def _sigmoid(x: Tensor) -> Tensor:
         return torch.sigmoid(x)
 
-    def _sample_h(self, v: Tensor) -> Tuple[Tensor, Tensor]:
+    def sample_h(self, v: Tensor) -> Tuple[Tensor, Tensor]:
         p_h = self._sigmoid(v @ self.W + self.b_h)
         h = torch.bernoulli(p_h)
         return p_h, h
 
-    def _sample_v(self, h: Tensor) -> Tuple[Tensor, Tensor]:
-        p_v = self._sigmoid(h @ self.W.T + self.b_v)
+    def sample_v(self, h: Tensor) -> Tuple[Tensor, Tensor]:
+        p_v = self._sigmoid(h @ self.W.t() + self.b_v)
         v = torch.bernoulli(p_v)
         return p_v, v
 
-    def step(self, v0: Tensor) -> Dict[str, float]:
+    def cd_step(self, v0: Tensor) -> Dict[str, float]:
         # Positive phase
-        ph0, h0 = self._sample_h(v0)
+        ph0, h0 = self.sample_h(v0)
 
-        # Gibbs sampling k pasos
-        vk = v0.clone()
-        hk = h0
+        # k steps Gibbs
+        vk, hk, pvk, phk = v0, h0, None, None
         for _ in range(self.cd_k):
-            pvk, vk = self._sample_v(hk)
-            phk, hk = self._sample_h(vk)
+            pvk, vk = self.sample_v(hk)
+            phk, hk = self.sample_h(vk)
 
-        # Gradientes (CD-k)
-        pos_grad = v0.T @ ph0
-        neg_grad = vk.T @ phk
-
-        # Recon error (MSE entre v0 y prob. reconstr. pvk)
-        recon_error = torch.mean((v0 - pvk) ** 2).item()
-
-        # Actualizaciones con momentum + weight decay
-        dW = (pos_grad - neg_grad) / v0.shape[0] - self.weight_decay * self.W
+        # Gradientes CD-k
+        pos = v0.t() @ ph0
+        neg = vk.t() @ phk
+        dW  = (pos - neg) / v0.shape[0]
         dbv = torch.mean(v0 - pvk, dim=0)
         dbh = torch.mean(ph0 - phk, dim=0)
 
-        self.W_m = self.momentum * self.W_m + self.lr * dW
-        self.bv_m = self.momentum * self.bv_m + self.lr * dbv
-        self.bh_m = self.momentum * self.bh_m + self.lr * dbh
+        # Recon error
+        recon = torch.mean((v0 - pvk) ** 2).item()
 
-        self.W += self.W_m
-        self.b_v += self.bv_m
-        self.b_h += self.bh_m
+        # Aplicar
+        self.W.grad  = -dW
+        self.b_v.grad = -dbv
+        self.b_h.grad = -dbh
 
-        # Grad norm (para monitoreo)
-        grad_norm = torch.linalg.vector_norm(dW).item()
+        grad_norm = torch.linalg.vector_norm(dW.detach()).item()
+        return {"recon_error": recon, "grad_norm": grad_norm}
 
-        return {"loss": recon_error, "recon_error": recon_error, "grad_norm": grad_norm}
+    def hidden_probs(self, v: Tensor) -> Tensor:
+        return self._sigmoid(v @ self.W + self.b_h)
+
+
+# ----------------------------
+# Student: RBM + cabeza softmax
+# ----------------------------
 
 class RBMGeneral:
-    """Estrategia RBM 'general' — binaria, CD-k, contrato con PlantillaEntrenamiento."""
-    def __init__(self):
-        self.rbm: Optional[RBM] = None
-        self.data: Optional[Tensor] = None
+    """Estrategia RBM 'general' para el Student."""
+    def __init__(self) -> None:
+        # Objetos que se inicializan en setup()
+        self.device: str = "cpu"
+        self.vec: _Vectorizer = _Vectorizer()
+        self.rbm: Optional[_RBM] = None
+        self.head: Optional[nn.Module] = None
+
+        # Datos en torch
+        self.X: Optional[Tensor] = None
+        self.y: Optional[Tensor] = None
+
+        # Hparams
         self.batch_size: int = 64
+        self.lr_rbm: float = 1e-2
+        self.lr_head: float = 1e-2
+        self.momentum: float = 0.5
+        self.weight_decay: float = 0.0
+        self.cd_k: int = 1
+        self.epochs_rbm: int = 1   # pasos RBM por época
+        self.seed: int = 42
+        self.scale_mode: str = "minmax"  # o "scale_0_5"
+
+        # Optimizadores
+        self.opt_rbm: Optional[torch.optim.Optimizer] = None
+        self.opt_head: Optional[torch.optim.Optimizer] = None
+
+        # Estado de entrenamiento
+        self._epoch: int = 0
+        self.classes_: List[str] = _CLASSES
+
+    # ---------- helpers de IO ----------
+
+    def _load_df(self, ref: str) -> pd.DataFrame:
+        p = str(ref)
+        if p.endswith(".parquet"):
+            return pd.read_parquet(p)
+        return pd.read_csv(p)
+
+    def _resolve_labels(self, df: pd.DataFrame, require_accept: bool = False, threshold: float = 0.80) -> Optional[np.ndarray]:
+        # humano > teacher (cuando exista)
+        if "y_sentimiento" in df.columns:
+            y = df["y_sentimiento"].astype(str).str.lower()
+        elif "y" in df.columns:
+            y = df["y"].astype(str).str.lower()
+        elif "sentiment_label_teacher" in df.columns:
+            y = df["sentiment_label_teacher"].astype(str).str.lower()
+            if require_accept:
+                if "accepted_by_teacher" in df.columns:
+                    mask = df["accepted_by_teacher"].fillna(0).astype(int) == 1
+                    y = y.where(mask)
+                elif "sentiment_conf" in df.columns:
+                    mask = df["sentiment_conf"].fillna(0.0) >= float(threshold)
+                    y = y.where(mask)
+        else:
+            return None
+
+        y = y.map({"neg": "neg", "negative": "neg", "negativo": "neg",
+                   "neu": "neu", "neutral": "neu",
+                   "pos": "pos", "positive": "pos", "positivo": "pos"})
+        return y.to_numpy()
+
+    def _prepare_xy(self, df: pd.DataFrame, accept_teacher: bool, threshold: float) -> Tuple[np.ndarray, Optional[np.ndarray], List[str]]:
+        # features
+        feat_cols = _pick_calif_cols(df, max_n=10)
+        X = df[feat_cols].to_numpy(dtype=np.float32)
+
+        # labels (opcional, si entrenamos con cabeza)
+        y_raw = self._resolve_labels(df, require_accept=accept_teacher, threshold=threshold)
+        y = None
+        if y_raw is not None:
+            y = np.array([_LABEL_MAP[l] if isinstance(l, str) and l in _LABEL_MAP else -1 for l in y_raw], dtype=np.int64)
+            # filtrar -1 (sin etiqueta)
+            mask = y >= 0
+            X = X[mask]
+            y = y[mask]
+
+        return X, y, feat_cols
+
+    # ---------- API pública esperada ----------
 
     def setup(self, data_ref: Optional[str], hparams: Dict) -> None:
-        seed = int(hparams.get("seed", 42) or 42)
-        np.random.seed(seed); torch.manual_seed(seed)
-        arr = _load_matrix(data_ref)
-        if arr is None:
-            # Dataset mínimo aleatorio (solo para no fallar si no hay data)
-            arr = np.clip(np.random.rand(256, int(hparams.get("n_visible") or 16)).astype(np.float32), 0, 1)
-        n_visible = int(hparams.get("n_visible") or arr.shape[1])
-        n_hidden = int(hparams.get("n_hidden", 32))
-        lr = float(hparams.get("lr", 0.01))
-        self.batch_size = int(hparams.get("batch_size", 64))
-        cd_k = int(hparams.get("cd_k", 1))
-        momentum = float(hparams.get("momentum", 0.5))
-        weight_decay = float(hparams.get("weight_decay", 0.0))
-        self.data = torch.from_numpy(arr)
-        self.rbm = RBM(n_visible, n_hidden, lr, momentum, weight_decay, cd_k, seed)
+        """
+        data_ref: ruta a parquet/csv con columnas calif_1..10 y (opcional) etiquetas.
+        hparams: dict con hiperparámetros. Soportados:
+            - n_hidden (int), cd_k (int), batch_size (int)
+            - lr_rbm (float), lr_head (float), momentum (float), weight_decay (float)
+            - seed (int), scale_mode {"minmax","scale_0_5"}
+            - accept_teacher (bool), accept_threshold (float)
+        """
+        # Hparams
+        self.seed = int(hparams.get("seed", 42) or 42)
+        np.random.seed(self.seed); torch.manual_seed(self.seed)
+        self.device = "cuda" if torch.cuda.is_available() and bool(hparams.get("use_cuda", False)) else "cpu"
 
-    def _iter_minibatches(self) -> Tensor:
-        assert self.data is not None
-        idx = torch.randperm(self.data.shape[0])
+        self.batch_size   = int(hparams.get("batch_size", 64))
+        self.cd_k         = int(hparams.get("cd_k", 1))
+        self.lr_rbm       = float(hparams.get("lr_rbm", 1e-2))
+        self.lr_head      = float(hparams.get("lr_head", 1e-2))
+        self.momentum     = float(hparams.get("momentum", 0.5))
+        self.weight_decay = float(hparams.get("weight_decay", 0.0))
+        self.epochs_rbm   = int(hparams.get("epochs_rbm", 1))
+        self.scale_mode   = str(hparams.get("scale_mode", "minmax"))
+        accept_teacher    = bool(hparams.get("accept_teacher", True))
+        accept_threshold  = float(hparams.get("accept_threshold", 0.80))
+
+        # Data
+        df = self._load_df(data_ref) if data_ref else pd.DataFrame(
+            {"calif_%d" % (i+1): np.random.rand(256).astype(np.float32) * 5.0 for i in range(10)}
+        )
+        X_np, y_np, feat_cols = self._prepare_xy(df, accept_teacher, accept_threshold)
+
+        # Vectorizer
+        self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
+        X_np = self.vec.transform(X_np)
+
+        # Tensores
+        X_t = torch.from_numpy(X_np).to(self.device)
+        self.X = X_t
+
+        # RBM
+        n_visible = X_np.shape[1]
+        n_hidden = int(hparams.get("n_hidden", 32))
+        self.rbm = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
+
+        # Optimizador RBM (SGD con momentum)
+        self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum, weight_decay=self.weight_decay)
+
+        # Cabeza supervisada (si hay y)
+        self.head = nn.Linear(n_hidden, len(_CLASSES)).to(self.device)
+        self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+
+        if y_np is not None:
+            self.y = torch.from_numpy(y_np).to(self.device)
+        else:
+            self.y = None
+
+        self._epoch = 0
+
+    def _iter_minibatches(self, X: Tensor, y: Optional[Tensor]) -> Tuple[Tensor, Optional[Tensor]]:
+        idx = torch.randperm(X.shape[0], device=X.device)
         for start in range(0, len(idx), self.batch_size):
-            batch_idx = idx[start:start + self.batch_size]
-            yield self.data[batch_idx]
+            sel = idx[start:start + self.batch_size]
+            yield X[sel], (None if y is None else y[sel])
 
     def train_step(self, epoch: int) -> Tuple[float, Dict]:
-        """Ejecuta 1 época (sobre todos los minibatches). Devuelve (loss_promedio, metrics)."""
-        assert self.rbm is not None
-        t0 = time.perf_counter()
-        losses = []
-        grad_norms = []
-        for v0 in self._iter_minibatches():
-            metrics = self.rbm.step(v0)
-            losses.append(metrics["loss"])
-            grad_norms.append(metrics["grad_norm"])
-        dt = (time.perf_counter() - t0) * 1000.0
-        loss_mean = float(np.mean(losses))
-        grad_mean = float(np.mean(grad_norms))
-        return loss_mean, {
-            "recon_error": loss_mean,
-            "grad_norm": grad_mean,
-            "time_epoch_ms": dt
+        """
+        Ejecuta 1 época:
+          - Varias pasadas CD-k sobre RBM (epochs_rbm).
+          - Si hay etiquetas, entrena la cabeza softmax con las features ocultas.
+        Devuelve (loss_promedio, metrics).
+        """
+        assert self.rbm is not None and self.opt_rbm is not None
+        self._epoch = epoch
+
+        rbm_losses, rbm_grad = [], []
+        cls_losses = []
+
+        # 1) RBM (reconstrucción)
+        self.rbm.train()
+        for _ in range(max(1, self.epochs_rbm)):
+            for xb, _ in self._iter_minibatches(self.X, self.y):
+                self.opt_rbm.zero_grad(set_to_none=True)
+                m = self.rbm.cd_step(xb)
+                rbm_losses.append(m["recon_error"])
+                rbm_grad.append(m["grad_norm"])
+                # step
+                for p in self.rbm.parameters():
+                    if p.grad is not None:
+                        p.data -= self.lr_rbm * p.grad
+
+        # 2) Cabeza supervisada (si hay y)
+        if self.y is not None:
+            self.head.train()
+            for xb, yb in self._iter_minibatches(self.X, self.y):
+                with torch.no_grad():
+                    H = self.rbm.hidden_probs(xb)
+                self.opt_head.zero_grad(set_to_none=True)
+                logits = self.head(H)
+                loss = F.cross_entropy(logits, yb)
+                loss.backward()
+                self.opt_head.step()
+                cls_losses.append(float(loss.detach().cpu()))
+
+        # Métricas
+        recon = float(np.mean(rbm_losses)) if rbm_losses else 0.0
+        gmean = float(np.mean(rbm_grad)) if rbm_grad else 0.0
+        closs = float(np.mean(cls_losses)) if cls_losses else 0.0
+
+        metrics = {
+            "epoch": float(epoch),
+            "recon_error": recon,
+            "rbm_grad_norm": gmean,
+            "cls_loss": closs,
+            "time_epoch_ms": (time.perf_counter() * 0)  # placeholder si no medimos
         }
 
-# En la versión 'restringida' usamos la misma implementación base
-class RBMRestringida(RBMGeneral):
-    pass
+        return (recon + closs), metrics
+
+    # ---------- Inferencia ----------
+
+    def _transform_np(self, X_np: np.ndarray) -> Tensor:
+        Xs = self.vec.transform(X_np)
+        Xt = torch.from_numpy(Xs.astype(np.float32, copy=False)).to(self.device)
+        with torch.no_grad():
+            H = self.rbm.hidden_probs(Xt)
+        return H
+
+    def predict_proba(self, X_np: np.ndarray) -> np.ndarray:
+        """Devuelve probabilidades en orden [neg, neu, pos]."""
+        self.rbm.eval(); self.head.eval()
+        H = self._transform_np(X_np)
+        with torch.no_grad():
+            proba = F.softmax(self.head(H), dim=1).cpu().numpy()
+        return proba
+
+    def predict(self, X_np: np.ndarray) -> List[str]:
+        proba = self.predict_proba(X_np)
+        idx = proba.argmax(axis=1)
+        return [_INV_LABEL_MAP[i] for i in idx]
+
+    # ---------- Persistencia ----------
+
+    def save(self, out_dir: str) -> None:
+        """Guarda vectorizer.json, rbm.pt y head.pt en out_dir."""
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        # vectorizer
+        with open(os.path.join(out_dir, "vectorizer.json"), "w", encoding="utf-8") as f:
+            json.dump(self.vec.to_dict(), f, ensure_ascii=False, indent=2)
+        # rbm y head
+        torch.save({"state_dict": self.rbm.state_dict(),
+                    "n_visible": self.rbm.W.shape[0],
+                    "n_hidden": self.rbm.W.shape[1],
+                    "cd_k": self.rbm.cd_k},
+                   os.path.join(out_dir, "rbm.pt"))
+        torch.save({"state_dict": self.head.state_dict(),
+                    "classes": self.classes_},
+                   os.path.join(out_dir, "head.pt"))
+
+    @classmethod
+    def load(cls, in_dir: str, device: Optional[str] = None) -> "RBMGeneral":
+        """Restaura un modelo guardado con save()."""
+        obj = cls()
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        obj.device = device
+
+        # vectorizer
+        with open(os.path.join(in_dir, "vectorizer.json"), "r", encoding="utf-8") as f:
+            obj.vec = _Vectorizer.from_dict(json.load(f))
+
+        # rbm
+        rbm_ckpt = torch.load(os.path.join(in_dir, "rbm.pt"), map_location=device)
+        obj.rbm = _RBM(n_visible=rbm_ckpt["n_visible"], n_hidden=rbm_ckpt["n_hidden"], cd_k=rbm_ckpt.get("cd_k", 1))
+        obj.rbm.load_state_dict(rbm_ckpt["state_dict"])
+        obj.rbm.to(device)
+        obj.opt_rbm = torch.optim.SGD(obj.rbm.parameters(), lr=1e-6)  # dummy
+
+        # head
+        head_ckpt = torch.load(os.path.join(in_dir, "head.pt"), map_location=device)
+        obj.head = nn.Linear(rbm_ckpt["n_hidden"], len(_CLASSES)).to(device)
+        obj.head.load_state_dict(head_ckpt["state_dict"])
+        obj.opt_head = torch.optim.Adam(obj.head.parameters(), lr=1e-6)  # dummy
+        obj.classes_ = head_ckpt.get("classes", _CLASSES)
+
+        obj.X = None; obj.y = None
+        obj._epoch = 0
+        return obj

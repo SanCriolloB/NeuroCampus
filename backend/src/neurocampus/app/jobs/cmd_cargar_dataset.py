@@ -52,6 +52,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="src", required=True, help="Ruta CSV de entrada (p.ej., examples/Evaluacion.csv)")
     ap.add_argument("--out", dest="dst", required=True, help="Ruta parquet de salida (p.ej., data/processed/evaluaciones_2025.parquet)")
+    # Mini-ajuste: preservar metadatos como texto
+    ap.add_argument("--meta-list", dest="meta_list", default=None,
+                    help="Lista separada por coma de columnas a preservar como metadatos (ej: 'codigo_materia,docente,grupo,periodo')")
     args = ap.parse_args()
 
     df, read_kw = _try_read_csv(args.src)
@@ -85,6 +88,16 @@ def main():
             out["y_sentimiento"] = df[cand].astype(str)
             break
 
+    # Mini-ajuste: preservar metadatos (como texto) si se pasan por --meta-list
+    meta_kept = []
+    if args.meta_list:
+        wanted = [c.strip() for c in args.meta_list.split(",") if c.strip()]
+        for m in wanted:
+            if m in df.columns:
+                # Fuerza a texto para evitar que entren como features numéricos
+                out[m] = df[m].astype(str)
+                meta_kept.append(m)
+
     # Guardar parquet
     Path(args.dst).parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(args.dst, index=False)
@@ -95,7 +108,9 @@ def main():
         "text_col": text_col,
         "n_rows": len(out),
         "n_calif_cols": len(num_cols_sorted),
-        "has_y_sentimiento": "y_sentimiento" in out.columns
+        "has_y_sentimiento": "y_sentimiento" in out.columns,
+        "meta_kept": meta_kept,
+        "out_cols": out.columns.tolist()
     })
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@
 #    * probs (recomendado): p_neg/p_neu/p_pos + gating (threshold, margin, neu_min)
 #    * simple: replica pipeline del notebook y etiqueta top1 con score
 # - Deja 'comentario' estandarizado y columnas para el Student (RBM).
+# - PARCHE MÍNIMO: trata el texto como opcional (has_text), ejecuta BETO solo donde hay texto suficiente
+#   y reporta cobertura de texto.
 
 import argparse, json, time, re
 from pathlib import Path
@@ -38,6 +40,8 @@ def main():
     ap.add_argument("--neu-min", type=float, default=0.75)
     ap.add_argument("--beto-mode", choices=["probs","simple"], default="probs",
                     help="probs: p_neg/p_neu/p_pos + gating; simple: pipeline tipo notebook (top1 + score)")
+    ap.add_argument("--min-tokens", type=int, default=3,
+                    help="Mínimo de tokens lematizados para considerar que hay texto. Default=3")
     args = ap.parse_args()
 
     # 1) Cargar datos
@@ -48,32 +52,59 @@ def main():
     df["_texto_clean"]  = df[text_col].astype(str).map(limpiar_texto)
     df["_texto_lemmas"] = tokenizar_y_lematizar_batch(df["_texto_clean"].tolist(), batch_size=512)
 
-    # 3) BETO
+    # 2.1) Cobertura de texto: has_text si hay al menos min_tokens
+    toklen = df["_texto_lemmas"].fillna("").str.split().map(len)
+    df["has_text"] = (toklen >= args.min_tokens).astype(int)
+    mask = df["has_text"] == 1
+
+    # Inicializa columnas de salida comunes
+    df["p_neg"], df["p_neu"], df["p_pos"] = np.nan, np.nan, np.nan
+    df["sentiment_label_teacher"] = pd.NA
+    df["sentiment_conf"] = np.nan
+    df["accepted_by_teacher"] = 0
+
+    # 3) BETO (solo sobre filas con texto)
     if args.beto_mode == "simple":
         # --- MODO SIMPLE (como el notebook) ---
-        sentiment_analyzer = pipeline("sentiment-analysis", model=args.beto_model)
-        df['Sugerencias_lemmatizadas'] = df['_texto_lemmas'].fillna('').astype(str)
-        results = sentiment_analyzer(df['Sugerencias_lemmatizadas'].tolist())
-        # etiqueta top1 + score
-        df['sentimiento'] = [r['label'] for r in results]
-        lbl_map = {"NEG": "neg", "NEU": "neu", "POS": "pos",
-                   "negative": "neg", "neutral": "neu", "positive": "pos"}
-        df["sentiment_label_teacher"] = df["sentimiento"].map(lbl_map).fillna(df["sentimiento"].str.lower())
-        df["sentiment_conf"] = [r.get("score", 1.0) for r in results]
-        df["accepted_by_teacher"] = (df["sentiment_conf"] >= args.threshold).astype(int)
-        # columnas p_* quedan NaN (no hay probs completas en modo simple)
-        df["p_neg"], df["p_neu"], df["p_pos"] = np.nan, np.nan, np.nan
+        if mask.any():
+            sentiment_analyzer = pipeline("sentiment-analysis", model=args.beto_model)
+            # Por compatibilidad con el notebook
+            df['Sugerencias_lemmatizadas'] = df['_texto_lemmas'].fillna('').astype(str)
+            results = sentiment_analyzer(df.loc[mask, 'Sugerencias_lemmatizadas'].tolist())
+
+            # etiqueta top1 + score solo para las filas con texto
+            lbl_map = {"NEG": "neg", "NEU": "neu", "POS": "pos",
+                       "negative": "neg", "neutral": "neu", "positive": "pos"}
+            labels_simple = [lbl_map.get(r['label'], str(r['label']).lower()) for r in results]
+            conf_simple = [r.get("score", 1.0) for r in results]
+
+            # Asignar
+            df.loc[mask, "sentiment_label_teacher"] = labels_simple
+            df.loc[mask, "sentiment_conf"] = conf_simple
+            df.loc[mask, "accepted_by_teacher"] = (df.loc[mask, "sentiment_conf"] >= args.threshold).astype(int)
+        # p_* quedan NaN en modo simple (no hay probs completas)
+
     else:
         # --- MODO PROBS (recomendado) ---
-        P = run_transformer(df["_texto_lemmas"].astype(str).tolist(), args.beto_model, batch_size=args.batch_size)
-        df["p_neg"], df["p_neu"], df["p_pos"] = P[:,0], P[:,1], P[:,2]
-        idx = P.argmax(axis=1)
-        labels = np.array(["neg","neu","pos"], dtype=object)[idx]
-        conf = P.max(axis=1)
-        df["sentiment_label_teacher"] = labels
-        df["sentiment_conf"] = conf
-        acc = accept_mask(P, labels, threshold=args.threshold, margin=args.margin, neu_min=args.neu_min)
-        df["accepted_by_teacher"] = acc.astype(int)
+        if mask.any():
+            P_text = run_transformer(df.loc[mask, "_texto_lemmas"].astype(str).tolist(),
+                                     args.beto_model, batch_size=args.batch_size)
+            # asignar probs solo a las filas con texto
+            df.loc[mask, "p_neg"] = P_text[:, 0]
+            df.loc[mask, "p_neu"] = P_text[:, 1]
+            df.loc[mask, "p_pos"] = P_text[:, 2]
+
+            # top-1 y confianza (solo donde hay texto)
+            idx = P_text.argmax(axis=1)
+            labels = np.array(["neg","neu","pos"], dtype=object)[idx]
+            conf = P_text.max(axis=1)
+
+            df.loc[mask, "sentiment_label_teacher"] = labels
+            df.loc[mask, "sentiment_conf"] = conf
+
+            # aceptación solo donde hay texto
+            acc = accept_mask(P_text, labels, threshold=args.threshold, margin=args.margin, neu_min=args.neu_min)
+            df.loc[mask, "accepted_by_teacher"] = acc.astype(int)
 
     # 4) Asegurar columna 'comentario' (trazabilidad humana)
     if "comentario" not in df.columns:
@@ -94,13 +125,16 @@ def main():
         "threshold": float(args.threshold),
         "margin": float(args.margin),
         "neu_min": float(args.neu_min),
-        "text_col": text_col
+        "text_col": text_col,
+        "text_coverage": float(df["has_text"].mean())
     }
     with open(args.dst + ".meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    print({"out": args.dst, "n_rows": meta["n_rows"],
+    print({"out": args.dst,
+           "n_rows": meta["n_rows"],
            "accept_rate": float(df["accepted_by_teacher"].fillna(0).astype(int).mean()),
+           "text_coverage": meta["text_coverage"],
            "text_col": text_col})
 
 if __name__ == "__main__":

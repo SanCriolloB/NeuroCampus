@@ -7,11 +7,19 @@ Responsabilidades:
 - Endpoints globales mínimos (/health)
 - Habilitar CORS para permitir acceso desde el frontend (Vite, puerto 5173)
 - Conectar el destino de observabilidad (logging) para eventos training.*
+- Inyectar middleware de Correlation-Id (X-Correlation-Id) para trazabilidad
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+
+# NEW: configuración de logging (dictConfig)
+from neurocampus.app.logging_config import setup_logging
+
+# NEW: middleware de trazabilidad y LogRecordFactory contextual
+from neurocampus.observability.middleware_correlation import CorrelationIdMiddleware
+from neurocampus.observability.logging_context import install_logrecord_factory
 
 # Routers del dominio
 from .routers import datos, jobs, modelos
@@ -31,6 +39,11 @@ app.add_middleware(
     allow_methods=["*"],            # importante: permite OPTIONS del preflight
     allow_headers=["*"],
 )
+
+# --- Correlation-Id Middleware (trazabilidad end-to-end) ---
+# Agrega/propaga X-Correlation-Id y lo expone en request.state.correlation_id
+app.add_middleware(CorrelationIdMiddleware)
+
 
 def _wire_observability_safe() -> None:
     """
@@ -56,16 +69,25 @@ def _wire_observability_safe() -> None:
 @app.on_event("startup")
 def _startup_observability_wiring() -> None:
     """
-    Conecta una única vez el handler de logging al bus de eventos.
-    De esta forma, los eventos training.* emitidos por la plantilla de entrenamiento
-    quedarán registrados en logs sin necesidad de tocar el resto del código.
+    - Configura logging (dictConfig con filtro cid)
+    - Instala LogRecordFactory que inyecta correlation_id desde ContextVar
+    - Conecta el destino de logging para eventos training.*
     """
+    # 1) dictConfig con filtro cid
+    setup_logging()
+
+    # 2) LogRecordFactory que añade correlation_id automáticamente
+    install_logrecord_factory()
+
+    # 3) Wiring de observabilidad existente
     _wire_observability_safe()
+
 
 @app.get("/health")
 def health() -> dict:
     """Endpoint de salud: permite saber si la API está arriba."""
     return {"status": "ok"}
+
 
 # Registro de routers bajo prefijos. Cada router agrupa rutas por contexto
 # y define su propia etiqueta (tags) para la documentación automática.

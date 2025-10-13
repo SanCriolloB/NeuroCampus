@@ -7,11 +7,16 @@ Responsabilidades:
 - Endpoints globales mínimos (/health)
 - Habilitar CORS para permitir acceso desde el frontend (Vite, puerto 5173)
 - Conectar el destino de observabilidad (logging) para eventos training.*
+- Inyectar middleware de Correlation-Id (X-Correlation-Id) para trazabilidad
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+
+# Middleware de trazabilidad (Correlation-Id)
+# Import absoluto (asumiendo --app-dir backend/src al ejecutar uvicorn)
+from neurocampus.observability.middleware_correlation import CorrelationIdMiddleware
 
 # Routers del dominio
 from .routers import datos, jobs, modelos
@@ -31,6 +36,11 @@ app.add_middleware(
     allow_methods=["*"],            # importante: permite OPTIONS del preflight
     allow_headers=["*"],
 )
+
+# --- Correlation-Id Middleware (trazabilidad end-to-end) ---
+# Agrega/propaga X-Correlation-Id y lo expone en request.state.correlation_id
+app.add_middleware(CorrelationIdMiddleware)
+
 
 def _wire_observability_safe() -> None:
     """
@@ -62,10 +72,12 @@ def _startup_observability_wiring() -> None:
     """
     _wire_observability_safe()
 
+
 @app.get("/health")
 def health() -> dict:
     """Endpoint de salud: permite saber si la API está arriba."""
     return {"status": "ok"}
+
 
 # Registro de routers bajo prefijos. Cada router agrupa rutas por contexto
 # y define su propia etiqueta (tags) para la documentación automática.

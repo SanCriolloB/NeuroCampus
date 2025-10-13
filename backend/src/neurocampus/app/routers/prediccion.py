@@ -8,7 +8,7 @@ from neurocampus.app.schemas.prediccion import (
 )
 from neurocampus.prediction.facades.prediccion_facade import predict_online, predict_batch
 
-router = APIRouter(prefix="/prediccion", tags=["prediccion"])
+router = APIRouter(tags=["prediccion"])
 
 @router.post("/online", response_model=PrediccionOnlineResponse)
 async def prediccion_online(req: Request, body: PrediccionOnlineRequest):

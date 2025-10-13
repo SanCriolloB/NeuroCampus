@@ -6,7 +6,7 @@ Responsabilidades:
 - Registro de routers (rutas agrupadas por dominio)
 - Endpoints globales mínimos (/health)
 - Habilitar CORS para permitir acceso desde el frontend (Vite, puerto 5173)
-- Conectar el destino de observabilidad (logging) para eventos training.*
+- Conectar el destino de observabilidad (logging) para eventos training.* y prediction.*
 - Inyectar middleware de Correlation-Id (X-Correlation-Id) para trazabilidad
 """
 
@@ -22,10 +22,10 @@ from neurocampus.observability.middleware_correlation import CorrelationIdMiddle
 from neurocampus.observability.logging_context import install_logrecord_factory
 
 # Routers del dominio
-from .routers import datos, jobs, modelos
+from .routers import datos, jobs, modelos, prediccion
 
 # Instancia de la aplicación (título visible en /docs y /openapi.json)
-app = FastAPI(title="NeuroCampus API", version="0.4.0")
+app = FastAPI(title="NeuroCampus API", version="0.6.0")
 
 # --- CORS (necesario para que el navegador permita las peticiones desde Vite) ---
 ALLOWED_ORIGINS = [
@@ -47,7 +47,7 @@ app.add_middleware(CorrelationIdMiddleware)
 
 def _wire_observability_safe() -> None:
     """
-    Conecta el handler de logging a los eventos training.* si el módulo existe.
+    Conecta el handler de logging a los eventos training.* y prediction.* si el módulo existe.
     Si no existe (aún no creado), la app sigue funcionando sin observabilidad.
     """
     log = logging.getLogger("neurocampus")
@@ -55,10 +55,10 @@ def _wire_observability_safe() -> None:
         # Preferimos import absoluto con --app-dir backend/src
         from neurocampus.observability.destinos.log_handler import wire_logging_destination
         wire_logging_destination()
-        log.info("Observability wiring OK: training.* -> logging.INFO")
+        log.info("Observability wiring OK: training.* & prediction.* -> logging.INFO")
     except ModuleNotFoundError as e:
         log.warning(
-            "Observability module not found: %s. La API arrancará sin logging de training.* "
+            "Observability module not found: %s. La API arrancará sin logging de training.* / prediction.* "
             "(crea backend/src/neurocampus/observability/destinos/log_handler.py y __init__.py).",
             e,
         )
@@ -71,7 +71,7 @@ def _startup_observability_wiring() -> None:
     """
     - Configura logging (dictConfig con filtro cid)
     - Instala LogRecordFactory que inyecta correlation_id desde ContextVar
-    - Conecta el destino de logging para eventos training.*
+    - Conecta el destino de logging para eventos training.* y prediction.*
     """
     # 1) dictConfig con filtro cid
     setup_logging()
@@ -91,6 +91,7 @@ def health() -> dict:
 
 # Registro de routers bajo prefijos. Cada router agrupa rutas por contexto
 # y define su propia etiqueta (tags) para la documentación automática.
-app.include_router(datos.router,   prefix="/datos",   tags=["datos"])
-app.include_router(jobs.router,    prefix="/jobs",    tags=["jobs"])
-app.include_router(modelos.router, prefix="/modelos", tags=["modelos"])
+app.include_router(datos.router,       prefix="/datos",       tags=["datos"])
+app.include_router(jobs.router,        prefix="/jobs",        tags=["jobs"])
+app.include_router(modelos.router,     prefix="/modelos",     tags=["modelos"])
+app.include_router(prediccion.router,  prefix="/prediccion",  tags=["prediccion"])

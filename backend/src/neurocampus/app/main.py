@@ -14,9 +14,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
-# Middleware de trazabilidad (Correlation-Id)
-# Import absoluto (asumiendo --app-dir backend/src al ejecutar uvicorn)
+# NEW: configuración de logging (dictConfig)
+from neurocampus.app.logging_config import setup_logging
+
+# NEW: middleware de trazabilidad y LogRecordFactory contextual
 from neurocampus.observability.middleware_correlation import CorrelationIdMiddleware
+from neurocampus.observability.logging_context import install_logrecord_factory
 
 # Routers del dominio
 from .routers import datos, jobs, modelos
@@ -66,10 +69,17 @@ def _wire_observability_safe() -> None:
 @app.on_event("startup")
 def _startup_observability_wiring() -> None:
     """
-    Conecta una única vez el handler de logging al bus de eventos.
-    De esta forma, los eventos training.* emitidos por la plantilla de entrenamiento
-    quedarán registrados en logs sin necesidad de tocar el resto del código.
+    - Configura logging (dictConfig con filtro cid)
+    - Instala LogRecordFactory que inyecta correlation_id desde ContextVar
+    - Conecta el destino de logging para eventos training.*
     """
+    # 1) dictConfig con filtro cid
+    setup_logging()
+
+    # 2) LogRecordFactory que añade correlation_id automáticamente
+    install_logrecord_factory()
+
+    # 3) Wiring de observabilidad existente
     _wire_observability_safe()
 
 

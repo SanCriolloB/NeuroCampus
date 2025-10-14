@@ -8,12 +8,11 @@
 # Uso esperado por el pipeline:
 #   strat = RBMGeneral()
 #   strat.setup(data_ref="data/labeled/evaluaciones_2025_beto.parquet", hparams={
-#       "scale_mode": "minmax",
+#       "scale_mode": "scale_0_5",
 #       "n_hidden": 64,
 #       "cd_k": 2,
-#       "epochs_rbm": 1,
+#       "epochs_rbm": 2,
 #       "use_text_probs": True,   # <- para sumar p_neg/p_neu/p_pos
-#       "neg_weight_boost": 1.5   # <- refuerza clase NEG en la pérdida
 #   })
 #   for epoch in range(1, N+1):
 #       loss, metrics = strat.train_step(epoch)
@@ -219,7 +218,6 @@ class RBMGeneral:
         self.epochs_rbm: int = 1   # pasos RBM por época
         self.seed: int = 42
         self.scale_mode: str = "minmax"  # o "scale_0_5"
-        self.neg_weight_boost: float = 1.5  # <- NUEVO: refuerzo de peso para clase NEG
 
         # Optimizadores
         self.opt_rbm: Optional[torch.optim.Optimizer] = None
@@ -289,7 +287,6 @@ class RBMGeneral:
             - seed (int), scale_mode {"minmax","scale_0_5"}
             - accept_teacher (bool), accept_threshold (float)
             - use_text_probs (bool) -> añade p_neg/p_neu/p_pos como features si existen
-            - neg_weight_boost (float) -> refuerzo adicional para clase NEG en la pérdida
         """
         # Hparams
         self.seed = int(hparams.get("seed", 42) or 42)
@@ -307,7 +304,6 @@ class RBMGeneral:
         accept_teacher    = bool(hparams.get("accept_teacher", True))
         accept_threshold  = float(hparams.get("accept_threshold", 0.80))
         include_text_probs = bool(hparams.get("use_text_probs", False))
-        self.neg_weight_boost = float(hparams.get("neg_weight_boost", 1.5))
 
         # Data
         df = self._load_df(data_ref) if data_ref else pd.DataFrame(
@@ -375,16 +371,11 @@ class RBMGeneral:
                     if p.grad is not None:
                         p.data -= self.lr_rbm * p.grad
 
-        # 2) Cabeza supervisada (si hay y) — pesos por clase
+        # 2) Cabeza supervisada (si hay y) — pesos por clase (inverso de frecuencia)
         if self.y is not None:
             counts = torch.bincount(self.y, minlength=3).float()  # [n_neg, n_neu, n_pos]
-            # inverso de la frecuencia
-            weights = (counts.sum() / (counts + 1e-9))
-            # --- refuerzo NEG antes de normalizar ---
-            if self.neg_weight_boost and self.neg_weight_boost > 0:
-                weights[0] = weights[0] * float(self.neg_weight_boost)
-            # reescala para estabilidad numérica (mantener magnitud comparable)
-            weights = weights / weights.sum() * 3.0
+            weights = (counts.sum() / (counts + 1e-9))            # inverso de la frecuencia
+            weights = weights / weights.sum() * 3.0               # reescala para estabilidad numérica
             weights = weights.to(self.device)
 
             self.head.train()

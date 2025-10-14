@@ -4,3 +4,29 @@ data/
 *.pt
 *.pkl
 *.ipynb_checkpoints/
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.env
+
+# Artifacts y datos pesados (mantén sólo .gitkeep/.gitignore)
+artifacts/*
+!artifacts/**/.gitkeep
+!artifacts/**/.gitignore
+
+# Data (no versionar procesados reales)
+data/**/*.parquet
+data/**/*.csv
+!examples/**
+
+# Node / Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db

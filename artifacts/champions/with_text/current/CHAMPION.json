@@ -1,0 +1,6 @@
+{
+  "family": "with_text",
+  "selected_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "reason": "Best macro-F1 on textonly split with minmax + use_text_probs",
+  "notes": "Trained on evaluaciones_2025_beto_textonly.parquet"
+}

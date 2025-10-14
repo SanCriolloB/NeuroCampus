@@ -1,0 +1,20 @@
+{
+  "f1_macro": 0.3236714973224813,
+  "accuracy": 0.4897959183673469,
+  "classes": [
+    "neg",
+    "neu",
+    "pos"
+  ],
+  "n_val": 49,
+  "n_labeled_used": 242,
+  "n_features": 13,
+  "type": "general",
+  "seed": 42,
+  "labels_dist_trainable": {
+    "neg": 60,
+    "neu": 66,
+    "pos": 116
+  },
+  "teacher_accept_rate": 1.0
+}

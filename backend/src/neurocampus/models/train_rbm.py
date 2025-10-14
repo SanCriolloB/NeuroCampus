@@ -11,6 +11,13 @@
 #   python -m neurocampus.models.train_rbm --type restringida \
 #       --data data/labeled/evaluaciones_2025_beto.parquet --job-id 2025S2_run1 \
 #       --n-hidden 64 --cd-k 2 --epochs 8 --scale-mode scale_0_5
+#
+# Guardarraíles añadidos:
+#  - --distill-soft: entrena con distribución del teacher (p_neg,p_neu,p_pos) como target suave
+#                    y bloquea usar p_* como features (evita fuga).
+#  - --warm-start-from DIR: se pasa en hparams para que la estrategia pueda arrancar desde un campeón.
+#  - Bloqueo explícito: si se solicita --use-text-probs y el target es la clase dura del teacher,
+#    se lanza un error (a menos que uses --distill-soft, donde igualmente se bloquea p_* en X).
 
 from __future__ import annotations
 import argparse
@@ -164,11 +171,44 @@ def main():
     # GPU
     ap.add_argument("--use-cuda", action="store_true", help="Intenta usar CUDA si está disponible.")
 
-    # Texto como features ligeros
+    # Texto como features ligeros (¡ojo fuga!)
     ap.add_argument("--use-text-probs", action="store_true",
-                    help="Añade p_neg/p_neu/p_pos como features, si existen en el dataset.")
+                    help="Añade p_neg/p_neu/p_pos como features, si existen en el dataset (riesgo de fuga).")
+
+    # Guardarraíles anti-fuga + warm-start
+    ap.add_argument("--distill-soft", action="store_true",
+                    help="Entrena contra la distribución del teacher (p_neg,p_neu,p_pos) como target suave (KL). "
+                         "Bloquea p_* como features para evitar fuga.")
+    ap.add_argument("--warm-start-from", default=None,
+                    help="Directorio de un campeón previo para arrancar pesos si la estrategia lo soporta.")
 
     args = ap.parse_args()
+
+    # Cargar DF pronto para aplicar guardarraíles
+    df = _load_df(args.data)
+
+    # Guardarraíl 1: si el target es clase dura del teacher y pides p_* como features -> fuga
+    # (permitimos usar p_* SOLO si explícitamente te sales de esto, p.ej. prototipos,
+    #  pero por defecto lo bloqueamos; si vas a distilar, igualmente se bloquean en X.)
+    has_teacher_hard = ("sentiment_label_teacher" in df.columns) or ("y_sentimiento" in df.columns)
+    if args.use_text_probs and has_teacher_hard and not args.distill_soft:
+        raise ValueError(
+            "Guardarraíl anti-fuga: --use-text-probs está activado y el target proviene del teacher "
+            "(sentiment_label_teacher / y_sentimiento). Esto introduce fuga (el modelo 've' su objetivo). "
+            "Opciones: 1) quita --use-text-probs; 2) usa --distill-soft para entrenar contra la distribución "
+            "p_neg/p_neu/p_pos como target suave (y sin p_* en las features)."
+        )
+
+    # Guardarraíl 2: si distilas, debes tener p_neg,p_neu,p_pos. Y se fuerza a NO usar p_* en X.
+    leak_guard_applied = False
+    if args.distill_soft:
+        for k in ("p_neg", "p_neu", "p_pos"):
+            if k not in df.columns:
+                raise ValueError("Distilación suave requiere columnas p_neg,p_neu,p_pos en el dataset.")
+        if args.use_text_probs:
+            # fuerza a desactivar p_* como features
+            args.use_text_probs = False
+            leak_guard_applied = True
 
     # Instanciar estrategia
     Strat = RBMGeneral if args.type == "general" else RBMRestringida
@@ -180,7 +220,7 @@ def main():
     default_epochs_rbm = 1  if args.type == "general" else 2
     default_lr_rbm     = 1e-2 if args.type == "general" else 5e-3
 
-    # Hparams para setup
+    # Hparams para setup (las estrategias pueden usar warm_start_from/distill_soft si lo soportan)
     hparams: Dict = dict(
         seed=args.seed,
         n_hidden=args.n_hidden if args.n_hidden is not None else default_n_hidden,
@@ -195,7 +235,9 @@ def main():
         accept_teacher=args.accept_teacher,
         accept_threshold=args.accept_threshold,
         use_cuda=args.use_cuda,
-        use_text_probs=args.use_text_probs,  # <<--- NUEVO: pasa p_* como features al Student
+        use_text_probs=args.use_text_probs,     # <- solo si NO hay distill_soft (o no fuga)
+        distill_soft=args.distill_soft,         # <- para que la estrategia pueda cambiar la loss a KL si lo implementa
+        warm_start_from=args.warm_start_from,   # <- para que la estrategia intente cargar pesos si puede
     )
 
     # Setup (carga datos, vectoriza, inicializa RBM y cabeza)
@@ -207,8 +249,6 @@ def main():
         print({"epoch": epoch, **metrics})
 
     # --------- Evaluación (holdout simple 80/20) ---------
-    df = _load_df(args.data)
-
     # y final (humano > teacher)
     y_all = _resolve_labels(df, require_teacher_accept=args.accept_teacher, accept_threshold=args.accept_threshold)
     mask_labeled = y_all >= 0
@@ -274,6 +314,11 @@ def main():
         "job_id": job_id,
         "hparams": hparams,
         "feature_cols": feat_cols,
+        "leak_guard": {
+            "blocked_use_text_probs": bool(leak_guard_applied),
+            "distill_soft": bool(args.distill_soft),
+            "target_has_teacher_hard": bool(has_teacher_hard),
+        },
     }
     with open(job_dir / "job_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

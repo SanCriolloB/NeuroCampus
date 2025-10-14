@@ -1,0 +1,10 @@
+{
+  "model": "finiteautomata/beto-sentiment-analysis",
+  "created_at": "2025-10-13T22:49:27Z",
+  "n_rows": 938,
+  "accepted_count": 895,
+  "threshold": 0.9,
+  "margin": 0.25,
+  "neu_min": 0.9,
+  "text_col": "comentario"
+}

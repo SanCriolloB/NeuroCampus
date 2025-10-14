@@ -1,0 +1,36 @@
+{
+  "created_at": "2025-10-13T23:22:37Z",
+  "data_ref": "data/labeled/evaluaciones_2025_beto_textonly.parquet",
+  "job_id": "20251013_182237",
+  "hparams": {
+    "seed": 42,
+    "n_hidden": 64,
+    "cd_k": 1,
+    "epochs_rbm": 1,
+    "batch_size": 128,
+    "lr_rbm": 0.005,
+    "lr_head": 0.01,
+    "momentum": 0.5,
+    "weight_decay": 0.0,
+    "scale_mode": "minmax",
+    "accept_teacher": true,
+    "accept_threshold": 0.8,
+    "use_cuda": false,
+    "use_text_probs": true
+  },
+  "feature_cols": [
+    "calif_1",
+    "calif_2",
+    "calif_3",
+    "calif_4",
+    "calif_5",
+    "calif_6",
+    "calif_7",
+    "calif_8",
+    "calif_9",
+    "calif_10",
+    "p_neg",
+    "p_neu",
+    "p_pos"
+  ]
+}

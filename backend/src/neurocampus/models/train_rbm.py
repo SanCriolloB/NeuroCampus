@@ -1,284 +1,438 @@
 # backend/src/neurocampus/models/train_rbm.py
-# Entrena el Student (RBM General o Restringida) a partir de un dataset ya etiquetado
-# (humano>teacher). Deja artefactos por job en artifacts/jobs/<JOBID> y un metrics.json
-# para que select_champion pueda elegir el mejor.
-#
-# Ejemplos:
-#   python -m neurocampus.models.train_rbm --type general \
-#       --data data/labeled/evaluaciones_2025_beto.parquet --job-id auto \
-#       --epochs 12 --n-hidden 64 --cd-k 2 --epochs-rbm 2 --scale-mode scale_0_5 --use-text-probs
-#
-#   python -m neurocampus.models.train_rbm --type restringida \
-#       --data data/labeled/evaluaciones_2025_beto.parquet --job-id 2025S2_run1 \
-#       --n-hidden 64 --cd-k 2 --epochs 8 --scale-mode scale_0_5
+# Entrenamiento de RBM (general/restringida) con soporte para:
+# - Mezclar calificaciones + embeddings de texto (prefijo configurable)
+# - Evitar fuga de etiquetas cuando el target proviene del teacher (p_*)
+# - Guardar metadatos extendidos y artefactos de evaluación
+# - Verbosidad controlable (--quiet) y mini-chequeo de columnas post-fit
 
 from __future__ import annotations
-import argparse
-import json
-import time
+import argparse, json, os, time, random
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Tuple, Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
 
-from neurocampus.models.strategies.modelo_rbm_general import RBMGeneral
-from neurocampus.models.strategies.modelo_rbm_restringida import RBMRestringida
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 
-CLASSES = ["neg", "neu", "pos"]
+import torch
+
+# Estrategias
+from neurocampus.models.strategies.modelo_rbm_general import ModeloRBMGeneral
+from neurocampus.models.strategies.modelo_rbm_restringida import ModeloRBMRestringida
 
 
-# -----------------------
-# Utilidades de evaluación
-# -----------------------
+# -------------------------
+# Utilidades
+# -------------------------
+def _seed_everything(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-def _pick_feature_cols(df: pd.DataFrame, max_n: int = 10, include_text_probs: bool = False) -> List[str]:
+
+def _resolve_job_dir(out_dir: str, job_id: str | None) -> Path:
+    root = Path(out_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    if (job_id is None) or (job_id == "auto"):
+        job_id = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    job = root / job_id
+    job.mkdir(parents=True, exist_ok=True)
+    return job
+
+
+def _pick_target_column(df: pd.DataFrame) -> Tuple[str, bool]:
     """
-    Toma calif_1..calif_10 si existen (ordenadas), y opcionalmente añade p_neg/p_neu/p_pos
-    como features adicionales si están presentes y include_text_probs=True.
+    Retorna (colname, has_teacher_hard)
+    - has_teacher_hard=True cuando el target proviene del teacher de sentimiento
+      y_sentimiento/sentiment_label_teacher.
     """
-    cols = [c for c in df.columns if c.startswith("calif_")]
-    if not cols:
-        return []
-    # ordenar por índice numérico
-    def _idx(c: str) -> int:
-        try:
-            return int(c.split("_")[1])
-        except Exception:
-            return 999
-    cols = sorted(cols, key=_idx)[:max_n]
-
-    if include_text_probs and all(k in df.columns for k in ["p_neg", "p_neu", "p_pos"]):
-        cols = cols + ["p_neg", "p_neu", "p_pos"]
-
-    return cols
+    for c in ["y", "label", "target"]:
+        if c in df.columns:
+            return c, False
+    for c in ["y_sentimiento", "sentiment_label_teacher"]:
+        if c in df.columns:
+            return c, True
+    raise ValueError(
+        "No se encontró columna objetivo (y / label / target / y_sentimiento / sentiment_label_teacher)."
+    )
 
 
-def _resolve_labels(df: pd.DataFrame, require_teacher_accept: bool = True, accept_threshold: float = 0.80) -> np.ndarray:
-    """
-    Regresa y en {0,1,2} siguiendo humano > teacher, con normalización básica.
-    Si no puede resolver nada y require_teacher_accept=True deja todo en -1.
-    """
-    # Si existe módulo robusto, úsalo
-    try:
-        from neurocampus.models.data.labels import resolve_sentiment_labels  # type: ignore
-        y_ser = resolve_sentiment_labels(df, require_teacher_accept=require_teacher_accept, accept_threshold=accept_threshold)
-        y_map = {"neg": 0, "neu": 1, "pos": 2}
-        y = np.array([y_map.get(str(v), -1) for v in y_ser], dtype=np.int64)
-        return y
-    except Exception:
-        pass
+def _feature_columns(
+    df: pd.DataFrame,
+    use_text_embeds: bool,
+    text_prefix: str | None,
+    use_text_probs: bool,
+    max_calif: Optional[int],
+) -> List[str]:
+    # calificaciones
+    calif = [c for c in df.columns if c.startswith("calif_")]
+    calif = sorted(calif, key=lambda x: int(x.split("_")[1]))
+    if max_calif is not None:
+        calif = calif[:max_calif]
 
-    # Fallback sencillo (por si no está el módulo):
-    if "y_sentimiento" in df.columns:
-        y_raw = df["y_sentimiento"].astype(str).str.lower()
-    elif "sentiment_label_teacher" in df.columns:
-        y_raw = df["sentiment_label_teacher"].astype(str).str.lower()
-        if require_teacher_accept:
-            if "accepted_by_teacher" in df.columns:
-                ok = df["accepted_by_teacher"].fillna(0).astype(int) == 1
-                y_raw = y_raw.where(ok)
-            elif "sentiment_conf" in df.columns:
-                ok = df["sentiment_conf"].fillna(0.0) >= float(accept_threshold)
-                y_raw = y_raw.where(ok)
+    feats = list(calif)
+
+    # embeddings de texto
+    if use_text_embeds:
+        pref = text_prefix or "feat_t_"
+        text_cols = [c for c in df.columns if c.startswith(pref)]
+        # orden estable
+        text_cols.sort(key=lambda s: (len(s), s))
+        feats += text_cols
+
+    # probabilidades del teacher (solo si se habilita explícitamente)
+    if use_text_probs:
+        for c in ["p_neg", "p_neu", "p_pos"]:
+            if c in df.columns:
+                feats.append(c)
+
+    return feats
+
+
+def _to_numpy(df: pd.DataFrame, cols: List[str], mode: str) -> np.ndarray:
+    X = df[cols].astype(np.float32).to_numpy()
+    if mode == "minmax":
+        mn = np.nanmin(X, axis=0)
+        mx = np.nanmax(X, axis=0)
+        X = (X - mn) / (mx - mn + 1e-9)
+    elif mode == "scale_0_5":
+        X = X / 5.0
+    X = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
+    return X
+
+
+def _encode_labels(y: pd.Series) -> Tuple[np.ndarray, Dict[int, str]]:
+    cats = sorted(pd.Series(y).dropna().unique().tolist())
+    # si son strings ['neg','neu','pos'] -> aseguramos orden consistente
+    order = ["neg", "neu", "pos"]
+    if all(v in order for v in cats) and len(cats) == 3:
+        cats = order
+    mapping = {v: i for v, i in zip(cats, range(len(cats)))}
+    inv = {i: v for v, i in mapping.items()}
+    return y.map(mapping).to_numpy(), inv
+
+
+def _instantiate_strategy(
+    kind: str,
+    n_features: int,
+    n_hidden: int,
+    cd_k: int,
+    lr_rbm: float,
+    lr_head: float,
+    momentum: float,
+    weight_decay: float,
+    seed: int,
+    device: str,
+):
+    if kind == "general":
+        return ModeloRBMGeneral(
+            n_visible=n_features,
+            n_hidden=n_hidden,
+            lr_rbm=lr_rbm,
+            lr_head=lr_head,
+            momentum=momentum,
+            weight_decay=weight_decay,
+            cd_k=cd_k,
+            seed=seed,
+            device=device,
+        )
+    elif kind == "restringida":
+        return ModeloRBMRestringida(
+            n_visible=n_features,
+            n_hidden=n_hidden,
+            lr_rbm=lr_rbm,
+            lr_head=lr_head,
+            momentum=momentum,
+            weight_decay=weight_decay,
+            cd_k=cd_k,
+            seed=seed,
+            device=device,
+        )
     else:
-        return np.full(len(df), -1, dtype=np.int64)
-
-    map_ = {"neg": 0, "negative": 0, "negativo": 0,
-            "neu": 1, "neutral": 1,
-            "pos": 2, "positive": 2, "positivo": 2}
-    y = np.array([map_.get(v, -1) for v in y_raw], dtype=np.int64)
-    return y
+        raise ValueError(f"Tipo de modelo no soportado: {kind}")
 
 
-def _accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    y_true = np.asarray(y_true); y_pred = np.asarray(y_pred)
-    if y_true.size == 0:
-        return 0.0
-    return float((y_true == y_pred).mean())
+def _predict_proba_safe(strat, df_val: pd.DataFrame, X_val: Optional[np.ndarray]) -> np.ndarray:
+    # Preferimos predict_proba_df si existe (usa columnas con nombres)
+    if hasattr(strat, "predict_proba_df"):
+        return strat.predict_proba_df(df_val)
+    return strat.predict_proba(X_val)
 
 
-def _f1_macro(y_true: np.ndarray, y_pred: np.ndarray, labels=(0, 1, 2)) -> float:
-    y_true = np.asarray(y_true); y_pred = np.asarray(y_pred)
-    if y_true.size == 0:
-        return 0.0
-    f1s = []
-    for c in labels:
-        tp = np.sum((y_true == c) & (y_pred == c))
-        fp = np.sum((y_true != c) & (y_pred == c))
-        fn = np.sum((y_true == c) & (y_pred != c))
-        p = tp / (tp + fp + 1e-9)
-        r = tp / (tp + fn + 1e-9)
-        f1 = 2 * p * r / (p + r + 1e-9)
-        f1s.append(f1)
-    return float(np.mean(f1s))
-
-
-def _load_df(path: str) -> pd.DataFrame:
-    if path.lower().endswith(".parquet"):
-        return pd.read_parquet(path)
-    return pd.read_csv(path)
-
-
-def _train_val_split(n: int, seed: int = 42, frac_train: float = 0.8) -> Tuple[np.ndarray, np.ndarray]:
-    rng = np.random.default_rng(int(seed))
-    idx = rng.permutation(n)
-    cut = int(frac_train * n)
-    return idx[:cut], idx[cut:]
-
-
-# -----------
-# Entrenador
-# -----------
-
+# -------------------------
+# Main
+# -------------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--type", choices=["general", "restringida"], required=True,
-                    help="Tipo de Student: RBM general o restringida.")
-    ap.add_argument("--data", required=True, help="Ruta CSV/Parquet ya etiquetado (humano>teacher).")
-    ap.add_argument("--job-id", default="auto", help="Identificador del job. Usa 'auto' para timestamp.")
-    ap.add_argument("--out-dir", default="artifacts/jobs", help="Directorio base donde dejar el job.")
-
-    # Hiperparámetros y opciones
+    ap.add_argument("--type", required=True, choices=["general", "restringida"])
+    ap.add_argument("--data", required=True)
+    ap.add_argument("--job-id", default="auto")
+    ap.add_argument("--out-dir", default="artifacts/jobs")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--epochs", type=int, default=5, help="Épocas de entrenamiento (ciclos de train_step).")
-
-    ap.add_argument("--n-hidden", type=int, default=None, help="Unidades ocultas RBM (por defecto: 32 general, 64 restringida).")
-    ap.add_argument("--cd-k", type=int, default=None, help="Pasos de Contrastive Divergence (por defecto: 1 general, 2 restringida).")
-    ap.add_argument("--epochs-rbm", type=int, default=None, help="Pasadas de CD por época (por defecto: 1 general, 2 restringida).")
-
-    ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--lr-rbm", type=float, default=None)
+    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--n-hidden", type=int, default=64)
+    ap.add_argument("--cd-k", type=int, default=1)
+    ap.add_argument("--epochs-rbm", type=int, default=1)
+    ap.add_argument("--batch-size", type=int, default=128)
+    ap.add_argument("--lr-rbm", type=float, default=5e-3)
     ap.add_argument("--lr-head", type=float, default=1e-2)
     ap.add_argument("--momentum", type=float, default=0.5)
     ap.add_argument("--weight-decay", type=float, default=0.0)
-    ap.add_argument("--scale-mode", choices=["minmax", "scale_0_5"], default="scale_0_5",
-                    help="Escalado de features: minmax según datos o 0–5 -> [0,1].")
+    ap.add_argument("--scale-mode", choices=["minmax", "scale_0_5"], default="minmax")
+    ap.add_argument(
+        "--accept-teacher",
+        action="store_true",
+        help="Usa solo filas aceptadas por el teacher si existe 'accepted_by_teacher==1'.",
+    )
+    ap.add_argument("--accept-threshold", type=float, default=0.0)
+    ap.add_argument("--use-cuda", action="store_true")
 
-    # Aceptación del Teacher / humano
-    ap.add_argument("--accept-teacher", action="store_true", default=True,
-                    help="Usar solo pseudolabels aceptados por el Teacher (o etiqueta humana cuando exista).")
-    ap.add_argument("--accept-threshold", type=float, default=0.80,
-                    help="Umbral de aceptación para sentiment_conf cuando no exista accepted_by_teacher.")
+    # texto
+    ap.add_argument(
+        "--use-text-probs",
+        action="store_true",
+        help="Añade p_neg/p_neu/p_pos como features (bloqueado si target=teacher a menos que --distill-soft).",
+    )
+    ap.add_argument(
+        "--use-text-embeds",
+        action="store_true",
+        help="Añade columnas de embeddings de texto con prefijo configurable.",
+    )
+    ap.add_argument(
+        "--text-embed-prefix",
+        default="feat_t_",
+        help="Prefijo de columnas de embeddings (por defecto 'feat_t_').",
+    )
 
-    # GPU
-    ap.add_argument("--use-cuda", action="store_true", help="Intenta usar CUDA si está disponible.")
+    # distillation
+    ap.add_argument(
+        "--distill-soft",
+        action="store_true",
+        help="Si target=teacher, permite entrenar contra p_* como objetivos suaves (MSE/KL en la cabeza).",
+    )
 
-    # Texto como features ligeros
-    ap.add_argument("--use-text-probs", action="store_true",
-                    help="Añade p_neg/p_neu/p_pos como features, si existen en el dataset.")
+    # warm start (si tu estrategia lo implementa)
+    ap.add_argument(
+        "--warm-start-from",
+        default=None,
+        help="Ruta a un job_dir anterior para iniciar pesos/normalizadores. (Opcional)",
+    )
+
+    # otros
+    ap.add_argument("--max-calif", type=int, default=None)
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--log-every", type=int, default=1)
 
     args = ap.parse_args()
 
+    _seed_everything(args.seed)
+    device = "cuda" if (args.use_cuda and torch.cuda.is_available()) else "cpu"
+
+    # === Cargar dataset ===
+    df = pd.read_parquet(args.data) if args.data.lower().endswith(".parquet") else pd.read_csv(args.data)
+
+    # Asegurar columna objetivo
+    ycol, has_teacher_hard = _pick_target_column(df)
+    y_raw = df[ycol].astype(str)
+
+    # Guardarraíl anti-fuga: si target es del teacher, prohibimos p_* en features salvo distill
+    leak_guard_applied = False
+    if args.use_text_probs and has_teacher_hard and not args.distill_soft:
+        raise ValueError(
+            "Guardarraíl anti-fuga: --use-text-probs está activado y el target proviene del teacher "
+            "(sentiment_label_teacher / y_sentimiento). Esto introduce fuga (el modelo 've' su objetivo). "
+            "Opciones: 1) quita --use-text-probs; 2) usa --distill-soft para entrenar contra la distribución "
+            "p_neg/p_neu/p_pos como target suave (y sin p_* en las features)."
+        )
+
+    # Filtrado por aceptación si se pide
+    if args.accept_teacher and ("accepted_by_teacher" in df.columns):
+        df = df[df["accepted_by_teacher"].fillna(0).astype(int) >= int(args.accept_threshold)].copy()
+
+    # Determinar features
+    feat_cols = _feature_columns(
+        df,
+        use_text_embeds=args.use_text_embeds,
+        text_prefix=args.text_embed_prefix,
+        use_text_probs=args.use_text_probs,
+        max_calif=args.max_calif,
+    )
+    if len(feat_cols) == 0:
+        raise ValueError("No se encontraron columnas de características. Verifica calif_* / prefijo de embeddings.")
+
+    # Split train/val
+    y_enc, inv_map = _encode_labels(y_raw)
+    X_all = _to_numpy(df, feat_cols, mode=args.scale_mode)
+
+    idx_tr, idx_va = train_test_split(
+        np.arange(len(df)), test_size=0.2, random_state=args.seed, stratify=y_enc
+    )
+    X_tr, X_va = X_all[idx_tr], X_all[idx_va]
+    y_tr, y_va = y_enc[idx_tr], y_enc[idx_va]
+    df_tr = df.iloc[idx_tr].reset_index(drop=True)
+    df_va = df.iloc[idx_va].reset_index(drop=True)
+
     # Instanciar estrategia
-    Strat = RBMGeneral if args.type == "general" else RBMRestringida
-    strat = Strat()
-
-    # Defaults por tipo
-    default_n_hidden   = 32 if args.type == "general" else 64
-    default_cd_k       = 1  if args.type == "general" else 2
-    default_epochs_rbm = 1  if args.type == "general" else 2
-    default_lr_rbm     = 1e-2 if args.type == "general" else 5e-3
-
-    # Hparams para setup
-    hparams: Dict = dict(
-        seed=args.seed,
-        n_hidden=args.n_hidden if args.n_hidden is not None else default_n_hidden,
-        cd_k=args.cd_k if args.cd_k is not None else default_cd_k,
-        epochs_rbm=args.epochs_rbm if args.epochs_rbm is not None else default_epochs_rbm,
-        batch_size=args.batch_size,
-        lr_rbm=args.lr_rbm if args.lr_rbm is not None else default_lr_rbm,
+    strat = _instantiate_strategy(
+        kind=args.type,
+        n_features=X_tr.shape[1],
+        n_hidden=args.n_hidden,
+        cd_k=args.cd_k,
+        lr_rbm=args.lr_rbm,
         lr_head=args.lr_head,
         momentum=args.momentum,
         weight_decay=args.weight_decay,
-        scale_mode=args.scale_mode,
-        accept_teacher=args.accept_teacher,
-        accept_threshold=args.accept_threshold,
-        use_cuda=args.use_cuda,
-        use_text_probs=args.use_text_probs,  # <<--- NUEVO: pasa p_* como features al Student
+        seed=args.seed,
+        device=device,
     )
 
-    # Setup (carga datos, vectoriza, inicializa RBM y cabeza)
-    strat.setup(data_ref=args.data, hparams=hparams)
+    # Reportar a estrategia las columnas usadas (para predict_proba_df)
+    if hasattr(strat, "set_feature_columns"):
+        strat.set_feature_columns(feat_cols)
 
-    # Entrenamiento por épocas
-    for epoch in range(1, args.epochs + 1):
-        loss, metrics = strat.train_step(epoch)
-        print({"epoch": epoch, **metrics})
+    # Asegura que el modelo conoce el orden exacto de columnas (por si la estrategia lo usa internamente)
+    strat.feat_cols_ = list(feat_cols)
 
-    # --------- Evaluación (holdout simple 80/20) ---------
-    df = _load_df(args.data)
+    # Entrena usando DataFrame (no array) para mantener nombres/orden
+    strat.fit(
+        df_tr[feat_cols],
+        y_tr,
+        epochs=args.epochs,
+        log_every=getattr(args, "log_every", 1),
+        log_callback=(
+            None
+            if args.quiet
+            else lambda e, d: print({"epoch": float(e), **{k: float(v) for k, v in d.items()}})
+        ),
+    )
 
-    # y final (humano > teacher)
-    y_all = _resolve_labels(df, require_teacher_accept=args.accept_teacher, accept_threshold=args.accept_threshold)
-    mask_labeled = y_all >= 0
+    # --- Mini-chequeo tras el fit (evita regresiones de columnas) ---
+    try:
+        feat_cols_set = len(getattr(strat, "feat_cols_", []) or [])
+        first_cols = (getattr(strat, "feat_cols_", []) or [])[:12]
+        if not args.quiet:
+            print({"feat_cols_set": int(feat_cols_set), "first_cols": first_cols})
+        if feat_cols_set == 0 and isinstance(df_va, pd.DataFrame):
+            raise RuntimeError("feat_cols_ no está configurado pero se va a validar con DataFrame.")
+    except Exception as e:
+        if not args.quiet:
+            print({"post_fit_sanity_check": "failed", "reason": str(e)})
+    # --- fin mini-chequeo ---
 
-    # features (mismas columnas que el Student)
-    feat_cols = _pick_feature_cols(df, include_text_probs=args.use_text_probs)
-    if not feat_cols:
-        raise RuntimeError("No se encontraron columnas calif_1..calif_10 en el dataset.")
-    X_all = df[feat_cols].to_numpy(np.float32)
+    # Validación con DF (prefiere predict_proba_df)
+    proba = _predict_proba_safe(strat, df_va[feat_cols], X_val=None)
+    y_pred = proba.argmax(axis=1)
 
-    # filtrar filas con etiqueta
-    X_all = X_all[mask_labeled]
-    y_all = y_all[mask_labeled]
+    # Métricas
+    report = classification_report(
+        y_va,
+        y_pred,
+        target_names=[inv_map[i] for i in sorted(inv_map)],
+        output_dict=True,
+        zero_division=0,
+    )
+    cm = confusion_matrix(y_va, y_pred).tolist()
+    f1_macro = float(report["macro avg"]["f1-score"])
+    acc = float(report["accuracy"])
 
-    # split (solo para evaluar; el entrenamiento arriba usa todo el set preparado en setup)
-    if len(y_all) >= 10:
-        tr, va = _train_val_split(len(y_all), seed=args.seed, frac_train=0.8)
-    else:
-        # si el set es muy pequeño, evalúa sobre todo
-        tr = np.arange(len(y_all), dtype=int)
-        va = np.arange(len(y_all), dtype=int)
+    # === Guardar todo ===
+    job_dir = _resolve_job_dir(args.out_dir, args.job_id)
 
-    X_va, y_va = X_all[va], y_all[va]
-    proba = strat.predict_proba(X_va)
-    y_hat = proba.argmax(axis=1)
-
-    metrics = {
-        "f1_macro": _f1_macro(y_va, y_hat),
-        "accuracy": _accuracy(y_va, y_hat),
-        "classes": CLASSES,
-        "n_val": int(len(y_va)),
-        "n_labeled_used": int(len(y_all)),
-        "n_features": int(X_all.shape[1]),
-        "type": args.type,
-        "seed": args.seed,
-    }
-
-    # Info útil adicional
-    labels_dist = {c: int(np.sum(y_all == i)) for i, c in enumerate(CLASSES)}
-    metrics["labels_dist_trainable"] = labels_dist
-
-    # Tasa de aceptación (si viene en el dataset)
-    if "accepted_by_teacher" in df.columns:
-        acc_rate = float(df["accepted_by_teacher"].fillna(0).astype(int).mean())
-        metrics["teacher_accept_rate"] = acc_rate
-
-    # --------- Guardar artefactos del job ---------
-    job_id = args.job_id if args.job_id != "auto" else time.strftime("%Y%m%d_%H%M%S")
-    job_dir = Path(args.out_dir) / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    # Modelo (vectorizer.json, rbm.pt, head.pt)
-    strat.save(str(job_dir))
-
-    # Métricas (para select_champion)
-    with open(job_dir / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(metrics, f, ensure_ascii=False, indent=2)
+    # Artefactos de evaluación
+    cm_path = job_dir / "confusion_matrix.json"
+    rep_path = job_dir / "classification_report.json"
+    with open(cm_path, "w", encoding="utf-8") as f:
+        json.dump({"labels": [inv_map[i] for i in sorted(inv_map)], "matrix": cm}, f, ensure_ascii=False, indent=2)
+    with open(rep_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
 
     # Metadatos del job (útil para auditoría)
     meta = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "data_ref": args.data,
-        "job_id": job_id,
-        "hparams": hparams,
-        "feature_cols": feat_cols,
+        "job_id": job_dir.name,
+        "hparams": {
+            "type": args.type,
+            "seed": args.seed,
+            "epochs": args.epochs,
+            "n_hidden": args.n_hidden,
+            "cd_k": args.cd_k,
+            "epochs_rbm": args.epochs_rbm,
+            "batch_size": args.batch_size,
+            "lr_rbm": args.lr_rbm,
+            "lr_head": args.lr_head,
+            "momentum": args.momentum,
+            "weight_decay": args.weight_decay,
+            "scale_mode": args.scale_mode,
+            "accept_teacher": args.accept_teacher,
+            "accept_threshold": args.accept_threshold,
+            "use_cuda": args.use_cuda,
+            "use_text_probs": args.use_text_probs,
+            "use_text_embeds": args.use_text_embeds,
+            "text_embed_prefix": args.text_embed_prefix,
+            "distill_soft": args.distill_soft,
+            "max_calif": args.max_calif,
+        },
+        "feature_cols": feat_cols,  # lista completa CON embeds si aplica
+        "target_classes": [inv_map[i] for i in sorted(inv_map)],
+        "y_source": ("teacher_hard" if has_teacher_hard else "manual_or_external"),
+        "split": {
+            "train_size": int(len(idx_tr)),
+            "val_size": int(len(idx_va)),
+            "stratified": True,
+            "random_state": args.seed,
+        },
+        "text_features": {
+            "used": bool(args.use_text_embeds),
+            "prefix": (args.text_embed_prefix if args.use_text_embeds else None),
+            "n_text_embed_cols": int(
+                len([c for c in feat_cols if c.startswith(args.text_embed_prefix)])
+            )
+            if args.use_text_embeds
+            else 0,
+        },
+        "leak_guard": {
+            "blocked_use_text_probs": bool(leak_guard_applied),
+            "distill_soft": bool(args.distill_soft),
+            "target_has_teacher_hard": bool(has_teacher_hard),
+        },
+        "eval_artifacts": {
+            "confusion_matrix_json": str(cm_path),
+            "classification_report_json": str(rep_path),
+        },
+        "metrics": {
+            "f1_macro": f1_macro,
+            "accuracy": acc,
+        },
     }
     with open(job_dir / "job_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    print({"job_dir": str(job_dir), **metrics})
+    # Guardar pesos/modelo si la estrategia lo permite
+    if hasattr(strat, "save"):
+        strat.save(job_dir)
+
+    # Resumen final (conciso si --quiet)
+    summary = {
+        "job_dir": str(job_dir).replace("\\", "/"),
+        "f1_macro": f1_macro,
+        "accuracy": acc,
+        "classes": [inv_map[i] for i in sorted(inv_map)],
+        "n_val": int(len(idx_va)),
+        "n_labeled_used": int(len(idx_tr) + len(idx_va)),
+        "n_features": int(X_tr.shape[1]),
+        "type": args.type,
+        "seed": args.seed,
+    }
+    if "accepted_by_teacher" in df.columns:
+        summary["teacher_accept_rate"] = float(
+            df["accepted_by_teacher"].fillna(0).astype(int).mean()
+        )
+    print(summary)
 
 
 if __name__ == "__main__":

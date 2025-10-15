@@ -230,8 +230,32 @@ class _RBM(nn.Module):
 
 class RBMGeneral:
     """Estrategia RBM 'general' para {neg, neu, pos} con selección de features flexible."""
-    def __init__(self) -> None:
+    def __init__(self,
+    n_visible=None,
+    n_hidden=None,
+    cd_k=None,
+    lr_rbm=None,
+    lr_head=None,
+    momentum=None,
+    weight_decay=None,
+    seed=None,
+    device=None,
+    **extra,):
         # Objetos que se inicializan en setup()
+        
+        # Construye hparams con solo los valores no-nulos
+        hp = {}
+        for k, v in dict(
+            n_visible=n_visible, n_hidden=n_hidden, cd_k=cd_k,
+            lr_rbm=lr_rbm, lr_head=lr_head, momentum=momentum,
+            weight_decay=weight_decay, seed=seed, device=device,
+        ).items():
+            if v is not None:
+                hp[k] = v
+        hp.update(extra or {})
+
+        # Llama a setup (si tu setup ya pone defaults, perfecto)
+        self.setup(data_ref=None, hparams=hp)
         self.device: str = "cpu"
         self.vec: _Vectorizer = _Vectorizer()
         self.rbm: Optional[_RBM] = None
@@ -611,7 +635,11 @@ class RBMGeneral:
         obj.y = None
         obj._epoch = 0
         return obj
-
+    
+# (Opcional pero recomendable) al final del archivo general:
+class ModeloRBMGeneral(RBMGeneral):
+    """Alias legacy para compatibilidad retro."""
+    pass
 
 # ---- Compatibilidad con imports antiguos ----
 # Ej.: from neurocampus.models.strategies.modelo_rbm_general import ModeloRBMGeneral

@@ -1,59 +1,84 @@
 # backend/src/neurocampus/models/strategies/modelo_rbm_restringida.py
-# Subclase fina sobre RBMGeneral que ajusta hiperparámetros por defecto.
-# Mantiene la misma API/contrato: setup(..), train_step(..),
-# predict_proba(..), predict(..), save(..), load(..).
+# Variante "restringida": subclase del general con defaults distintos.
+# Compatibilidad hacia atrás: __init__(**kwargs) acepta los argumentos
+# que pasan train_rbm/cmd_autoretrain (n_visible, n_hidden, cd_k, etc.)
+# y los manda a setup(...). Mantiene alias ModeloRBMRestringida.
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 from .modelo_rbm_general import RBMGeneral
 
 
 class RBMRestringida(RBMGeneral):
     """
-    Variante 'restringida' (visible<->oculta bipartita) que reutiliza la
-    implementación de RBMGeneral, pero con defaults algo más 'profundos':
-      - más unidades ocultas,
-      - más pasos de Contrastive Divergence,
-      - más épocas base para el bloque RBM,
-      - y un lr_rbm por defecto un poco más conservador.
-
-    Cualquier hiperparámetro explícito en `hparams` **sobrescribe** a los
-    defaults definidos aquí.
+    RBM bipartita (visible<->oculta) con defaults algo más "profundos"
+    que la general. Cualquier hiperparámetro pasado por el llamador
+    (CLI u otro) SOBRESCRIBE los defaults de abajo.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    # --- N O T A ---
+    # Para compatibilidad con código que invoca el constructor con kwargs
+    # (n_visible, n_hidden, cd_k, lr_rbm, lr_head, momentum, weight_decay, seed, device, ...),
+    # aceptamos kwargs y llamamos a setup(...) aquí.
+    def __init__(
+        self,
+        n_visible: Optional[int] = None,
+        n_hidden: Optional[int] = None,
+        cd_k: Optional[int] = None,
+        lr_rbm: Optional[float] = None,
+        lr_head: Optional[float] = None,
+        momentum: Optional[float] = None,
+        weight_decay: Optional[float] = None,
+        seed: Optional[int] = None,
+        device: Optional[str] = None,
+        **extra: Any,
+    ) -> None:
+        # Construimos dict desde los kwargs no-nulos:
+        incoming: Dict[str, Any] = {}
+        for k, v in dict(
+            n_visible=n_visible, n_hidden=n_hidden, cd_k=cd_k,
+            lr_rbm=lr_rbm, lr_head=lr_head,
+            momentum=momentum, weight_decay=weight_decay,
+            seed=seed, device=device,
+        ).items():
+            if v is not None:
+                incoming[k] = v
+        incoming.update(extra or {})
 
-    def setup(self, data_ref: Optional[str], hparams: Dict) -> None:
-        # Defaults de esta variante. OJO: estos son valores base que se
-        # utilizarán solo si NO vienen en `hparams`. Si el llamador pasa
-        # un valor (vía CLI o llamada directa), ese valor tendrá prioridad.
-        defaults = {
-            "n_hidden": 96,       # más grande que el general (p.ej., 64)
-            "cd_k": 2,            # pasos de CD > 1
-            "epochs_rbm": 2,      # algunas épocas extra
-            "lr_rbm": 5e-3,       # ligeramente conservador
+        # Defaults propios de la variante restringida:
+        defaults: Dict[str, Any] = {
+            "n_hidden": 96,
+            "cd_k": 2,
+            "epochs_rbm": 2,
+            "lr_rbm": 5e-3,
             "lr_head": 1e-2,
-            # El resto (batch_size, momentum, weight_decay, etc.) lo hereda
-            # RBMGeneral con sus propios defaults / lo que venga en hparams.
         }
 
-        # Merge correcto: primero defaults, luego hparams para que hparams
-        # tenga prioridad sobre los defaults.
-        merged = {**defaults, **(hparams or {})}
+        # Merge correcto: hparams del llamador pisan defaults:
+        merged = {**defaults, **incoming}
 
-        # Delegamos toda la inicialización en el padre.
+        # Llamamos al setup del padre (no usamos super().__init__ para
+        # evitar un setup prematuro si el padre también lo hiciera).
+        self.setup(data_ref=None, hparams=merged)
+
+    def setup(self, data_ref: Optional[str], hparams: Dict) -> None:
+        # Aseguramos defaults si setup se invoca externamente después
+        # del __init__: mismo merge que arriba.
+        defaults = {
+            "n_hidden": 96,
+            "cd_k": 2,
+            "epochs_rbm": 2,
+            "lr_rbm": 5e-3,
+            "lr_head": 1e-2,
+        }
+        merged = {**defaults, **(hparams or {})}
         super().setup(data_ref=data_ref, hparams=merged)
 
 
-# ---------------------------------------------------------------------------
-# Alias de compatibilidad (por si quedaran importaciones antiguas).
-#    from neurocampus.models.strategies.modelo_rbm_restringida import ModeloRBMRestringida
-# ---------------------------------------------------------------------------
+# Alias legacy para compatibilidad (importaciones antiguas):
 class ModeloRBMRestringida(RBMRestringida):
-    """Alias legacy para compatibilidad retrocompatible."""
     pass
 
 

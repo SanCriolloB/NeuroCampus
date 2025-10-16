@@ -174,7 +174,7 @@ def main():
                 "accuracy": float("nan"), "job_dir": None
             })
             continue
-
+        
         meta, job_dir = _read_last_job_meta()
         if not meta:
             print("   !! no se encontró job_meta.json tras el entrenamiento")
@@ -184,13 +184,21 @@ def main():
             })
             continue
 
-        f1 = float(meta.get("f1_macro", 0.0))
-        acc = float(meta.get("accuracy", 0.0))
+        # Soporta job_meta.json con métricas anidadas en "metrics" (nuevo formato)
+        if isinstance(meta.get("metrics"), dict):
+            f1 = float(meta["metrics"].get("f1_macro", 0.0))
+            acc = float(meta["metrics"].get("accuracy", 0.0))
+        else:
+            # compatibilidad con formato antiguo (f1_macro / accuracy en top-level)
+            f1 = float(meta.get("f1_macro", 0.0))
+            acc = float(meta.get("accuracy", 0.0))
+
         leaderboard.append({
             "ok": 1, "trial_idx": i, "cfg": cfg, "f1_macro": f1, "accuracy": acc,
             "job_dir": str(job_dir).replace("\\","/")
         })
         print(f"   -> f1_macro={f1:.4f} accuracy={acc:.4f} dir={job_dir.name}")
+
 
     # guardar leaderboard
     ts = _nowstamp()

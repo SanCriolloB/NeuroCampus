@@ -408,6 +408,8 @@ def main():
             "f1_macro": f1_macro,
             "accuracy": acc,
         },
+        "f1_macro": f1_macro,
+        "accuracy": acc,
     }
     with open(job_dir / "job_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

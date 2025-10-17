@@ -1,92 +1,82 @@
 # backend/src/neurocampus/models/strategies/modelo_rbm_general.py
-# RBM Student "general" con cabeza supervisada para {neg, neu, pos}.
-# - Preprocesa calif_1..calif_10: imputación + escalado a [0,1].
-# - (opcional) añade p_neg/p_neu/p_pos como features (hparam: use_text_probs=True).
-# - Entrena RBM (CD-k) y cabeza softmax (PyTorch) con pesos por clase.
-# - Expone predict_proba/predict y save/load.
-#
-# Uso esperado por el pipeline:
-#   strat = RBMGeneral()
-#   strat.setup(data_ref="data/labeled/evaluaciones_2025_beto.parquet", hparams={
-#       "scale_mode": "scale_0_5",
-#       "n_hidden": 64,
-#       "cd_k": 2,
-#       "epochs_rbm": 2,
-#       "use_text_probs": True,   # <- para sumar p_neg/p_neu/p_pos
-#   })
-#   for epoch in range(1, N+1):
-#       loss, metrics = strat.train_step(epoch)
-#   proba = strat.predict_proba(X)   # en tiempo de inferencia
-#   yhat  = strat.predict(X)
-
-from __future__ import annotations
-import os
+# Versión con fit(...) robusto y compatible con train_rbm.py / cmd_autoretrain.py
 import json
-import math
+import os
+import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn, Tensor
-from torch.nn import functional as F
+import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
 
-
-# -------------------------
-# Utils de preprocesamiento
-# -------------------------
-
-_META_EXCLUDE = {
-    "id", "codigo", "codigo_materia", "codigo materia", "materia", "asignatura",
-    "grupo", "periodo", "semestre", "docente", "profesor", "fecha"
-}
+# ============================
+# Mapeos y utilidades
+# ============================
 
 _LABEL_MAP = {"neg": 0, "neu": 1, "pos": 2}
 _INV_LABEL_MAP = {v: k for k, v in _LABEL_MAP.items()}
-_CLASSES = ["neg", "neu", "pos"]
+
+# Patrón de columnas numéricas aceptadas
+_NUMERIC_PATTERNS = [
+    r"^calif_\d+$",     # calif_1..N
+    r"^pregunta_\d+$",  # pregunta_1..N
+]
+
+# Columnas de probas del teacher
+_PROB_COLS = ["p_neg", "p_neu", "p_pos"]
+
+# Prefijos candidatos de embeddings de texto (autodetección)
+_CANDIDATE_EMBED_PREFIXES = [
+    "x_text_",         # por defecto del proyecto
+    "text_embed_",
+    "text_",
+    "feat_text_",
+    "feat_t_",
+]
+
+def _suffix_index(name: str, prefix: str) -> int:
+    try:
+        return int(name[len(prefix):])
+    except Exception:
+        return 0
+
+def _norm_label(v) -> str:
+    if not isinstance(v, str):
+        return ""
+    s = v.strip().lower()
+    if s in ("neg", "negative", "negativo", "negat"): return "neg"
+    if s in ("neu", "neutral", "neutro", "neutralo"): return "neu"
+    if s in ("pos", "positive", "positivo", "posi"):  return "pos"
+    return ""
+
+def _matches_any(col: str, patterns: List[str]) -> bool:
+    return any(re.match(p, col) for p in patterns)
+
+def _auto_pick_embed_prefix(columns: List[str]) -> Optional[str]:
+    for pr in _CANDIDATE_EMBED_PREFIXES:
+        if any(c.startswith(pr) for c in columns):
+            return pr
+    return None
 
 
-def _pick_calif_cols(df: pd.DataFrame, max_n: int = 10, include_text_probs: bool = False) -> List[str]:
-    """
-    Devuelve columnas de entrada para el Student:
-      - Prioriza calif_1..calif_10
-      - Si no existen, toma numéricas (excluyendo metadatos típicos)
-      - (opcional) añade p_neg/p_neu/p_pos si include_text_probs=True
-    """
-    califs = [c for c in df.columns if c.startswith("calif_")]
-    if califs:
-        # ordenar por índice numérico
-        def _idx(c: str):
-            try:
-                return int(c.split("_")[1])
-            except Exception:
-                return 999
-        califs = sorted(califs, key=_idx)[:max_n]
-    else:
-        # Fallback: numéricas excepto metadatos típicos
-        num = df.select_dtypes(include=["number"]).columns.tolist()
-        califs = [c for c in num if c.lower() not in _META_EXCLUDE][:max_n]
-
-    if include_text_probs and all(k in df.columns for k in ["p_neg", "p_neu", "p_pos"]):
-        califs = califs + ["p_neg", "p_neu", "p_pos"]
-
-    return califs
-
+# ============================
+# Vectorizador (minmax / 0..5)
+# ============================
 
 @dataclass
 class _Vectorizer:
-    """Imputación y escalado a [0,1]. Guarda stats para inferencia."""
     mean_: Optional[np.ndarray] = None
     min_: Optional[np.ndarray] = None
     max_: Optional[np.ndarray] = None
-    mode: str = "minmax"  # "minmax" o "scale_0_5"
+    mode: str = "minmax"
 
     def fit(self, X: np.ndarray, mode: str = "minmax") -> "_Vectorizer":
         self.mode = mode
-        # imputación por media
         self.mean_ = np.nanmean(X, axis=0)
         if self.mode == "scale_0_5":
             self.min_ = np.zeros(X.shape[1], dtype=np.float32)
@@ -94,49 +84,41 @@ class _Vectorizer:
         else:
             self.min_ = np.nanmin(X, axis=0)
             self.max_ = np.nanmax(X, axis=0)
-        # fallback por si hay cols constantes
+        # evitar divisiones por ~0
         self.max_ = np.where((self.max_ - self.min_) < 1e-9, self.min_ + 1.0, self.max_)
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        X = X.astype(np.float32, copy=False)
-        # imputación
-        X = np.where(np.isnan(X), self.mean_[None, :], X)
-        if self.mode == "scale_0_5":
-            X = (X - 0.0) / 5.0
-        else:
-            X = (X - self.min_[None, :]) / (self.max_[None, :] - self.min_[None, :])
-        X = np.clip(X, 0.0, 1.0)
-        return X
+        Xc = np.where(np.isnan(X), self.mean_, X)
+        Xs = (Xc - self.min_) / (self.max_ - self.min_)
+        Xs = np.clip(Xs, 0.0, 1.0)
+        return Xs.astype(np.float32, copy=False)
 
-    def fit_transform(self, X: np.ndarray, mode: str = "minmax") -> np.ndarray:
-        return self.fit(X, mode=mode).transform(X)
-
-    # persistencia
     def to_dict(self) -> Dict:
         return {
-            "mean_": None if self.mean_ is None else self.mean_.tolist(),
-            "min_":  None if self.min_  is None else self.min_.tolist(),
-            "max_":  None if self.max_  is None else self.max_.tolist(),
+            "mean": None if self.mean_ is None else self.mean_.tolist(),
+            "min":  None if self.min_  is None else self.min_.tolist(),
+            "max":  None if self.max_  is None else self.max_.tolist(),
             "mode": self.mode,
         }
 
     @classmethod
-    def from_dict(cls, d: Dict) -> "_Vectorizer":
-        v = cls()
-        v.mean_ = None if d["mean_"] is None else np.array(d["mean_"], dtype=np.float32)
-        v.min_  = None if d["min_"]  is None else np.array(d["min_"],  dtype=np.float32)
-        v.max_  = None if d["max_"]  is None else np.array(d["max_"],  dtype=np.float32)
-        v.mode  = d.get("mode", "minmax")
-        return v
+    def from_dict(cls, d: Optional[Dict]) -> "_Vectorizer":
+        obj = cls()
+        if not d:
+            return obj
+        obj.mode  = d.get("mode", "minmax")
+        obj.mean_ = np.array(d["mean"], dtype=np.float32) if d.get("mean") is not None else None
+        obj.min_  = np.array(d["min"],  dtype=np.float32) if d.get("min")  is not None else None
+        obj.max_  = np.array(d["max"],  dtype=np.float32) if d.get("max")  is not None else None
+        return obj
 
 
-# -------------
-# Núcleo de RBM
-# -------------
+# ============================
+# RBM
+# ============================
 
 class _RBM(nn.Module):
-    """RBM Bernoulli-Bernoulli con CD-k (simple y suficiente para 10 calificaciones escaladas a [0,1])."""
     def __init__(self, n_visible: int, n_hidden: int, cd_k: int = 1, seed: int = 42):
         super().__init__()
         g = torch.Generator().manual_seed(int(seed))
@@ -145,267 +127,288 @@ class _RBM(nn.Module):
         self.b_h = nn.Parameter(torch.zeros(n_hidden))
         self.cd_k = int(cd_k)
 
-    @staticmethod
-    def _sigmoid(x: Tensor) -> Tensor:
-        return torch.sigmoid(x)
-
-    def sample_h(self, v: Tensor) -> Tuple[Tensor, Tensor]:
-        p_h = self._sigmoid(v @ self.W + self.b_h)
-        h = torch.bernoulli(p_h)
-        return p_h, h
-
-    def sample_v(self, h: Tensor) -> Tuple[Tensor, Tensor]:
-        p_v = self._sigmoid(h @ self.W.t() + self.b_v)
-        v = torch.bernoulli(p_v)
-        return p_v, v
-
-    def cd_step(self, v0: Tensor) -> Dict[str, float]:
-        # Positive phase
-        ph0, h0 = self.sample_h(v0)
-
-        # k steps Gibbs
-        vk, hk, pvk, phk = v0, h0, None, None
-        for _ in range(self.cd_k):
-            pvk, vk = self.sample_v(hk)
-            phk, hk = self.sample_h(vk)
-
-        # Gradientes CD-k
-        pos = v0.t() @ ph0
-        neg = vk.t() @ phk
-        dW  = (pos - neg) / v0.shape[0]
-        dbv = torch.mean(v0 - pvk, dim=0)
-        dbh = torch.mean(ph0 - phk, dim=0)
-
-        # Recon error
-        recon = torch.mean((v0 - pvk) ** 2).item()
-
-        # Aplicar
-        self.W.grad  = -dW
-        self.b_v.grad = -dbv
-        self.b_h.grad = -dbh
-
-        grad_norm = torch.linalg.vector_norm(dW.detach()).item()
-        return {"recon_error": recon, "grad_norm": grad_norm}
+    def hidden_logits(self, v: Tensor) -> Tensor:
+        return F.linear(v, self.W.t(), self.b_h)  # (batch, n_hidden)
 
     def hidden_probs(self, v: Tensor) -> Tensor:
-        return self._sigmoid(v @ self.W + self.b_h)
+        return torch.sigmoid(self.hidden_logits(v))
+
+    def visible_logits(self, h: Tensor) -> Tensor:
+        return F.linear(h, self.W, self.b_v)      # (batch, n_visible)
+
+    def sample_hidden(self, v: Tensor) -> Tensor:
+        p = self.hidden_probs(v)
+        return torch.bernoulli(p)
+
+    def sample_visible(self, h: Tensor) -> Tensor:
+        p = torch.sigmoid(self.visible_logits(h))
+        return torch.bernoulli(p)
+
+    def free_energy(self, v: Tensor) -> Tensor:
+        vbias_term = (v * self.b_v).sum(dim=1)
+        wx_b = self.hidden_logits(v)
+        hidden_term = torch.log1p(torch.exp(wx_b)).sum(dim=1)
+        return -vbias_term - hidden_term
+
+    def forward(self, v: Tensor) -> Tensor:
+        return self.hidden_probs(v)
+
+    def contrastive_divergence_step(self, v0: Tensor):
+        vk = v0
+        for _ in range(max(1, int(self.cd_k))):
+            hk = self.sample_hidden(vk)
+            vk = self.sample_visible(hk)
+        return vk, self.sample_hidden(vk)
 
 
-# ----------------------------
-# Student: RBM + cabeza softmax
-# ----------------------------
+# ============================
+# Estrategia General
+# ============================
 
 class RBMGeneral:
-    """Estrategia RBM 'general' para el Student."""
-    def __init__(self) -> None:
-        # Objetos que se inicializan en setup()
-        self.device: str = "cpu"
+    def __init__(
+        self,
+        n_visible: Optional[int] = None,
+        n_hidden: Optional[int] = None,
+        cd_k: Optional[int] = None,
+        device: Optional[str] = None,
+        seed: Optional[int] = None,
+        **kwargs,
+    ) -> None:
+        # parámetros base
+        self.n_visible = int(n_visible) if n_visible is not None else None
+        self.n_hidden  = int(n_hidden)  if n_hidden  is not None else None
+        self.cd_k      = int(cd_k) if cd_k is not None else 1
+        self.device    = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.seed      = int(seed) if seed is not None else 42
+
+        # artefactos
         self.vec: _Vectorizer = _Vectorizer()
         self.rbm: Optional[_RBM] = None
         self.head: Optional[nn.Module] = None
+        self.opt_rbm = None
+        self.opt_head = None
 
-        # Datos en torch
+        # datos tensorizados
         self.X: Optional[Tensor] = None
         self.y: Optional[Tensor] = None
 
-        # Hparams
+        # hparams por defecto
         self.batch_size: int = 64
         self.lr_rbm: float = 1e-2
         self.lr_head: float = 1e-2
-        self.momentum: float = 0.5
+        self.momentum: float = 0.9
         self.weight_decay: float = 0.0
-        self.cd_k: int = 1
-        self.epochs_rbm: int = 1   # pasos RBM por época
-        self.seed: int = 42
-        self.scale_mode: str = "minmax"  # o "scale_0_5"
+        self.epochs_rbm: int = 1
+        self.epochs: int = 10
+        self.scale_mode: str = "minmax"
 
-        # Optimizadores
-        self.opt_rbm: Optional[torch.optim.Optimizer] = None
-        self.opt_head: Optional[torch.optim.Optimizer] = None
+        self.feat_cols_: List[str] = []
+        self.text_embed_prefix_: str = "x_text_"
 
-        # Estado de entrenamiento
         self._epoch: int = 0
-        self.classes_: List[str] = _CLASSES
+        self.accept_teacher: bool = False
+        self.accept_threshold: float = 0.8
 
-    # ---------- helpers de IO ----------
-
-    def _load_df(self, ref: str) -> pd.DataFrame:
-        p = str(ref)
-        if p.endswith(".parquet"):
-            return pd.read_parquet(p)
-        return pd.read_csv(p)
-
-    def _resolve_labels(self, df: pd.DataFrame, require_accept: bool = False, threshold: float = 0.80) -> Optional[np.ndarray]:
-        # humano > teacher (cuando exista)
-        if "y_sentimiento" in df.columns:
-            y = df["y_sentimiento"].astype(str).str.lower()
-        elif "y" in df.columns:
-            y = df["y"].astype(str).str.lower()
-        elif "sentiment_label_teacher" in df.columns:
-            y = df["sentiment_label_teacher"].astype(str).str.lower()
-            if require_accept:
-                if "accepted_by_teacher" in df.columns:
-                    mask = df["accepted_by_teacher"].fillna(0).astype(int) == 1
-                    y = y.where(mask)
-                elif "sentiment_conf" in df.columns:
-                    mask = df["sentiment_conf"].fillna(0.0) >= float(threshold)
-                    y = y.where(mask)
+    # --------------------------
+    # Carga de dataset sencillo
+    # --------------------------
+    def _load_df(self, path: str) -> pd.DataFrame:
+        if path is None:
+            raise ValueError("data_ref is None")
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".parquet":
+            return pd.read_parquet(path)
+        elif ext in (".csv", ".txt"):
+            return pd.read_csv(path)
+        elif ext in (".xlsx", ".xls"):
+            return pd.read_excel(path)
         else:
-            return None
+            raise ValueError("Formato no soportado: " + ext)
 
-        y = y.map({"neg": "neg", "negative": "neg", "negativo": "neg",
-                   "neu": "neu", "neutral": "neu",
-                   "pos": "pos", "positive": "pos", "positivo": "pos"})
-        return y.to_numpy()
+    # --------------------------
+    # Selección de columnas feat
+    # --------------------------
+    def _pick_feature_cols(
+        self,
+        df: pd.DataFrame,
+        *,
+        include_text_probs: bool,
+        include_text_embeds: bool,
+        text_embed_prefix: str,
+        max_calif: int,
+    ) -> List[str]:
+        cols = list(df.columns)
+        features: List[str] = []
 
-    def _prepare_xy(self, df: pd.DataFrame, accept_teacher: bool, threshold: float,
-                    include_text_probs: bool = False) -> Tuple[np.ndarray, Optional[np.ndarray], List[str]]:
-        # features
-        feat_cols = _pick_calif_cols(df, max_n=10, include_text_probs=include_text_probs)
+        # 1) numéricas calif_1..N (rellenadas más abajo si faltan)
+        for i in range(max_calif):
+            name = f"calif_{i+1}"
+            if name in cols:
+                features.append(name)
+
+        # 2) numéricas pregunta_1..N (si existen)
+        features += [c for c in cols if _matches_any(c, [r"^pregunta_\d+$"])]
+
+        # 3) probas p_neg/p_neu/p_pos
+        if include_text_probs:
+            for p in _PROB_COLS:
+                if p in cols:
+                    features.append(p)
+
+        # 4) embeddings de texto por prefijo
+        if include_text_embeds:
+            embed_cols = [c for c in cols if c.startswith(text_embed_prefix)]
+            if not embed_cols:
+                # Autodetección si el prefijo declarado no aparece
+                auto = _auto_pick_embed_prefix(cols)
+                if auto:
+                    self.text_embed_prefix_ = auto
+                    embed_cols = [c for c in cols if c.startswith(auto)]
+            if embed_cols:
+                embed_cols = sorted(embed_cols, key=lambda c: _suffix_index(c, self.text_embed_prefix_))
+                features += embed_cols
+
+        # deduplicar preservando orden
+        features = list(dict.fromkeys(features))
+        return features
+
+    def _prepare_xy(
+        self,
+        df: pd.DataFrame,
+        *,
+        accept_teacher: bool,
+        threshold: float,
+        max_calif: int,
+        include_text_probs: bool,
+        include_text_embeds: bool,
+        text_embed_prefix: str,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], List[str]]:
+        # asegurar calif_*
+        for i in range(max_calif):
+            c = f"calif_{i+1}"
+            if c not in df.columns:
+                df[c] = 0.0
+
+        # construir feat_cols
+        feat_cols = self._pick_feature_cols(
+            df,
+            include_text_probs=include_text_probs,
+            include_text_embeds=include_text_embeds,
+            text_embed_prefix=text_embed_prefix,
+            max_calif=max_calif,
+        )
+
         X = df[feat_cols].to_numpy(dtype=np.float32)
 
-        # labels (opcional, si entrenamos con cabeza)
-        y_raw = self._resolve_labels(df, require_accept=accept_teacher, threshold=threshold)
-        y = None
-        if y_raw is not None:
-            y = np.array([_LABEL_MAP[l] if isinstance(l, str) and l in _LABEL_MAP else -1 for l in y_raw], dtype=np.int64)
-            # filtrar -1 (sin etiqueta)
-            mask = y >= 0
-            X = X[mask]
-            y = y[mask]
+        # etiquetas: detectar columna candidata
+        possible_label_cols = [
+            "label",
+            "sentiment_label_teacher",
+            "sentiment_label",
+            "teacher_label",
+            "sentiment_label_annotator",
+        ]
+        label_col = next((c for c in possible_label_cols if c in df.columns), None)
 
-        return X, y, feat_cols
+        # aceptación explícita (si existe)
+        accept_col = next((c for c in ("accepted_by_teacher", "teacher_accepted", "accepted") if c in df.columns), None)
 
-    # ---------- API pública esperada ----------
+        if label_col is not None:
+            y_raw = df[label_col].astype("string").fillna("").str.strip().str.lower()
+        else:
+            y_raw = pd.Series([""] * len(df))
 
+        # Filtro por aceptación:
+        # 1) si hay columna de aceptación -> filtrarla
+        if accept_col is not None:
+            try:
+                mask_accept = df[accept_col].astype("float").fillna(0.0) != 0.0
+                if mask_accept.sum() < len(df):
+                    df = df[mask_accept].reset_index(drop=True)
+                    y_raw = y_raw[mask_accept].reset_index(drop=True)
+                    X = df[feat_cols].to_numpy(dtype=np.float32)
+            except Exception:
+                pass
+        # 2) si NO hay columna, pero el llamador pide accept_teacher y existen p_* -> usar umbral
+        elif accept_teacher and all(p in df.columns for p in _PROB_COLS):
+            pmax = df[_PROB_COLS].to_numpy(dtype=np.float32).max(axis=1)
+            mask_accept = pmax >= float(threshold)
+            if mask_accept.sum() > 0 and mask_accept.sum() < len(df):
+                df = df[mask_accept].reset_index(drop=True)
+                y_raw = y_raw[mask_accept].reset_index(drop=True)
+                X = df[feat_cols].to_numpy(dtype=np.float32)
+
+        # normalizar etiquetas
+        y_norm = y_raw.apply(_norm_label)
+        mask_valid = y_norm.isin(["neg", "neu", "pos"])
+        if (~mask_valid).sum() > 0:
+            df = df[mask_valid].reset_index(drop=True)
+            y_norm = y_norm[mask_valid].reset_index(drop=True)
+            X = df[feat_cols].to_numpy(dtype=np.float32)
+
+        y_np = None if len(y_norm) == 0 else np.array([_LABEL_MAP[s] for s in y_norm.tolist()], dtype=np.int64)
+        return X, y_np, feat_cols
+
+    # --------------------------
+    # setup() opcional (no usado por fit robusto, pero disponible)
+    # --------------------------
     def setup(self, data_ref: Optional[str], hparams: Dict) -> None:
-        """
-        data_ref: ruta a parquet/csv con columnas calif_1..10 y (opcional) etiquetas.
-        hparams: dict con hiperparámetros. Soportados:
-            - n_hidden (int), cd_k (int), batch_size (int)
-            - lr_rbm (float), lr_head (float), momentum (float), weight_decay (float)
-            - seed (int), scale_mode {"minmax","scale_0_5"}
-            - accept_teacher (bool), accept_threshold (float)
-            - use_text_probs (bool) -> añade p_neg/p_neu/p_pos como features si existen
-        """
-        # Hparams
-        self.seed = int(hparams.get("seed", 42) or 42)
+        # Mantener compatibilidad si tu runner usa setup()
+        self.seed = int(hparams.get("seed", self.seed or 42) or 42)
         np.random.seed(self.seed); torch.manual_seed(self.seed)
-        self.device = "cuda" if torch.cuda.is_available() and bool(hparams.get("use_cuda", False)) else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() and bool(hparams.get("use_cuda", False)) else self.device
 
-        self.batch_size   = int(hparams.get("batch_size", 64))
-        self.cd_k         = int(hparams.get("cd_k", 1))
-        self.lr_rbm       = float(hparams.get("lr_rbm", 1e-2))
-        self.lr_head      = float(hparams.get("lr_head", 1e-2))
-        self.momentum     = float(hparams.get("momentum", 0.5))
-        self.weight_decay = float(hparams.get("weight_decay", 0.0))
-        self.epochs_rbm   = int(hparams.get("epochs_rbm", 1))
-        self.scale_mode   = str(hparams.get("scale_mode", "minmax"))
-        accept_teacher    = bool(hparams.get("accept_teacher", True))
-        accept_threshold  = float(hparams.get("accept_threshold", 0.80))
-        include_text_probs = bool(hparams.get("use_text_probs", False))
+        self.batch_size    = int(hparams.get("batch_size", self.batch_size))
+        self.cd_k          = int(hparams.get("cd_k", getattr(self, "cd_k", 1)))
+        self.lr_rbm        = float(hparams.get("lr_rbm", self.lr_rbm))
+        self.lr_head       = float(hparams.get("lr_head", self.lr_head))
+        self.momentum      = float(hparams.get("momentum", self.momentum))
+        self.weight_decay  = float(hparams.get("weight_decay", self.weight_decay))
+        self.epochs_rbm    = int(hparams.get("epochs_rbm", self.epochs_rbm))
+        self.epochs        = int(hparams.get("epochs", self.epochs))
+        self.scale_mode    = str(hparams.get("scale_mode", self.scale_mode))
 
-        # Data
-        df = self._load_df(data_ref) if data_ref else pd.DataFrame(
-            {"calif_%d" % (i+1): np.random.rand(256).astype(np.float32) * 5.0 for i in range(10)}
+        include_text_probs   = bool(hparams.get("use_text_probs", False))
+        include_text_embeds  = bool(hparams.get("use_text_embeds", False))
+        self.text_embed_prefix_ = str(hparams.get("text_embed_prefix", self.text_embed_prefix_))
+        max_calif = int(hparams.get("max_calif", 10))
+
+        df = self._load_df(data_ref) if data_ref else pd.DataFrame({f"calif_{i+1}": np.random.rand(256).astype(np.float32) * 5.0 for i in range(max_calif)})
+
+        X_np, y_np, feat_cols = self._prepare_xy(
+            df,
+            accept_teacher=bool(hparams.get("accept_teacher", False)),
+            threshold=float(hparams.get("accept_threshold", 0.8)),
+            max_calif=max_calif,
+            include_text_probs=include_text_probs,
+            include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
+            text_embed_prefix=self.text_embed_prefix_,
         )
-        X_np, y_np, feat_cols = self._prepare_xy(df, accept_teacher, accept_threshold,
-                                                 include_text_probs=include_text_probs)
 
-        # Vectorizer
+        self.feat_cols_ = list(feat_cols)
         self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
         X_np = self.vec.transform(X_np)
 
-        # Tensores
         X_t = torch.from_numpy(X_np).to(self.device)
         self.X = X_t
 
-        # RBM
         n_visible = X_np.shape[1]
-        n_hidden = int(hparams.get("n_hidden", 32))
-        self.rbm = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
+        n_hidden  = int(hparams.get("n_hidden", self.n_hidden or 32))
+        self.rbm  = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
+        self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum)
 
-        # Optimizador RBM (SGD con momentum)
-        self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum, weight_decay=self.weight_decay)
-
-        # Cabeza supervisada (si hay y)
-        self.head = nn.Linear(n_hidden, len(_CLASSES)).to(self.device)
+        self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
         self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
 
-        if y_np is not None:
-            self.y = torch.from_numpy(y_np).to(self.device)
-        else:
-            self.y = None
-
+        self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
         self._epoch = 0
 
-    def _iter_minibatches(self, X: Tensor, y: Optional[Tensor]) -> Tuple[Tensor, Optional[Tensor]]:
-        idx = torch.randperm(X.shape[0], device=X.device)
-        for start in range(0, len(idx), self.batch_size):
-            sel = idx[start:start + self.batch_size]
-            yield X[sel], (None if y is None else y[sel])
-
-    def train_step(self, epoch: int) -> Tuple[float, Dict]:
-        """
-        Ejecuta 1 época:
-          - Varias pasadas CD-k sobre RBM (epochs_rbm).
-          - Si hay etiquetas, entrena la cabeza softmax con las features ocultas.
-        Devuelve (loss_promedio, metrics).
-        """
-        assert self.rbm is not None and self.opt_rbm is not None
-        self._epoch = epoch
-
-        rbm_losses, rbm_grad = [], []
-        cls_losses = []
-
-        # 1) RBM (reconstrucción)
-        self.rbm.train()
-        for _ in range(max(1, self.epochs_rbm)):
-            for xb, _ in self._iter_minibatches(self.X, self.y):
-                self.opt_rbm.zero_grad(set_to_none=True)
-                m = self.rbm.cd_step(xb)
-                rbm_losses.append(m["recon_error"])
-                rbm_grad.append(m["grad_norm"])
-                # step
-                for p in self.rbm.parameters():
-                    if p.grad is not None:
-                        p.data -= self.lr_rbm * p.grad
-
-        # 2) Cabeza supervisada (si hay y) — pesos por clase (inverso de frecuencia)
-        if self.y is not None:
-            counts = torch.bincount(self.y, minlength=3).float()  # [n_neg, n_neu, n_pos]
-            weights = (counts.sum() / (counts + 1e-9))            # inverso de la frecuencia
-            weights = weights / weights.sum() * 3.0               # reescala para estabilidad numérica
-            weights = weights.to(self.device)
-
-            self.head.train()
-            for xb, yb in self._iter_minibatches(self.X, self.y):
-                with torch.no_grad():
-                    H = self.rbm.hidden_probs(xb)
-                self.opt_head.zero_grad(set_to_none=True)
-                logits = self.head(H)
-                loss = F.cross_entropy(logits, yb, weight=weights)
-                loss.backward()
-                self.opt_head.step()
-                cls_losses.append(float(loss.detach().cpu()))
-
-        # Métricas
-        recon = float(np.mean(rbm_losses)) if rbm_losses else 0.0
-        gmean = float(np.mean(rbm_grad)) if rbm_grad else 0.0
-        closs = float(np.mean(cls_losses)) if cls_losses else 0.0
-
-        metrics = {
-            "epoch": float(epoch),
-            "recon_error": recon,
-            "rbm_grad_norm": gmean,
-            "cls_loss": closs,
-            "time_epoch_ms": (time.perf_counter() * 0)  # placeholder si no medimos
-        }
-
-        return (recon + closs), metrics
-
-    # ---------- Inferencia ----------
-
+    # --------------------------
+    # Transformaciones y predict
+    # --------------------------
     def _transform_np(self, X_np: np.ndarray) -> Tensor:
         Xs = self.vec.transform(X_np)
         Xt = torch.from_numpy(Xs.astype(np.float32, copy=False)).to(self.device)
@@ -413,62 +416,244 @@ class RBMGeneral:
             H = self.rbm.hidden_probs(Xt)
         return H
 
-    def predict_proba(self, X_np: np.ndarray) -> np.ndarray:
-        """Devuelve probabilidades en orden [neg, neu, pos]."""
+    def _df_to_X(self, df: pd.DataFrame) -> np.ndarray:
+        assert len(self.feat_cols_) > 0, "El modelo no tiene feat_cols_ configuradas."
+        missing = [c for c in self.feat_cols_ if c not in df.columns]
+        if missing:
+            # rellenar con 0.0 si faltan columnas (tolerancia)
+            for c in missing:
+                df[c] = 0.0
+        X_np = df[self.feat_cols_].to_numpy(dtype=np.float32)
+        return X_np
+
+    def predict_proba_df(self, df: pd.DataFrame) -> np.ndarray:
+        X_np = self._df_to_X(df.copy())
         self.rbm.eval(); self.head.eval()
         H = self._transform_np(X_np)
         with torch.no_grad():
             proba = F.softmax(self.head(H), dim=1).cpu().numpy()
         return proba
 
-    def predict(self, X_np: np.ndarray) -> List[str]:
-        proba = self.predict_proba(X_np)
+    def predict_df(self, df: pd.DataFrame) -> List[str]:
+        idx = self.predict_proba_df(df).argmax(axis=1)
+        return [_INV_LABEL_MAP[i] for i in idx]
+
+    def predict_proba(self, X_or_df: Union[np.ndarray, pd.DataFrame], X_text_embeds: Optional[np.ndarray] = None) -> np.ndarray:
+        if isinstance(X_or_df, pd.DataFrame):
+            df = X_or_df.copy()
+            if X_text_embeds is not None:
+                X_text_embeds = np.asarray(X_text_embeds, dtype=np.float32)
+                if X_text_embeds.shape[0] != len(df):
+                    raise ValueError("X_text_embeds must have same number of rows as DataFrame")
+                n_text = X_text_embeds.shape[1]
+                for j in range(n_text):
+                    df[f"{self.text_embed_prefix_}{j}"] = X_text_embeds[:, j]
+            return self.predict_proba_df(df)
+
+        X_np = np.asarray(X_or_df, dtype=np.float32)
+        if X_text_embeds is not None:
+            X_text_embeds = np.asarray(X_text_embeds, dtype=np.float32)
+            if X_text_embeds.shape[0] != X_np.shape[0]:
+                raise ValueError("X_text_embeds must have same number of rows as X_or_df")
+            X_np = np.hstack([X_np, X_text_embeds])
+
+        assert X_np.shape[1] == len(self.feat_cols_), (
+            f"Dimensión de entrada {X_np.shape[1]} != {len(self.feat_cols_)} (entrenamiento). "
+            "Usa predict_proba_df(df) para construir automáticamente las columnas o pasa embeddings adecuados."
+        )
+        self.rbm.eval(); self.head.eval()
+        H = self._transform_np(X_np)
+        with torch.no_grad():
+            return F.softmax(self.head(H), dim=1).cpu().numpy()
+
+    def predict(self, X_or_df: Union[np.ndarray, pd.DataFrame], X_text_embeds: Optional[np.ndarray] = None) -> List[str]:
+        proba = self.predict_proba(X_or_df, X_text_embeds)
         idx = proba.argmax(axis=1)
         return [_INV_LABEL_MAP[i] for i in idx]
 
-    # ---------- Persistencia ----------
-
+    # --------------------------
+    # Persistencia
+    # --------------------------
     def save(self, out_dir: str) -> None:
-        """Guarda vectorizer.json, rbm.pt y head.pt en out_dir."""
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        # vectorizer
-        with open(os.path.join(out_dir, "vectorizer.json"), "w", encoding="utf-8") as f:
-            json.dump(self.vec.to_dict(), f, ensure_ascii=False, indent=2)
-        # rbm y head
-        torch.save({"state_dict": self.rbm.state_dict(),
-                    "n_visible": self.rbm.W.shape[0],
-                    "n_hidden": self.rbm.W.shape[1],
-                    "cd_k": self.rbm.cd_k},
-                   os.path.join(out_dir, "rbm.pt"))
-        torch.save({"state_dict": self.head.state_dict(),
-                    "classes": self.classes_},
-                   os.path.join(out_dir, "head.pt"))
+        os.makedirs(out_dir, exist_ok=True)
+        # vectorizer.json
+        with open(os.path.join(out_dir, "vectorizer.json"), "w", encoding="utf-8") as fh:
+            json.dump(self.vec.to_dict(), fh, indent=2)
+        # rbm/head
+        torch.save(
+            {"state_dict": self.rbm.state_dict(), "n_visible": self.rbm.W.shape[0], "n_hidden": self.rbm.W.shape[1], "cd_k": self.rbm.cd_k},
+            os.path.join(out_dir, "rbm.pt"),
+        )
+        torch.save({"state_dict": self.head.state_dict()}, os.path.join(out_dir, "head.pt"))
+        # meta.json (incluye vectorizer inline para mayor robustez)
+        meta = {
+            "feat_cols_": self.feat_cols_,
+            "vectorizer": self.vec.to_dict(),
+            "hparams": {"scale_mode": self.scale_mode, "text_embed_prefix": self.text_embed_prefix_, "cd_k": self.cd_k},
+        }
+        with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, indent=2)
 
     @classmethod
     def load(cls, in_dir: str, device: Optional[str] = None) -> "RBMGeneral":
-        """Restaura un modelo guardado con save()."""
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         obj = cls()
-        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         obj.device = device
 
-        # vectorizer
-        with open(os.path.join(in_dir, "vectorizer.json"), "r", encoding="utf-8") as f:
-            obj.vec = _Vectorizer.from_dict(json.load(f))
+        # meta y vectorizer
+        meta_path = os.path.join(in_dir, "meta.json")
+        vec_path  = os.path.join(in_dir, "vectorizer.json")
 
-        # rbm
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+            obj.feat_cols_ = list(meta.get("feat_cols_", []))
+            obj.vec = _Vectorizer.from_dict(meta.get("vectorizer", None))
+            obj.scale_mode = str(meta.get("hparams", {}).get("scale_mode", obj.scale_mode))
+            obj.text_embed_prefix_ = str(meta.get("hparams", {}).get("text_embed_prefix", obj.text_embed_prefix_))
+
+        # Si vectorizer.json existe, tiene prioridad (por si meta antiguo no lo tenía)
+        if os.path.exists(vec_path):
+            with open(vec_path, "r", encoding="utf-8") as fh:
+                obj.vec = _Vectorizer.from_dict(json.load(fh))
+
+        # fallback feat_cols por si falta meta
+        if not obj.feat_cols_:
+            obj.feat_cols_ = [f"calif_{i+1}" for i in range(10)]
+
+        # cargar rbm/head
         rbm_ckpt = torch.load(os.path.join(in_dir, "rbm.pt"), map_location=device)
-        obj.rbm = _RBM(n_visible=rbm_ckpt["n_visible"], n_hidden=rbm_ckpt["n_hidden"], cd_k=rbm_ckpt.get("cd_k", 1))
+        obj.rbm = _RBM(n_visible=rbm_ckpt["n_visible"], n_hidden=rbm_ckpt["n_hidden"], cd_k=rbm_ckpt.get("cd_k", 1)).to(device)
         obj.rbm.load_state_dict(rbm_ckpt["state_dict"])
-        obj.rbm.to(device)
-        obj.opt_rbm = torch.optim.SGD(obj.rbm.parameters(), lr=1e-6)  # dummy
-
-        # head
         head_ckpt = torch.load(os.path.join(in_dir, "head.pt"), map_location=device)
-        obj.head = nn.Linear(rbm_ckpt["n_hidden"], len(_CLASSES)).to(device)
+        obj.head = nn.Sequential(nn.Linear(rbm_ckpt["n_hidden"], 3)).to(device)
         obj.head.load_state_dict(head_ckpt["state_dict"])
-        obj.opt_head = torch.optim.Adam(obj.head.parameters(), lr=1e-6)  # dummy
-        obj.classes_ = head_ckpt.get("classes", _CLASSES)
 
-        obj.X = None; obj.y = None
-        obj._epoch = 0
+        obj.X = None; obj.y = None; obj._epoch = 0
         return obj
+
+    def fit(self, *args, **kwargs) -> Dict:
+        """
+        Soporta dos modos:
+        A) fit(X_df_o_np, y_np, ...)  -> usado por train_rbm.py
+        B) fit(df_completo, ...)      -> autodetecta labels/feats desde el DF (modo antiguo)
+        """
+        import numpy as _np
+        import pandas as _pd
+        job_dir = kwargs.get("job_dir") or kwargs.get("out_dir") or kwargs.get("job_dir_path")
+        if job_dir is None:
+            job_dir = os.path.join("artifacts", "jobs", time.strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(job_dir, exist_ok=True)
+
+        # ------ hparams ------
+        get = lambda k, d=None: kwargs.get(k, d)
+        self.scale_mode   = str(get("scale_mode", self.scale_mode))
+        self.lr_rbm       = float(get("lr_rbm", self.lr_rbm))
+        self.lr_head      = float(get("lr_head", self.lr_head))
+        self.momentum     = float(get("momentum", self.momentum))
+        self.weight_decay = float(get("weight_decay", self.weight_decay))
+        self.epochs_rbm   = int(get("epochs_rbm", self.epochs_rbm))
+        self.epochs       = int(get("epochs", self.epochs))
+        self.cd_k         = int(get("cd_k", self.cd_k))
+        self.seed         = int(get("seed", self.seed or 42)); np.random.seed(self.seed); torch.manual_seed(self.seed)
+
+        # ------ Modo A: (X_df|X_np, y) ------
+        X_np = None; y_np = None
+        if len(args) >= 1 and isinstance(args[0], (_pd.DataFrame, _np.ndarray)):
+            Xarg = args[0]
+            if isinstance(Xarg, _pd.DataFrame):
+                self.feat_cols_ = list(Xarg.columns)
+                X_np = Xarg.to_numpy(dtype=_np.float32)
+            else:
+                X_np = _np.asarray(Xarg, dtype=_np.float32)
+                if not self.feat_cols_:
+                    self.feat_cols_ = [f"f{i}" for i in range(X_np.shape[1])]
+            if len(args) >= 2 and args[1] is not None:
+                y_np = _np.asarray(args[1], dtype=_np.int64)
+        else:
+            # ------ Modo B: DF completo (autodetección clásica) ------
+            data_ref = get("data") or get("data_ref") or get("dataset")
+            df = self._load_df(data_ref) if isinstance(data_ref, str) else (args[0] if len(args)>=1 else None)
+            if df is None or not isinstance(df, _pd.DataFrame):
+                raise ValueError("fit(...) requiere (X,y) o un DataFrame completo.")
+            include_text_embeds = bool(get("use_text_embeds", False))
+            include_text_probs  = bool(get("use_text_probs", False))
+            self.text_embed_prefix_ = str(get("text_embed_prefix", self.text_embed_prefix_))
+            max_calif = int(get("max_calif", 10))
+            X_np, y_np, feat_cols = self._prepare_xy(
+                df.copy(),
+                accept_teacher=bool(get("accept_teacher", False)),
+                threshold=float(get("accept_threshold", 0.8)),
+                max_calif=max_calif,
+                include_text_probs=include_text_probs,
+                include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
+                text_embed_prefix=self.text_embed_prefix_,
+            )
+            self.feat_cols_ = list(feat_cols)
+
+        # ------- Filtrado automático de clases inválidas (y fuera de {0,1,2}) -------
+        if y_np is not None:
+            valid_mask = (y_np >= 0) & (y_np <= 2)
+            if valid_mask.sum() < len(y_np):
+                X_np = X_np[valid_mask]
+                y_np = y_np[valid_mask]
+        # ------- chequeos -------
+        if X_np is None or X_np.size == 0:
+            raise ValueError("X de entrenamiento está vacío; revisa el pipeline de features.")
+        self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
+        Xs = self.vec.transform(X_np); self.X = torch.from_numpy(Xs).to(self.device)
+        n_hidden = int(get("n_hidden", self.n_hidden or 32))
+        self.rbm  = _RBM(n_visible=self.X.shape[1], n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
+        self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum)
+        self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
+        self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+
+        # ------- pretrain RBM -------
+        self.rbm.train()
+        for _ in range(max(1, self.epochs_rbm)):
+            self.opt_rbm.zero_grad()
+            vk, hk = self.rbm.contrastive_divergence_step(self.X)
+            loss_rbm = self.rbm.free_energy(self.X).mean() - self.rbm.free_energy(vk).mean()
+            loss_rbm.backward(); self.opt_rbm.step()
+
+        # ------- head supervised (si y) -------
+        if y_np is None:
+            f1_macro, acc = 0.0, 0.0
+        else:
+            self.y = torch.from_numpy(y_np).to(self.device)
+            for _ in range(max(1, self.epochs)):
+                self.opt_head.zero_grad()
+                with torch.no_grad(): H = self.rbm.hidden_probs(self.X)
+                logits = self.head(H)
+                # Ignora índice 3 si aún quedara alguno por arriba (paranoia-safe)
+                loss = F.cross_entropy(logits, self.y, ignore_index=3)
+                loss.backward(); self.opt_head.step()
+            self.rbm.eval(); self.head.eval()
+            with torch.no_grad():
+                H = self.rbm.hidden_probs(self.X)
+                preds = torch.argmax(self.head(H), dim=1).cpu().numpy()
+                y_true = self.y.cpu().numpy()
+            acc = float((preds == y_true).mean())
+            # f1 macro simple (sin sklearn)
+            f1s = []
+            for c in [0,1,2]:
+                tp = int(((preds==c)&(y_true==c)).sum()); fp = int(((preds==c)&(y_true!=c)).sum()); fn = int(((preds!=c)&(y_true==c)).sum())
+                prec = tp/(tp+fp) if (tp+fp)>0 else 0.0; rec = tp/(tp+fn) if (tp+fn)>0 else 0.0
+                f1s.append(0.0 if (prec+rec)==0 else 2*prec*rec/(prec+rec))
+            f1_macro = float(np.mean(f1s))
+
+        # ------- persistencia mínima -------
+        try:
+            torch.save({"state_dict": self.rbm.state_dict(), "n_visible": self.rbm.W.shape[0], "n_hidden": self.rbm.W.shape[1], "cd_k": self.rbm.cd_k}, os.path.join(job_dir,"rbm.pt"))
+            torch.save({"state_dict": self.head.state_dict()}, os.path.join(job_dir,"head.pt"))
+            with open(os.path.join(job_dir,"vectorizer.json"),"w",encoding="utf-8") as f: json.dump(self.vec.to_dict(), f, indent=2)
+            with open(os.path.join(job_dir,"job_meta.json"),"w",encoding="utf-8") as f: json.dump({"f1_macro":float(f1_macro),"accuracy":float(acc),"feat_cols":self.feat_cols_}, f, indent=2)
+        except Exception as ex:
+            print("Warning(save):", ex)
+
+        return {"f1_macro": float(f1_macro), "accuracy": float(acc), "job_dir": job_dir}
+
+
+# alias histórico
+ModeloRBMGeneral = RBMGeneral

@@ -4,28 +4,36 @@
 #    * probs (recomendado): p_neg/p_neu/p_pos + gating (threshold, margin, neu_min)
 #    * simple: replica pipeline del notebook y etiqueta top1 con score
 # - Deja 'comentario' estandarizado y columnas para el Student (RBM).
-# - PARCHE MÍNIMO: trata el texto como opcional (has_text), ejecuta BETO solo donde hay texto suficiente
+# - Trata el texto como opcional (has_text), ejecuta BETO sólo donde hay texto suficiente
 #   y reporta cobertura de texto.
+# - (Nuevo) Genera embeddings clásicos de texto (TF-IDF + LSA) como feat_t_1..feat_t_64 si se pide.
 
 import argparse, json, time, re
 from pathlib import Path
 import numpy as np
 import pandas as pd
+
 from neurocampus.services.nlp.preprocess import limpiar_texto, tokenizar_y_lematizar_batch
 from neurocampus.services.nlp.teacher import run_transformer, accept_mask
 from transformers import pipeline  # para el modo simple del notebook
 
-TEXT_CANDIDATES = ["Sugerencias","sugerencias","comentario","comentarios","observaciones","obs","texto","review","opinion"]
+TEXT_CANDIDATES = [
+    "Sugerencias","sugerencias","comentario","comentarios",
+    "observaciones","obs","texto","review","opinion"
+]
 
-def _pick_text_col(df: pd.DataFrame, prefer: str|None) -> str:
+def _pick_text_col(df: pd.DataFrame, prefer: str | None) -> str:
+    """Intenta detectar la columna de texto de manera robusta = case/espacios insensitivo."""
     if prefer and prefer in df.columns:
         return prefer
     norm = {c: re.sub(r"\s+","",c).lower() for c in df.columns}
     for cand in TEXT_CANDIDATES:
-        if cand in df.columns: return cand
+        if cand in df.columns:
+            return cand
         n_cand = re.sub(r"\s+","",cand).lower()
         for raw, n in norm.items():
-            if n == n_cand: return raw
+            if n == n_cand:
+                return raw
     raise ValueError("No se encontró columna de texto. Usa --text-col para forzar.")
 
 def main():
@@ -42,6 +50,13 @@ def main():
                     help="probs: p_neg/p_neu/p_pos + gating; simple: pipeline tipo notebook (top1 + score)")
     ap.add_argument("--min-tokens", type=int, default=3,
                     help="Mínimo de tokens lematizados para considerar que hay texto. Default=3")
+
+    # (Nuevo) Embeddings clásicos de texto
+    ap.add_argument("--text-feats", choices=["none","tfidf_lsa"], default="none",
+                    help="Genera embeddings clásicos de texto (feat_t_*). Recomendado: tfidf_lsa")
+    ap.add_argument("--text-feats-out-dir", default=None,
+                    help="Directorio para guardar el featurizer (recomendado para reproducibilidad).")
+
     args = ap.parse_args()
 
     # 1) Cargar datos
@@ -87,8 +102,11 @@ def main():
     else:
         # --- MODO PROBS (recomendado) ---
         if mask.any():
-            P_text = run_transformer(df.loc[mask, "_texto_lemmas"].astype(str).tolist(),
-                                     args.beto_model, batch_size=args.batch_size)
+            P_text = run_transformer(
+                df.loc[mask, "_texto_lemmas"].astype(str).tolist(),
+                args.beto_model,
+                batch_size=args.batch_size
+            )
             # asignar probs solo a las filas con texto
             df.loc[mask, "p_neg"] = P_text[:, 0]
             df.loc[mask, "p_neu"] = P_text[:, 1]
@@ -105,6 +123,21 @@ def main():
             # aceptación solo donde hay texto
             acc = accept_mask(P_text, labels, threshold=args.threshold, margin=args.margin, neu_min=args.neu_min)
             df.loc[mask, "accepted_by_teacher"] = acc.astype(int)
+
+    # 3.5) (Nuevo) Feats de texto opcionales
+    if args.text_feats != "none":
+        if args.text_feats == "tfidf_lsa":
+            # Importación perezosa para no requerir sklearn si no se usa
+            from neurocampus.features.tfidf_lsa import TfidfLSAFeaturizer
+            feat = TfidfLSAFeaturizer(n_components=64, ngram_range=(1,2), min_df=3)
+            texts = df["_texto_lemmas"].astype(str).fillna("").tolist()
+            feat.fit(texts)
+            Z = feat.transform(texts)  # shape: (N,64)
+            for i in range(Z.shape[1]):
+                df[f"feat_t_{i+1}"] = Z[:, i]
+            if args.text_feats_out_dir:
+                Path(args.text_feats_out_dir).mkdir(parents=True, exist_ok=True)
+                feat.save(args.text_feats_out_dir)
 
     # 4) Asegurar columna 'comentario' (trazabilidad humana)
     if "comentario" not in df.columns:
@@ -126,16 +159,20 @@ def main():
         "margin": float(args.margin),
         "neu_min": float(args.neu_min),
         "text_col": text_col,
-        "text_coverage": float(df["has_text"].mean())
+        "text_coverage": float(df["has_text"].mean()),
+        "text_feats": args.text_feats,
+        "text_feats_out_dir": args.text_feats_out_dir
     }
     with open(args.dst + ".meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    print({"out": args.dst,
-           "n_rows": meta["n_rows"],
-           "accept_rate": float(df["accepted_by_teacher"].fillna(0).astype(int).mean()),
-           "text_coverage": meta["text_coverage"],
-           "text_col": text_col})
+    print({
+        "out": args.dst,
+        "n_rows": meta["n_rows"],
+        "accept_rate": float(df["accepted_by_teacher"].fillna(0).astype(int).mean()),
+        "text_coverage": meta["text_coverage"],
+        "text_col": text_col
+    })
 
 if __name__ == "__main__":
     main()

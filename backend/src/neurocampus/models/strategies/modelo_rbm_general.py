@@ -592,6 +592,12 @@ class RBMGeneral:
             )
             self.feat_cols_ = list(feat_cols)
 
+        # ------- Filtrado automático de clases inválidas (y fuera de {0,1,2}) -------
+        if y_np is not None:
+            valid_mask = (y_np >= 0) & (y_np <= 2)
+            if valid_mask.sum() < len(y_np):
+                X_np = X_np[valid_mask]
+                y_np = y_np[valid_mask]
         # ------- chequeos -------
         if X_np is None or X_np.size == 0:
             raise ValueError("X de entrenamiento está vacío; revisa el pipeline de features.")
@@ -620,7 +626,8 @@ class RBMGeneral:
                 self.opt_head.zero_grad()
                 with torch.no_grad(): H = self.rbm.hidden_probs(self.X)
                 logits = self.head(H)
-                loss = F.cross_entropy(logits, self.y)
+                # Ignora índice 3 si aún quedara alguno por arriba (paranoia-safe)
+                loss = F.cross_entropy(logits, self.y, ignore_index=3)
                 loss.backward(); self.opt_head.step()
             self.rbm.eval(); self.head.eval()
             with torch.no_grad():

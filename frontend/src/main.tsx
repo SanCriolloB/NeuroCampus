@@ -1,20 +1,18 @@
-/**
- * Punto de entrada de React.
- * - Monta Router con rutas "/" (App) y "/datos" (DataUpload).
- * - Importa el CSS global.
- */
-import "./styles/index.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import Dashboard from "./pages/Dashboard";
+import Prediction from "./pages/Prediction";
+import Jobs from "./pages/Jobs";
+// importa tus otras páginas si las usas en rutas públicas
 
-// Páginas
-import App from "./App"; // tu landing actual
-import DataUpload from "./pages/DataUpload"; // la pantalla del Día 2
+import "./index.css";
 
 const router = createBrowserRouter([
-  { path: "/", element: <App /> },
-  { path: "/datos", element: <DataUpload /> },
+  { path: "/", element: <Dashboard /> },
+  { path: "/prediction", element: <Prediction /> },
+  { path: "/jobs", element: <Jobs /> },
+  // agrega /models, /datos, etc., si quieres navegación directa
 ]);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

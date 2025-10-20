@@ -1,22 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { router } from "./routes/Router";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { RouterProvider } from "react-router-dom";
+import { router } from "./routes/Router";   // ← usamos el router exportado
 
-import Dashboard from "./pages/Dashboard";
-import Prediction from "./pages/Prediction";
-import Models from "./pages/Models";
-import Jobs from "./pages/Jobs";
-
-// ✅ Corrige la ruta del import de estilos:
-import "./styles/index.css";
-
-const router = createBrowserRouter([
-  { path: "/", element: <Dashboard /> },
-  { path: "/prediction", element: <Prediction /> },
-  { path: "/models", element: <Models /> },
-  { path: "/jobs", element: <Jobs /> },
-]);
+import "./styles/index.css";                // ← tu hoja de estilos
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

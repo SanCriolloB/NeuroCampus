@@ -3,6 +3,7 @@
 // - Persiste el último job en localStorage bajo la clave "nc:lastJobId" para que otros módulos (Dashboard)
 //   puedan leerlo y mostrar KPIs.
 // - Incluye manejo básico de errores y polling con limpieza adecuada.
+// - NUEVO: muestra detalle de error cuando status=failed y propaga error/detail/message desde estado(jobId).
 
 import { useEffect, useMemo, useState } from "react";
 import { entrenar, estado, EstadoResp } from "../services/modelos";
@@ -68,7 +69,14 @@ export default function Models() {
         if (cancelled) return;
 
         setStatus(st.status ?? "unknown");
-        setHistory(st.history ?? []);
+
+        // --- Propagar history y, si vienen, errores a nivel raíz ---
+        const nextHist: any[] = Array.isArray(st.history) ? [...st.history] : [];
+        const rootErr = (st as any)?.error || (st as any)?.detail || (st as any)?.message;
+        if (rootErr) {
+          nextHist.push({ error: (st as any).error, detail: (st as any).detail, message: (st as any).message });
+        }
+        setHistory(nextHist);
 
         if (
           st.status === "completed" ||
@@ -105,6 +113,14 @@ export default function Models() {
     });
     return list.filter((p): p is { x: number; y: number } => !!p && isFinite(p.x) && isFinite(p.y));
   }, [history]);
+
+  // Busca el último mensaje de error en el history (si existe)
+  const lastEntry: any = Array.isArray(history) && history.length > 0 ? history[history.length - 1] : null;
+  const lastErrorMsg: string | null =
+    (lastEntry?.error as string) ||
+    (lastEntry?.detail as string) ||
+    (lastEntry?.message as string) ||
+    null;
 
   return (
     <div className="p-6">
@@ -149,6 +165,13 @@ export default function Models() {
           <div>
             <b>Status:</b> {status}
           </div>
+
+          {/* NUEVO: Mostrar texto de error si el job falló */}
+          {status === "failed" && lastErrorMsg && (
+            <div className="mono" style={{ color: "#fca5a5", marginTop: 6 }}>
+              {lastErrorMsg}
+            </div>
+          )}
         </div>
       )}
 

@@ -1,6 +1,7 @@
 // frontend/src/services/datos.ts
 // Cliente de API para el flujo de Datos: esquema, validar y subir dataset.
-// Corrige: envío de dataset_id y overwrite en /datos/upload.
+// ✅ Corrección: en /datos/upload ahora se envía también el campo `periodo`
+//    (además de `dataset_id` para compatibilidad), que es lo que exige el backend.
 
 import api from "./apiClient";
 
@@ -65,7 +66,9 @@ export async function validar(file: File) {
  *  - dataset_id   : identificador lógico (p.ej. "2023-2")
  *  - overwrite    : "true" | "false" (string)
  *
- * Devuelve UploadResp con ok, rows_ingested, stored_as y message.
+ * Nota: el backend actual requiere el campo `periodo` en el body. Para compatibilidad
+ * mantenemos `dataset_id` como nombre de argumento aquí, pero enviamos AMBOS:
+ *   periodo = dataset_id   y   dataset_id = dataset_id
  */
 export async function upload(
   file: File,
@@ -74,6 +77,9 @@ export async function upload(
 ) {
   const fd = new FormData();
   fd.append("file", file);
+  // 👇 imprescindible para evitar 422 ("loc": ["body","periodo"])
+  fd.append("periodo", dataset_id);
+  // 👇 compatibilidad con versiones previas del backend
   fd.append("dataset_id", dataset_id);
   fd.append("overwrite", String(overwrite));
 
@@ -82,8 +88,8 @@ export async function upload(
 }
 
 /**
- * Alternativa conveniente por opciones (mantiene compatibilidad hacia atrás si tu código
- * llamaba upload(file) sin más). Ejemplo:
+ * Alternativa conveniente por opciones (compatibilidad hacia atrás).
+ * Ejemplo:
  *   uploadWithOptions(file, { dataset_id: "2023-2", overwrite: true })
  */
 export async function uploadWithOptions(

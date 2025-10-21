@@ -2,7 +2,7 @@
 // Carga/validación de datasets:
 // - GET  /datos/esquema  -> muestra la plantilla esperada
 // - POST /datos/validar   -> validación en seco (no guarda)
-// - POST /datos/upload    -> guarda el dataset con dataset_id (periodo) y overwrite
+// - POST /datos/upload    -> guarda el dataset con periodo (dataset_id) y overwrite
 
 import React, { useEffect, useState } from "react";
 import UploadDropzone from "../components/UploadDropzone";
@@ -60,7 +60,7 @@ export default function DataUpload() {
 
   // --- Formulario
   const [file, setFile] = useState<File | null>(null);
-  const [periodo, setPeriodo] = useState<string>("2024-2"); // dataset_id
+  const [periodo, setPeriodo] = useState<string>("2024-2"); // dataset_id / periodo
   const [overwrite, setOverwrite] = useState<boolean>(false);
 
   // --- Estados de UI (subida)
@@ -112,7 +112,7 @@ export default function DataUpload() {
 
     setSubmitting(true);
     try {
-      // upload(file, dataset_id, overwrite)
+      // El servicio upload ahora envía `periodo` (además de dataset_id) automáticamente
       const r = await uploadDatos(file, periodo.trim(), overwrite);
       setResult(r);
     } catch (e: any) {
@@ -174,7 +174,6 @@ export default function DataUpload() {
 
       {/* Formulario */}
       <form onSubmit={onSubmit} className="space-y-4">
-        {/* ÚNICO selector de archivo */}
         <UploadDropzone onFileSelected={setFile} accept=".csv,.xlsx,.xls,.parquet" />
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
@@ -266,7 +265,7 @@ export default function DataUpload() {
         <div className="p-3 rounded-xl bg-red-50 text-red-700">{valError}</div>
       )}
 
-      {/* Reporte de validación (si tu app lo usa; puedes quitar ResultsTable y poner tu propio componente) */}
+      {/* Reporte de validación */}
       {validRes?.sample?.length ? (
         <div className="p-4 rounded-xl border space-y-2">
           <h2 className="font-semibold">Muestra del archivo validado</h2>

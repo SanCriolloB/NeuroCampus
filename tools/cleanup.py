@@ -304,6 +304,74 @@ def main(argv: List[str]) -> int:
     purge_old_trash(trash_dir, args.trash_retention_days)
     return 0
 
+# --- fachada programática para uso interno (API/servicios) ---
+def run_cleanup(*,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+    keep_last: int = DEFAULT_KEEP_LAST,
+    exclude_globs_str: str | None = None,
+    dry_run: bool = True,
+    force: bool = False,
+    trash_dir: str = DEFAULT_TRASH_DIR,
+    trash_retention_days: int = DEFAULT_TRASH_RETENTION_DAYS,
+):
+    """
+    Ejecuta inventario y, opcionalmente, el movimiento a papelera.
+    Devuelve un dict con resumen y candidatos.
+    """
+    exclude_globs = parse_exclusions(exclude_globs_str or DEFAULT_EXCLUDE_GLOBS)
+    rep = inventory(retention_days, keep_last, exclude_globs)
+
+    summary = {
+        "total_files": rep.total_files,
+        "total_size_bytes": rep.total_size_bytes,
+        "candidates_count": rep.candidates_count,
+        "candidates_size_bytes": rep.candidates_size_bytes,
+    }
+    candidates = [
+        {"path": path, "size": size, "age_days": age, "reason": reason}
+        for (path, size, age, reason) in rep.details
+    ]
+
+    moved_bytes = 0
+    actions = []
+
+    if not dry_run and force:
+        # Borrado real: mover a papelera + log (igual a CLI)
+        tdir = (BASE_DIR / trash_dir).resolve()
+        for item in candidates:
+            p = Path(item["path"])
+            if not p.exists():
+                continue
+            fi = FileInfo(path=p, size=item["size"],
+                          mtime=time.time() - item["age_days"] * SECONDS_PER_DAY)
+
+            if is_champion(fi.path) or is_excluded(fi.path, exclude_globs) or fi.path.is_symlink():
+                # se loggea un skip para trazabilidad
+                log_action("skip", fi, item["reason"])
+                continue
+
+            try:
+                safe_move_to_trash(fi, tdir)
+                log_action("moved_to_trash", fi, item["reason"])
+                moved_bytes += fi.size
+                actions.append({"action": "moved_to_trash", "path": str(fi.path), "size": fi.size})
+            except Exception as e:
+                log_action(f"error:{type(e).__name__}", fi, item["reason"])
+                actions.append({"action": f"error:{type(e).__name__}", "path": str(fi.path)})
+
+        purge_old_trash(tdir, trash_retention_days)
+
+    result = {
+        "summary": summary,
+        "candidates": candidates,
+        "force": force,
+        "dry_run": dry_run,
+        "moved_bytes": moved_bytes,
+        "actions": actions,
+        "log_file": str(LOG_FILE),
+        "trash_dir": str((BASE_DIR / trash_dir).resolve()),
+    }
+    return result
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

@@ -32,3 +32,25 @@
 ### Exclusiones
 - `NC_EXCLUDE_GLOBS` (globs separados por coma). Por default protegen `artifacts/champions/**`.
 
+## Día 3 — API de Administración
+
+### Auth
+- `Authorization: Bearer $NC_ADMIN_TOKEN`
+
+### Endpoints
+- **GET** `/admin/cleanup/inventory`
+- **POST** `/admin/cleanup` (usar `{"dry_run":false,"force":true}` para mover a papelera)
+- **GET** `/admin/cleanup/logs?limit=200`
+
+### Ejemplos
+```bash
+make run-admin
+
+curl -H "Authorization: Bearer $NC_ADMIN_TOKEN" \
+  "http://$API_HOST:$API_PORT/admin/cleanup/inventory?retention_days=90&keep_last=3"
+
+curl -X POST -H "Authorization: Bearer $NC_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"retention_days":90,"keep_last":3,"dry_run":false,"force":true}' \
+  "http://$API_HOST:$API_PORT/admin/cleanup"
+
+

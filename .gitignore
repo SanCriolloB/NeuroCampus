@@ -30,3 +30,9 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporales y artefactos de ejecución
+.tmp/
+data/tmp/
+*.log
+*.tmp

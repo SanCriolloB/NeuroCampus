@@ -16,4 +16,4 @@ clean-artifacts:
 	@$(PY) -m tools.cleanup --force --retention-days $${NC_RETENTION_DAYS:-90} --keep-last $${NC_KEEP_LAST:-3} --exclude-globs "$${NC_EXCLUDE_GLOBS:-}" --trash-dir "$${NC_TRASH_DIR:-.trash}"
 
 run-admin:
-	@uvicorn neurocampus.app.main:app --app-dir backend/src --host $${API_HOST:-127.0.0.1} --port $${API_PORT:-8000} --reload
+	@uvicorn neurocampus.app.main:app --app-dir backend/src --host $${API_HOST} --port $${API_PORT} --reload

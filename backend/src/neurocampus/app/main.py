@@ -10,34 +10,41 @@ Responsabilidades:
 - Inyectar middleware de Correlation-Id (X-Correlation-Id) para trazabilidad
 """
 
+from __future__ import annotations
+
+import os
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import logging
 
-# NEW: configuración de logging (dictConfig)
+# Configuración de logging (dictConfig)
 from neurocampus.app.logging_config import setup_logging
 
-# NEW: middleware de trazabilidad y LogRecordFactory contextual
+# Middleware de trazabilidad y LogRecordFactory contextual
 from neurocampus.observability.middleware_correlation import CorrelationIdMiddleware
 from neurocampus.observability.logging_context import install_logrecord_factory
 
 # Routers del dominio
-from .routers import datos, jobs, modelos, prediccion
-from .routers import admin_cleanup
+from .routers import datos, jobs, modelos, prediccion, admin_cleanup
 
 # Instancia de la aplicación (título visible en /docs y /openapi.json)
-app = FastAPI(title="NeuroCampus API", version="0.6.0")
+app = FastAPI(title="NeuroCampus API", version=os.getenv("API_VERSION", "0.6.0"))
 
 # --- CORS (necesario para que el navegador permita las peticiones desde Vite) ---
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+# Permite sobreescribir orígenes por variable de entorno (coma-separados).
+_default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_env_origins = os.getenv("CORS_ALLOW_ORIGINS")  # p. ej.: "http://localhost:5173,http://127.0.0.1:5173"
+ALLOWED_ORIGINS = (
+    [o.strip() for o in _env_origins.split(",") if o.strip()]
+    if _env_origins
+    else _default_origins
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # en desarrollo puedes usar ["*"] si lo prefieres
+    allow_origins=ALLOWED_ORIGINS,   # en desarrollo podrías usar ["*"] si lo prefieres
     allow_credentials=True,
-    allow_methods=["*"],            # importante: permite OPTIONS del preflight
+    allow_methods=["*"],             # permite OPTIONS del preflight
     allow_headers=["*"],
 )
 
@@ -55,6 +62,7 @@ def _wire_observability_safe() -> None:
     try:
         # Preferimos import absoluto con --app-dir backend/src
         from neurocampus.observability.destinos.log_handler import wire_logging_destination
+
         wire_logging_destination()
         log.info("Observability wiring OK: training.* & prediction.* -> logging.INFO")
     except ModuleNotFoundError as e:

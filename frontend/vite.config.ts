@@ -8,3 +8,14 @@ export default defineConfig({
   plugins: [react()],
   server: { port: 5173 }
 });
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: "jsdom",          // simula DOM en Node
+    globals: true,                 // describe/it/expect globales
+    setupFiles: "./src/setupTests.ts", // extensiones de expect
+    css: true,                     // permite importar CSS en pruebas
+  },
+});

@@ -53,4 +53,19 @@ curl -X POST -H "Authorization: Bearer $NC_ADMIN_TOKEN" -H "Content-Type: applic
   -d '{"retention_days":90,"keep_last":3,"dry_run":false,"force":true}' \
   "http://$API_HOST:$API_PORT/admin/cleanup"
 
+```
+
+## Día 4 — UI de Administración (Frontend)
+
+- Ruta: `/admin/cleanup`
+- Ingresar **Token admin** (NC_ADMIN_TOKEN) en el campo superior. Se guarda en localStorage.
+- Ajustar `retention_days`, `keep_last`, `exclude_globs`.
+- Botones:
+  - **Inventario (dry-run)** — lista candidatos sin mover nada.
+  - **Mover a papelera (force)** — mueve candidatos a `.trash/` y registra en `logs/cleanup.log`.
+  - **Ver logs** — muestra el tail del CSV.
+
+### Dev
+- Backend: `make run-admin`
+- Frontend: `make fe-dev` (VITE_API_BASE en `.env`)
 

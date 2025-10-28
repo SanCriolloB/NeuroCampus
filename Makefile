@@ -27,3 +27,6 @@ admin-clean:
 
 fe-dev:
 	@cd frontend && npm run dev
+
+fe-test:
+	@cd frontend && npm run test:run

@@ -8,7 +8,7 @@
     "strict": true,               // TypeScript estricto
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["vite/client"]      // tipados para import.meta.env.*
+    "types": ["vite/client", "vitest/globals"]      // tipados para import.meta.env.*
   },
   "include": ["src"]
 }

@@ -12,7 +12,11 @@ export type EntrenarReq = {
 export type EstadoResp = {
   job_id: string;
   status: "running" | "completed" | "failed" | "unknown";
-  metrics: Record<string, number>;
+  metrics?: {
+    accuracy?: number;
+    f1_macro?: number;
+    f1?: number;
+  };
   history: { epoch: number; loss: number; recon_error?: number }[];
 };
 

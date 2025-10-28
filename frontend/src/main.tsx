@@ -7,7 +7,8 @@
 import "./styles/index.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { RouterProvider } from "react-router-dom";
+import { router } from "./routes/Router";   // ← usamos el router exportado
 
 // Páginas
 import App from "./App";                   // Landing

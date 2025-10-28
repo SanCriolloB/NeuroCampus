@@ -1,12 +1,12 @@
 # backend/src/neurocampus/models/train_rbm.py
 # Entrenamiento de RBM (general/restringida) con soporte para:
-# - Mezclar calificaciones + embeddings de texto (prefijo configurable)
-# - Evitar fuga de etiquetas cuando el target proviene del teacher (p_*)
-# - Guardar metadatos extendidos y artefactos de evaluación
-# - Verbosidad controlable (--quiet) y mini-chequeo de columnas post-fit
+# - Mezclar calificaciones + embeddings de texto (prefijo autodetectado)
+# - Evitar fuga de etiquetas cuando el target proviene del teacher (p_* opcionales)
+# - Guardar metadatos extendidos y artefactos de evaluación (incluye feat_cols/n_features)
+# - Verbosidad controlable (--quiet) y chequeo de columnas post-fit
 
 from __future__ import annotations
-import argparse, json, os, time, random
+import argparse, json, os, time, random, re
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -26,6 +26,66 @@ from neurocampus.models.strategies.modelo_rbm_restringida import ModeloRBMRestri
 # -------------------------
 # Utilidades
 # -------------------------
+
+# Prefijos candidatos para autodetección de embeddings de texto
+CANDIDATE_PREFIXES = ["x_text_", "text_embed_", "text_", "feat_text_", "feat_t_"]
+
+def pick_feature_cols(
+    df: pd.DataFrame,
+    *,
+    include_text_embeds: bool,
+    include_text_probs: bool,
+    text_prefix: str = "x_text_",
+    max_calif: int = 10,
+) -> List[str]:
+    """
+    Construye la lista de columnas de entrada (feat_cols):
+    - calif_1..N
+    - p_neg/p_neu/p_pos (si include_text_probs=True)
+    - embeddings de texto (prefijo autodetectado si no hay coincidencias con text_prefix)
+    """
+    cols = list(df.columns)
+    feat: List[str] = []
+
+    # 1) calif_1..N
+    for i in range(max_calif):
+        c = f"calif_{i+1}"
+        if c in cols:
+            feat.append(c)
+
+    # 2) (opcional) p_neg/p_neu/p_pos
+    if include_text_probs:
+        for c in ("p_neg", "p_neu", "p_pos"):
+            if c in cols:
+                feat.append(c)
+
+    # 3) (opcional) embeddings x_text_* (con autodetección de prefijo)
+    if include_text_embeds:
+        emb = [c for c in cols if c.startswith(text_prefix)]
+        if not emb:
+            # Autodetección para no depender del prefijo pasado por CLI
+            for pr in CANDIDATE_PREFIXES:
+                emb = [c for c in cols if c.startswith(pr)]
+                if emb:
+                    text_prefix = pr
+                    break
+        # ordenar por sufijo numérico (si existe)
+        def _idx(c):
+            m = re.search(r"(\d+)$", c)
+            return int(m.group(1)) if m else 0
+        emb = sorted(emb, key=_idx)
+        feat.extend(emb)
+
+    # deduplicar preservando orden
+    seen, feat_dedup = set(), []
+    for c in feat:
+        if c not in seen:
+            seen.add(c)
+            feat_dedup.append(c)
+
+    return feat_dedup
+
+
 def _seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -61,38 +121,6 @@ def _pick_target_column(df: pd.DataFrame) -> Tuple[str, bool]:
     )
 
 
-def _feature_columns(
-    df: pd.DataFrame,
-    use_text_embeds: bool,
-    text_prefix: str | None,
-    use_text_probs: bool,
-    max_calif: Optional[int],
-) -> List[str]:
-    # calificaciones
-    calif = [c for c in df.columns if c.startswith("calif_")]
-    calif = sorted(calif, key=lambda x: int(x.split("_")[1]))
-    if max_calif is not None:
-        calif = calif[:max_calif]
-
-    feats = list(calif)
-
-    # embeddings de texto
-    if use_text_embeds:
-        pref = text_prefix or "feat_t_"
-        text_cols = [c for c in df.columns if c.startswith(pref)]
-        # orden estable
-        text_cols.sort(key=lambda s: (len(s), s))
-        feats += text_cols
-
-    # probabilidades del teacher (solo si se habilita explícitamente)
-    if use_text_probs:
-        for c in ["p_neg", "p_neu", "p_pos"]:
-            if c in df.columns:
-                feats.append(c)
-
-    return feats
-
-
 def _to_numpy(df: pd.DataFrame, cols: List[str], mode: str) -> np.ndarray:
     X = df[cols].astype(np.float32).to_numpy()
     if mode == "minmax":
@@ -106,14 +134,17 @@ def _to_numpy(df: pd.DataFrame, cols: List[str], mode: str) -> np.ndarray:
 
 
 def _encode_labels(y: pd.Series) -> Tuple[np.ndarray, Dict[int, str]]:
-    cats = sorted(pd.Series(y).dropna().unique().tolist())
-    # si son strings ['neg','neu','pos'] -> aseguramos orden consistente
+    """
+    Devuelve y codificado a índices y el mapa inverso {idx: nombre_clase}.
+    Si detecta exactamente las tres clases 'neg','neu','pos', fija ese orden.
+    """
+    cats = sorted(pd.Series(y).dropna().astype(str).str.lower().unique().tolist())
     order = ["neg", "neu", "pos"]
     if all(v in order for v in cats) and len(cats) == 3:
         cats = order
-    mapping = {v: i for v, i in zip(cats, range(len(cats)))}
+    mapping = {v: i for i, v in enumerate(cats)}
     inv = {i: v for v, i in mapping.items()}
-    return y.map(mapping).to_numpy(), inv
+    return pd.Series(y).astype(str).str.lower().map(mapping).to_numpy(), inv
 
 
 def _instantiate_strategy(
@@ -200,12 +231,12 @@ def main():
     ap.add_argument(
         "--use-text-embeds",
         action="store_true",
-        help="Añade columnas de embeddings de texto con prefijo configurable.",
+        help="Añade columnas de embeddings de texto con prefijo autodetectado.",
     )
     ap.add_argument(
         "--text-embed-prefix",
-        default="feat_t_",
-        help="Prefijo de columnas de embeddings (por defecto 'feat_t_').",
+        default="x_text_",  # defecto cambiado para coincidir con tu dataset
+        help="Prefijo preferido de columnas de embeddings (se autodetecta si no están).",
     )
 
     # distillation
@@ -223,7 +254,7 @@ def main():
     )
 
     # otros
-    ap.add_argument("--max-calif", type=int, default=None)
+    ap.add_argument("--max-calif", type=int, default=10)
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--log-every", type=int, default=1)
 
@@ -237,10 +268,9 @@ def main():
 
     # Asegurar columna objetivo
     ycol, has_teacher_hard = _pick_target_column(df)
-    y_raw = df[ycol].astype(str)
+    y_raw = df[ycol].astype(str).str.lower()
 
     # Guardarraíl anti-fuga: si target es del teacher, prohibimos p_* en features salvo distill
-    leak_guard_applied = False
     if args.use_text_probs and has_teacher_hard and not args.distill_soft:
         raise ValueError(
             "Guardarraíl anti-fuga: --use-text-probs está activado y el target proviene del teacher "
@@ -249,28 +279,29 @@ def main():
             "p_neg/p_neu/p_pos como target suave (y sin p_* en las features)."
         )
 
-    # Filtrado por aceptación si se pide
+    # Filtrado por aceptación si se pide (nota: si tu dataset usa umbral sobre p_*, ese filtro se hace aguas arriba)
     if args.accept_teacher and ("accepted_by_teacher" in df.columns):
         df = df[df["accepted_by_teacher"].fillna(0).astype(int) >= int(args.accept_threshold)].copy()
 
-    # Determinar features
-    feat_cols = _feature_columns(
+    # Determinar features con autodetección de prefijo
+    feat_cols = pick_feature_cols(
         df,
-        use_text_embeds=args.use_text_embeds,
+        include_text_embeds=args.use_text_embeds,
+        include_text_probs=args.use_text_probs,
         text_prefix=args.text_embed_prefix,
-        use_text_probs=args.use_text_probs,
         max_calif=args.max_calif,
     )
     if len(feat_cols) == 0:
-        raise ValueError("No se encontraron columnas de características. Verifica calif_* / prefijo de embeddings.")
+        raise ValueError("No se encontraron columnas de características. Verifica calif_* / prefijos de embeddings.")
 
-    # Split train/val
+    # Codificar etiquetas
     y_enc, inv_map = _encode_labels(y_raw)
-    X_all = _to_numpy(df, feat_cols, mode=args.scale_mode)
 
+    # Split train/val estratificado
     idx_tr, idx_va = train_test_split(
         np.arange(len(df)), test_size=0.2, random_state=args.seed, stratify=y_enc
     )
+    X_all = _to_numpy(df, feat_cols, mode=args.scale_mode)
     X_tr, X_va = X_all[idx_tr], X_all[idx_va]
     y_tr, y_va = y_enc[idx_tr], y_enc[idx_va]
     df_tr = df.iloc[idx_tr].reset_index(drop=True)
@@ -290,27 +321,21 @@ def main():
         device=device,
     )
 
-    # Reportar a estrategia las columnas usadas (para predict_proba_df)
+    # Reportar a estrategia el orden exacto de columnas (para predict_proba_df)
     if hasattr(strat, "set_feature_columns"):
         strat.set_feature_columns(feat_cols)
-
-    # Asegura que el modelo conoce el orden exacto de columnas (por si la estrategia lo usa internamente)
     strat.feat_cols_ = list(feat_cols)
 
-    # Entrena usando DataFrame (no array) para mantener nombres/orden
+    # Entrenar usando DataFrame (mantiene nombres/orden)
     strat.fit(
         df_tr[feat_cols],
         y_tr,
         epochs=args.epochs,
         log_every=getattr(args, "log_every", 1),
-        log_callback=(
-            None
-            if args.quiet
-            else lambda e, d: print({"epoch": float(e), **{k: float(v) for k, v in d.items()}})
-        ),
+        log_callback=(None if args.quiet else lambda e, d: print({"epoch": float(e), **{k: float(v) for k, v in d.items()}})),
     )
 
-    # --- Mini-chequeo tras el fit (evita regresiones de columnas) ---
+    # --- Mini-chequeo tras el fit ---
     try:
         feat_cols_set = len(getattr(strat, "feat_cols_", []) or [])
         first_cols = (getattr(strat, "feat_cols_", []) or [])[:12]
@@ -327,15 +352,28 @@ def main():
     proba = _predict_proba_safe(strat, df_va[feat_cols], X_val=None)
     y_pred = proba.argmax(axis=1)
 
-    # Métricas
+    # ====== Métricas: SOLO neg/neu/pos ======
+    # Mapeamos qué índices corresponden a neg/neu/pos en inv_map
+    valid_label_names = ["neg", "neu", "pos"]
+    valid_indices = {i for i, name in inv_map.items() if name in valid_label_names}
+    # Filtramos filas cuya etiqueta no sea una de las 3
+    mask_valid = np.array([yi in valid_indices for yi in y_va])
+    y_va_f = y_va[mask_valid]
+    y_pred_f = y_pred[mask_valid]
+    # Construimos target_names en el orden consistente neg, neu, pos (de existir)
+    ordered_valid = [name for name in valid_label_names if name in inv_map.values()]
+    # Si por alguna razón no hay suficientes, nos quedamos con lo que haya en valid_indices
+    if not ordered_valid:
+        ordered_valid = [inv_map[i] for i in sorted(valid_indices)]
+    # Reporte
     report = classification_report(
-        y_va,
-        y_pred,
-        target_names=[inv_map[i] for i in sorted(inv_map)],
+        y_va_f,
+        y_pred_f,
+        target_names=ordered_valid,
         output_dict=True,
         zero_division=0,
     )
-    cm = confusion_matrix(y_va, y_pred).tolist()
+    cm = confusion_matrix(y_va_f, y_pred_f, labels=sorted(valid_indices)).tolist()
     f1_macro = float(report["macro avg"]["f1-score"])
     acc = float(report["accuracy"])
 
@@ -346,7 +384,7 @@ def main():
     cm_path = job_dir / "confusion_matrix.json"
     rep_path = job_dir / "classification_report.json"
     with open(cm_path, "w", encoding="utf-8") as f:
-        json.dump({"labels": [inv_map[i] for i in sorted(inv_map)], "matrix": cm}, f, ensure_ascii=False, indent=2)
+        json.dump({"labels": ordered_valid, "matrix": cm}, f, ensure_ascii=False, indent=2)
     with open(rep_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
@@ -377,8 +415,11 @@ def main():
             "distill_soft": args.distill_soft,
             "max_calif": args.max_calif,
         },
-        "feature_cols": feat_cols,  # lista completa CON embeds si aplica
-        "target_classes": [inv_map[i] for i in sorted(inv_map)],
+        # Guardamos feat_cols bajo dos claves por compatibilidad
+        "feat_cols": feat_cols,
+        "feature_cols": feat_cols,
+        "n_features": int(len(feat_cols)),
+        "target_classes": ordered_valid,
         "y_source": ("teacher_hard" if has_teacher_hard else "manual_or_external"),
         "split": {
             "train_size": int(len(idx_tr)),
@@ -389,14 +430,10 @@ def main():
         "text_features": {
             "used": bool(args.use_text_embeds),
             "prefix": (args.text_embed_prefix if args.use_text_embeds else None),
-            "n_text_embed_cols": int(
-                len([c for c in feat_cols if c.startswith(args.text_embed_prefix)])
-            )
-            if args.use_text_embeds
-            else 0,
+            "n_text_embed_cols": int(len([c for c in feat_cols if any(c.startswith(p) for p in CANDIDATE_PREFIXES)])) if args.use_text_embeds else 0,
         },
         "leak_guard": {
-            "blocked_use_text_probs": bool(leak_guard_applied),
+            "blocked_use_text_probs": bool(args.use_text_probs and has_teacher_hard and not args.distill_soft),
             "distill_soft": bool(args.distill_soft),
             "target_has_teacher_hard": bool(has_teacher_hard),
         },
@@ -423,10 +460,10 @@ def main():
         "job_dir": str(job_dir).replace("\\", "/"),
         "f1_macro": f1_macro,
         "accuracy": acc,
-        "classes": [inv_map[i] for i in sorted(inv_map)],
-        "n_val": int(len(idx_va)),
+        "classes": ordered_valid,
+        "n_val": int(len(y_va_f)),
         "n_labeled_used": int(len(idx_tr) + len(idx_va)),
-        "n_features": int(X_tr.shape[1]),
+        "n_features": int(len(feat_cols)),
         "type": args.type,
         "seed": args.seed,
     }

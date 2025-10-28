@@ -6,9 +6,6 @@ ENV ?= .env
 include $(ENV)
 export
 
-print-%:
-	@echo '$*=$($*)'
-
 clean-inventory:
 	@$(PY) -m tools.cleanup --inventory
 
@@ -27,3 +24,6 @@ admin-inventory:
 
 admin-clean:
 	@curl -s -X POST -H "Authorization: Bearer $(NC_ADMIN_TOKEN)" -H "Content-Type: application/json" -d "{\"retention_days\":$(NC_RETENTION_DAYS),\"keep_last\":$(NC_KEEP_LAST),\"dry_run\":false,\"force\":true,\"trash_dir\":\"$(NC_TRASH_DIR)\",\"trash_retention_days\":$(NC_TRASH_RETENTION_DAYS)}" "http://$(API_HOST):$(API_PORT)/admin/cleanup" | jq .
+
+fe-dev:
+	@cd frontend && npm run dev

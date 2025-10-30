@@ -168,3 +168,10 @@ validate-sample-fmt:
 	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id='$(NC_DATASET_ID)' (fmt=$(NC_FMT)) contra http://$(API_HOST):$(API_PORT)/datos/validar"
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" -F "fmt=$(NC_FMT)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
+
+
+# Activar el entorno virtual
+
+.PHONY: venv
+venv:
+	@python -m venv .venv && echo ">> Activa el entorno: source .venv/Scripts/activate"

@@ -1,28 +1,18 @@
 /**
- * Punto de entrada de React.
- * - Monta Router con rutas:
- *   "/" (App), "/datos" (DataUpload), "/admin/cleanup" (AdminCleanup).
- * - Importa el CSS global.
+ * frontend/src/main.tsx
+ * Punto de entrada de React: monta <App /> envuelto en <BrowserRouter>.
+ * Las rutas están definidas dentro de App.tsx (usa <Routes> y <Route>).
  */
 import "./styles/index.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { RouterProvider } from "react-router-dom";
-import { router } from "./routes/Router";   // ← usamos el router exportado
-
-// Páginas
-import App from "./App";                   // Landing
-import DataUpload from "./pages/DataUpload"; // Pantalla de carga de datos
-import AdminCleanupPage from "./pages/AdminCleanup"; // Día 4: UI administración limpieza
-
-const router = createBrowserRouter([
-  { path: "/", element: <App /> },
-  { path: "/datos", element: <DataUpload /> },
-  { path: "/admin/cleanup", element: <AdminCleanupPage /> }, // <-- nueva ruta
-]);
+import { BrowserRouter } from "react-router-dom";
+import App from "./App";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <RouterProvider router={router} />
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
   </React.StrictMode>
 );

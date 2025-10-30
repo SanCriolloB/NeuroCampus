@@ -6,6 +6,19 @@ SHELL := bash
 # Binario de Python
 PY := python
 
+# ==== VENV aware (Windows / POSIX) ====
+VENV ?= .venv
+
+ifeq ($(OS),Windows_NT)
+PY     := $(VENV)/Scripts/python.exe
+PIP    := $(VENV)/Scripts/pip.exe
+PYTEST := $(VENV)/Scripts/pytest.exe
+else
+PY     := $(VENV)/bin/python
+PIP    := $(VENV)/bin/pip
+PYTEST := $(PY) -m pytest
+endif
+
 # Archivo de variables de entorno (puede redefinir API_HOST, API_PORT, etc.)
 ENV ?= .env
 -include $(ENV)
@@ -22,8 +35,8 @@ NC_TRASH_RETENTION_DAYS ?= 7
 NC_ADMIN_TOKEN ?= dev-admin-token
 
 # Para el helper de validación
-NC_DATASET_ID ?= docentes
-NC_SAMPLE_CSV ?= examples/docentes.csv
+NC_DATASET_ID ?= Evaluacion
+NC_SAMPLE_CSV ?= examples/Evaluacion.csv
 NC_FMT ?=
 
 # Rutas comunes
@@ -119,7 +132,13 @@ be-dev:
 # Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
 .PHONY: be-test
 be-test:
-	@PYTHONPATH=$(BACKEND_SRC) $(PY) -m pytest -q
+	@PYTHONPATH=$(BACKEND_SRC) $(PYTEST) -q
+
+# Opcional: ejecutar tests desactivando auth admin (útil para depurar)
+.PHONY: be-test-noauth
+be-test-noauth:
+	@NC_DISABLE_ADMIN_AUTH=1 PYTHONPATH=$(BACKEND_SRC) $(PYTEST) -q
+
 
 # ----------------------------------------------------------------------------- #
 # --- Frontend (desarrollo, build y pruebas) ---------------------------------- #
@@ -168,3 +187,23 @@ validate-sample-fmt:
 	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id='$(NC_DATASET_ID)' (fmt=$(NC_FMT)) contra http://$(API_HOST):$(API_PORT)/datos/validar"
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" -F "fmt=$(NC_FMT)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
+
+# Probar dataset_id explícito
+.PHONY: validate-sample-with-id
+validate-sample-with-id:
+	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV)" && exit 1)
+	@test -n "$(NC_DATASET_ID)" || (echo "ERROR: Define NC_DATASET_ID" && exit 1)
+	@echo ">> Validando $(NC_SAMPLE_CSV) con dataset_id=$(NC_DATASET_ID)"
+	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
+		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
+
+# Activar el entorno virtual
+
+.PHONY: venv
+venv:
+	@python -m venv .venv && echo ">> Activa el entorno: source .venv/Scripts/activate"
+
+.PHONY: deps-be
+deps-be:
+	@$(PIP) install -U pip wheel setuptools
+	@$(PIP) install -r backend/requirements.txt

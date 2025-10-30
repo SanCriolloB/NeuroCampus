@@ -36,3 +36,17 @@ Thumbs.db
 data/tmp/
 *.log
 *.tmp
+# Node (raíz)
+/node_modules/
+
+# --- NeuroCampus generated stuff ---
+artifacts/
+.tmp/
+datasets/
+historico/*.parquet
+__pycache__/
+*.pyc
+
+# Python bytecode
+__pycache__/
+*.pyc

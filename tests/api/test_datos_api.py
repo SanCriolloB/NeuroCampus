@@ -16,3 +16,13 @@ def test_validar_formato_no_soportado(client):
     data = {"dataset_id": "docentes"}
     r = client.post("/datos/validar", files=files, data=data)
     assert r.status_code == 400
+
+def test_validar_con_dataset_id(client):
+    csv = "col1,col2\n1,2\n3,4\n"
+    files = {"file": ("sample.csv", csv, "text/csv")}
+    data = {"dataset_id": "docentes"}  # <- debe fluir hasta el wrapper
+    r = client.post("/datos/validar", files=files, data=data)
+    assert r.status_code == 200
+    body = r.json()
+    assert "summary" in body and "issues" in body
+    assert body["summary"]["engine"]  # debería venir "validation_wrapper" si no hay engine externo

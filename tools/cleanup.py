@@ -111,10 +111,42 @@ def parse_exclusions(globs_str: str) -> List[str]:
     return globs
 
 
+# ---------------------------
+# FIX Paso 3 (robustez rutas)
+# ---------------------------
+def _rel_from_base(path: Path) -> str:
+    """
+    Devuelve una ruta relativa tipo POSIX para comparar con patrones de exclusión.
+    - Si el path no está dentro de BASE_DIR, intenta cortar desde 'artifacts'.
+    - En última instancia usa el nombre de archivo.
+    """
+    try:
+        return path.resolve().relative_to(BASE_DIR.resolve()).as_posix()
+    except Exception:
+        parts = path.resolve().parts
+        if "artifacts" in parts:
+            idx = parts.index("artifacts")
+            return "/".join(parts[idx:])
+        return path.name  # fallback mínimo
+
+
 def is_excluded(path: Path, exclude_globs: List[str]) -> bool:
-    # Evaluar contra ruta relativa al repo para que los globs encajen
-    rel = str(path.resolve().relative_to(BASE_DIR.resolve()))
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in exclude_globs)
+    """
+    Devuelve True si el path coincide con alguno de los patrones de exclusión.
+    Acepta patrones relativos tipo 'artifacts/champions/**'.
+    Compara contra:
+      - la ruta relativa robusta (_rel_from_base)
+      - la ruta absoluta en POSIX, con un comodín **/ para mayor tolerancia
+    """
+    rel = _rel_from_base(path)
+    abs_posix = path.resolve().as_posix()
+    for pat in exclude_globs or []:
+        pat_posix = pat.replace("\\", "/")
+        if fnmatch.fnmatch(rel, pat_posix):
+            return True
+        if fnmatch.fnmatch(abs_posix, f"**/{pat_posix}"):
+            return True
+    return False
 
 
 def group_key(file: FileInfo) -> str:

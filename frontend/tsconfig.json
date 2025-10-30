@@ -1,14 +1,22 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "jsx": "react-jsx",           // usa la transform JSX moderna
     "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "moduleResolution": "Bundler",
-    "strict": true,               // TypeScript estricto
-    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "strict": true,
     "noEmit": true,
-    "types": ["vite/client", "vitest/globals"]      // tipados para import.meta.env.*
+    "isolatedModules": true,
+
+    /* Soporte a Vite y Vitest (evita tus errores  de 'vite/client' y 'vitest/globals') */
+    "types": ["vite/client", "vitest/globals"],
+
+    /* Alias "@/..." → src */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "vite.config.ts"]
 }

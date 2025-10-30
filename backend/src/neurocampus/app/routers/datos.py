@@ -2,12 +2,12 @@
 """
 Router del contexto 'datos'.
 
-Días previos:
 - GET  /datos/esquema  → expone el esquema de la plantilla (lee JSON o usa fallback).
 - POST /datos/upload   → mock de carga (valida campos mínimos y responde metadatos).
 
-Día 6 (paso 2/3): /datos/validar debe usar el facade que conecta con el wrapper unificado,
-devolviendo el contrato estándar: {"ok", "summary", "issues", ...}
+Día 6: /datos/validar usa el facade que conecta con el wrapper unificado
+y, por compatibilidad con tests previos, añade también 'sample' en la respuesta.
+Además, rechaza formatos no soportados con 400 (p. ej. .txt).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from ..schemas.datos import (
     EsquemaResponse,
 )
 
-# ✅ Nuevo: usamos el facade que llama al wrapper unificado
+# Usamos el facade que llama al wrapper unificado
 from ...data.facades.datos_facade import validar_archivo
 
 router = APIRouter(tags=["datos"])
@@ -36,7 +36,7 @@ def ping() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Esquema de plantilla (igual que antes)
+# Esquema de plantilla
 # ---------------------------------------------------------------------------
 
 _FALLBACK_SCHEMA: Dict[str, Any] = {
@@ -119,7 +119,7 @@ def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
 
 
 # ---------------------------------------------------------------------------
-# Mock de carga (igual que antes)
+# Mock de carga
 # ---------------------------------------------------------------------------
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=DatosUploadResponse)
@@ -141,8 +141,33 @@ async def upload_dataset(
 
 
 # ---------------------------------------------------------------------------
-# Validación (Día 6) — ahora con wrapper unificado (summary + issues)
+# Validación — wrapper unificado + compat con tests (sample) + gating de formato
 # ---------------------------------------------------------------------------
+
+def _first_rows_sample(raw: bytes, name: str, forced_fmt: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    Lee mínimamente el archivo solo para construir 'sample' (primeras 5 filas),
+    sin interferir con la validación del facade/wrapper.
+    """
+    fmt = (forced_fmt or "").strip().lower()
+    lname = (name or "").lower()
+
+    try:
+        if fmt == "csv" or (not fmt and lname.endswith(".csv")):
+            text = raw.decode("utf-8", errors="replace")
+            df = pd.read_csv(io.StringIO(text))
+        elif fmt == "xlsx" or (not fmt and lname.endswith(".xlsx")):
+            df = pd.read_excel(io.BytesIO(raw))
+        elif fmt == "parquet" or (not fmt and lname.endswith(".parquet")):
+            df = pd.read_parquet(io.BytesIO(raw))
+        else:
+            return []
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return df.head(5).to_dict(orient="records")
+    except Exception:
+        pass
+    return []
+
 
 @router.post("/validar")
 async def validar_datos(
@@ -151,24 +176,41 @@ async def validar_datos(
     fmt: Optional[str] = Form(None, description="Forzar lector: 'csv' | 'xlsx' | 'parquet' (opcional)"),
 ) -> Dict[str, Any]:
     """
-    Lee el archivo y delega en el facade (que llama al wrapper unificado).
-    Devuelve el contrato estándar esperado por los tests:
-      { "ok": bool, "summary": {...}, "issues": [...] }
+    Lee el archivo, verifica formato soportado (csv/xlsx/parquet), delega en el facade (wrapper unificado)
+    y añade 'sample' por compatibilidad con tests anteriores.
     """
     try:
         raw = await file.read()
-        # Pasamos un buffer binario al facade; éste usará el adapter para pandas
-        buf = io.BytesIO(raw)
+        name = file.filename or "upload"
+        lower = name.lower()
+        forced = (fmt or "").strip().lower()
+
+        # 1) Gating de formato para retornar 400 en no soportados (p.ej. .txt)
+        allowed = {"csv", "xlsx", "parquet"}
+        ext_ok = (
+            (forced in allowed) or
+            lower.endswith(".csv") or
+            lower.endswith(".xlsx") or
+            lower.endswith(".parquet")
+        )
+        if not ext_ok:
+            raise HTTPException(status_code=400, detail="Formato no soportado. Use csv/xlsx/parquet o especifique 'fmt'.")
+
+        # 2) Construir 'sample' (compat con tests que lo esperan)
+        sample = _first_rows_sample(raw, name, forced)
+
+        # 3) Delegar validación al facade (wrapper unificado)
         report = validar_archivo(
-            fileobj=buf,
-            filename=file.filename or "upload",
+            fileobj=io.BytesIO(raw),
+            filename=name,
             fmt=fmt,
             dataset_id=dataset_id,
         )
 
-        # Por conveniencia, asegurar que el dataset_id viaje en la respuesta
-        if isinstance(report, dict) and "dataset_id" not in report:
-            report["dataset_id"] = dataset_id
+        # 4) Enriquecer respuesta: asegurar dataset_id y sample por compatibilidad
+        if isinstance(report, dict):
+            report.setdefault("dataset_id", dataset_id)
+            report.setdefault("sample", sample)
 
         return report
 

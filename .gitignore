@@ -46,3 +46,7 @@ datasets/
 historico/*.parquet
 __pycache__/
 *.pyc
+
+# Python bytecode
+__pycache__/
+*.pyc

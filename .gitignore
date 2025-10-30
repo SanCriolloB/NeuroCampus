@@ -38,3 +38,11 @@ data/tmp/
 *.tmp
 # Node (raíz)
 /node_modules/
+
+# --- NeuroCampus generated stuff ---
+artifacts/
+.tmp/
+datasets/
+historico/*.parquet
+__pycache__/
+*.pyc

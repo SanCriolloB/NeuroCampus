@@ -188,6 +188,14 @@ validate-sample-fmt:
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" -F "fmt=$(NC_FMT)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
 
+# Probar dataset_id explícito
+.PHONY: validate-sample-with-id
+validate-sample-with-id:
+	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV)" && exit 1)
+	@test -n "$(NC_DATASET_ID)" || (echo "ERROR: Define NC_DATASET_ID" && exit 1)
+	@echo ">> Validando $(NC_SAMPLE_CSV) con dataset_id=$(NC_DATASET_ID)"
+	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
+		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
 
 # Activar el entorno virtual
 

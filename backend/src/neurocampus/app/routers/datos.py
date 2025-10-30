@@ -1,25 +1,23 @@
+# backend/src/neurocampus/app/routers/datos.py
 """
 Router del contexto 'datos'.
 
-Día 2: se añaden endpoints:
+Días previos:
 - GET  /datos/esquema  → expone el esquema de la plantilla (lee JSON o usa fallback).
 - POST /datos/upload   → mock de carga (valida campos mínimos y responde metadatos).
 
-Notas:
-- Los sentimientos de comentarios (comentario.sent_pos/neg/neu) NO se suben en el dataset.
-  Se calcularán en una etapa de PLN posterior (Día 6), por eso no aparecen como columnas requeridas.
-
-Día 3: se añade endpoint:
-- POST /datos/validar → valida un archivo CSV/XLSX/Parquet SIN almacenarlo y retorna
-  un reporte con summary e issues (errores/advertencias) para que la UI lo presente.
+Día 5 (diagnóstico):
+- POST /datos/validar → valida CSV/XLSX/Parquet SIN almacenar, usando neurocampus.validadores.run_validations
+  y devuelve un dict {ok, sample, message?, missing?, extra?, dataset_id?}.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
-import io  # Día 3: envolver bytes en BytesIO para mantener interfaz file-like
+from typing import Any, Dict, List, Optional
 
+import io
+import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 # Modelos Pydantic del dominio 'datos' (definidos en schemas/datos.py)
@@ -27,27 +25,23 @@ from ..schemas.datos import (
     DatosUploadResponse,
     EsquemaCol,
     EsquemaResponse,
-    DatosValidarResponse,  # Día 3: contrato de respuesta para /datos/validar
 )
 
-# Orquestador de validación (lectura + cadena de validadores) — **import absoluto**
-from neurocampus.data.facades.datos_facade import validar_archivo  # Día 3 (abs import)
+# Adaptador de validación Día 5 (firma canónica)
+# Estructura del proyecto: neurocampus.app.routers.datos → subir 2 niveles a neurocampus
+from ...validadores import run_validations  # <- Día 5: usar adaptador local
 
-# Si en main.py NO se usa include_router con prefix, puedes añadir prefix aquí.
-# Dejamos solo 'tags' para no duplicar prefijos si main ya lo gestiona.
 router = APIRouter(tags=["datos"])
 
 
 @router.get("/ping")
 def ping() -> dict:
-    """
-    Comprobación rápida de vida del router /datos.
-    """
+    """Comprobación rápida de vida del router /datos."""
     return {"datos": "pong"}
 
 
 # ---------------------------------------------------------------------------
-# Día 2 — /datos/esquema y /datos/upload
+# Esquema de plantilla (Día 2)
 # ---------------------------------------------------------------------------
 
 # Fallback mínimo por si no existe 'schemas/plantilla_dataset.schema.json'
@@ -83,7 +77,7 @@ def _repo_root_from_here() -> Path:
 
 
 @router.get("/esquema", response_model=EsquemaResponse)
-def get_esquema(version: str | None = None) -> EsquemaResponse:
+def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
     """
     Devuelve el esquema de la plantilla. Prioriza leer 'schemas/plantilla_dataset.schema.json'
     desde la raíz del repositorio. Si no existe o falla, usa un fallback en memoria.
@@ -126,7 +120,7 @@ def get_esquema(version: str | None = None) -> EsquemaResponse:
                 if "maxLength" in spec:
                     col["max_len"] = int(spec["maxLength"])
 
-                # Dominios cerrados (si existieran enum/const)
+                # Dominios cerrados (enum)
                 if "enum" in spec and isinstance(spec["enum"], list):
                     col["domain"] = [str(v) for v in spec["enum"]]
 
@@ -144,6 +138,10 @@ def get_esquema(version: str | None = None) -> EsquemaResponse:
         columns=[EsquemaCol(**c) for c in _FALLBACK_SCHEMA["columns"]],
     )
 
+
+# ---------------------------------------------------------------------------
+# Mock de carga (Día 2)
+# ---------------------------------------------------------------------------
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=DatosUploadResponse)
 async def upload_dataset(
@@ -175,27 +173,48 @@ async def upload_dataset(
 
 
 # ---------------------------------------------------------------------------
-# Día 3 — /datos/validar
+# Validación (Día 5 — diagnóstico mínimo)
 # ---------------------------------------------------------------------------
 
-@router.post("/validar", response_model=DatosValidarResponse)
+@router.post("/validar")
 async def validar_datos(
-    file: UploadFile = File(...),
-    fmt: str | None = Form(None),  # opcional: "csv" | "xlsx" | "parquet"
-) -> DatosValidarResponse:
+    file: UploadFile = File(..., description="CSV/XLSX/Parquet"),
+    dataset_id: str = Form(..., description="Identificador lógico del dataset (p. ej. 'docentes')"),
+    fmt: Optional[str] = Form(None, description="Forzar lector: 'csv' | 'xlsx' | 'parquet' (opcional)"),
+) -> Dict[str, Any]:
     """
-    Valida un archivo de datos SIN almacenarlo.
-    - Acepta CSV/XLSX/Parquet.
-    - Si se especifica 'fmt', fuerza el lector; de lo contrario se infiere por extensión.
-    - Devuelve KPIs de validación (rows, errors, warnings, engine) y el listado de issues.
+    Valida un archivo SIN almacenarlo, leyendo con pandas y llamando a run_validations(df, dataset_id=...).
+    Respuesta (dict):
+      { ok: bool, sample: [...], message?: str, missing?: [...], extra?: [...], dataset_id?: str }
     """
     try:
-        # FastAPI entrega bytes; envolver en BytesIO para interfaz de archivo (seek/read)
         raw = await file.read()
-        buffer = io.BytesIO(raw)
 
-        report = validar_archivo(buffer, file.filename, fmt)
-        # 'report' ya cumple con el contrato DatosValidarResponse (summary + issues).
-        return report  # FastAPI validará contra el schema Pydantic
+        # Selección del lector según fmt o extensión
+        name = (file.filename or "").lower()
+        force = (fmt or "").strip().lower()
+
+        if force == "csv" or (not force and name.endswith(".csv")):
+            # CSV: decodificamos a texto y usamos StringIO
+            text = raw.decode("utf-8", errors="replace")
+            df = pd.read_csv(io.StringIO(text))
+        elif force == "xlsx" or (not force and name.endswith(".xlsx")):
+            df = pd.read_excel(io.BytesIO(raw))
+        elif force == "parquet" or (not force and name.endswith(".parquet")):
+            df = pd.read_parquet(io.BytesIO(raw))
+        else:
+            raise HTTPException(status_code=400, detail="Formato no soportado. Use csv/xlsx/parquet o especifique 'fmt'.")
+
+        # Llamar al adaptador canónico (Día 5)
+        report = run_validations(df, dataset_id=dataset_id)
+
+        # 'report' ya es un dict con la forma esperada por la UI
+        return report
+
+    except HTTPException:
+        raise
+    except UnicodeDecodeError:
+        # Error típico al leer CSV con codificación distinta a UTF-8
+        raise HTTPException(status_code=400, detail="No se pudo leer el CSV con UTF-8. Intente especificar 'fmt' o convertir la codificación.")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Validación falló: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al validar: {e}")

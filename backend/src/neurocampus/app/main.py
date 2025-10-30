@@ -100,8 +100,8 @@ def health() -> dict:
 
 # Registro de routers bajo prefijos. Cada router agrupa rutas por contexto
 # y define su propia etiqueta (tags) para la documentación automática.
-app.include_router(datos.router,       prefix="/datos",       tags=["datos"])
-app.include_router(jobs.router,        prefix="/jobs",        tags=["jobs"])
-app.include_router(modelos.router,     prefix="/modelos",     tags=["modelos"])
-app.include_router(prediccion.router,  prefix="/prediccion",  tags=["prediccion"])
-app.include_router(admin_cleanup.router, tags=["admin"])
+app.include_router(datos.router,         prefix="/datos",       tags=["datos"])
+app.include_router(jobs.router,          prefix="/jobs",        tags=["jobs"])
+app.include_router(modelos.router,       prefix="/modelos",     tags=["modelos"])
+app.include_router(prediccion.router,    prefix="/prediccion",  tags=["prediccion"])
+app.include_router(admin_cleanup.router,                     tags=["admin"])

@@ -1,7 +1,8 @@
 // frontend/src/services/datos.ts
 // Cliente de API para el flujo de Datos: esquema, validar y subir dataset.
-// ✅ Corrección: en /datos/upload ahora se envía también el campo `periodo`
-//    (además de `dataset_id` para compatibilidad), que es lo que exige el backend.
+// ✅ Correcciones clave:
+//   - /datos/validar ahora requiere también `dataset_id` (y opcionalmente `fmt`).
+//   - /datos/upload exige `periodo` en el body; enviamos también `dataset_id` por compatibilidad.
 
 import api from "./apiClient";
 
@@ -27,9 +28,10 @@ export type EsquemaResp = {
   examples?: Record<string, unknown>;
 };
 
-/** Respuesta de /datos/validar */
+/** Respuesta de /datos/validar (Día 5) */
 export type ValidarResp = {
   ok: boolean;
+  dataset_id?: string;
   missing?: string[];
   extra?: string[];
   sample?: Array<Record<string, unknown>>;
@@ -51,10 +53,23 @@ export async function esquema() {
   return data;
 }
 
-/** POST /datos/validar (multipart: file) */
-export async function validar(file: File) {
+/**
+ * POST /datos/validar (multipart)
+ * Envía:
+ *  - file        : archivo CSV/XLSX/Parquet
+ *  - dataset_id  : identificador lógico del dataset (p.ej. "docentes")
+ *  - fmt?        : forzar lector ('csv' | 'xlsx' | 'parquet'), opcional
+ */
+export async function validar(
+  file: File,
+  datasetId: string,
+  opts?: { fmt?: "csv" | "xlsx" | "parquet" }
+) {
   const fd = new FormData();
   fd.append("file", file);
+  fd.append("dataset_id", datasetId);
+  if (opts?.fmt) fd.append("fmt", opts.fmt);
+
   const { data } = await api.post<ValidarResp>("/datos/validar", fd);
   return data;
 }
@@ -63,23 +78,16 @@ export async function validar(file: File) {
  * POST /datos/upload (multipart)
  * Envía:
  *  - file         : archivo CSV/XLSX/Parquet
- *  - dataset_id   : identificador lógico (p.ej. "2023-2")
+ *  - periodo      : identificador lógico requerido por el backend
+ *  - dataset_id   : (compatibilidad hacia atrás con versiones previas)
  *  - overwrite    : "true" | "false" (string)
- *
- * Nota: el backend actual requiere el campo `periodo` en el body. Para compatibilidad
- * mantenemos `dataset_id` como nombre de argumento aquí, pero enviamos AMBOS:
- *   periodo = dataset_id   y   dataset_id = dataset_id
  */
-export async function upload(
-  file: File,
-  dataset_id: string,
-  overwrite: boolean
-) {
+export async function upload(file: File, dataset_id: string, overwrite: boolean) {
   const fd = new FormData();
   fd.append("file", file);
-  // 👇 imprescindible para evitar 422 ("loc": ["body","periodo"])
+  // Requerido por el backend actual:
   fd.append("periodo", dataset_id);
-  // 👇 compatibilidad con versiones previas del backend
+  // Compatibilidad con contratos previos:
   fd.append("dataset_id", dataset_id);
   fd.append("overwrite", String(overwrite));
 

@@ -8,7 +8,7 @@ PY := python
 
 # Archivo de variables de entorno (puede redefinir API_HOST, API_PORT, etc.)
 ENV ?= .env
-include $(ENV)
+-include $(ENV)
 export
 
 # Valores por defecto (si no vienen de .env)
@@ -20,11 +20,13 @@ NC_EXCLUDE_GLOBS ?=
 NC_TRASH_DIR ?= .trash
 NC_TRASH_RETENTION_DAYS ?= 7
 NC_ADMIN_TOKEN ?= dev-admin-token
+
 # Para el helper de validación
 NC_DATASET_ID ?= docentes
 NC_SAMPLE_CSV ?= examples/docentes.csv
+NC_FMT ?=
 
-# Asegurar rutas comunes
+# Rutas comunes
 BACKEND_SRC ?= backend/src
 BACKEND_APP ?= neurocampus.app.main:app
 FRONTEND_DIR ?= frontend
@@ -39,20 +41,25 @@ help:
 	@echo "  clean-inventory             - Ver inventario local de artefactos (herramienta CLI)."
 	@echo "  clean-artifacts-dry-run     - Simulación de limpieza local (no borra, muestra plan)."
 	@echo "  clean-artifacts             - Limpieza local real (mueve a .trash/)."
-	@echo "  run-admin                   - Levanta API con routers de administración."
-	@echo "  admin-inventory             - Inventario remoto vía endpoint /admin/cleanup/inventory."
-	@echo "  admin-clean                 - Limpieza remota vía endpoint /admin/cleanup (force)."
+	@echo "  run-admin                   - Levantar API con routers (modo admin/desarrollo)."
+	@echo "  admin-inventory             - Inventario remoto vía /admin/cleanup/inventory."
+	@echo "  admin-clean                 - Limpieza remota vía /admin/cleanup (force)."
 	@echo "  be-dev                      - Levantar backend en modo desarrollo (uvicorn)."
 	@echo "  be-test                     - Ejecutar pruebas del backend (pytest)."
 	@echo "  fe-dev                      - Levantar frontend (Vite) en :5173."
+	@echo "  fe-build                    - Construir frontend (Vite build)."
+	@echo "  fe-preview                  - Previsualizar build del FE en :4173."
 	@echo "  fe-test                     - Ejecutar pruebas del frontend (vitest)."
+	@echo "  fe-typecheck                - Chequeo de tipos del FE (tsc --noEmit)."
 	@echo "  validate-sample             - Enviar CSV de ejemplo a /datos/validar."
-	@echo "Variables útiles (pueden ir en .env o CLI):"
+	@echo "  validate-sample-fmt         - Igual que arriba pero forzando formato (NC_FMT=csv|xlsx|parquet)."
+	@echo ""
+	@echo "Variables (.env o CLI):"
 	@echo "  API_HOST, API_PORT, NC_ADMIN_TOKEN, NC_RETENTION_DAYS, NC_KEEP_LAST"
-	@echo "  NC_TRASH_DIR, NC_TRASH_RETENTION_DAYS, NC_DATASET_ID, NC_SAMPLE_CSV"
+	@echo "  NC_TRASH_DIR, NC_TRASH_RETENTION_DAYS, NC_DATASET_ID, NC_SAMPLE_CSV, NC_FMT"
 
 # ----------------------------------------------------------------------------- #
-# --- Limpieza de artefactos y cache (local, vía herramienta CLI) --------------
+# --- Limpieza de artefactos y cache (local, vía herramienta CLI) -------------- #
 # ----------------------------------------------------------------------------- #
 
 .PHONY: clean-inventory
@@ -115,16 +122,28 @@ be-test:
 	@PYTHONPATH=$(BACKEND_SRC) $(PY) -m pytest -q
 
 # ----------------------------------------------------------------------------- #
-# --- Frontend (desarrollo y pruebas) ----------------------------------------- #
+# --- Frontend (desarrollo, build y pruebas) ---------------------------------- #
 # ----------------------------------------------------------------------------- #
 
 .PHONY: fe-dev
 fe-dev:
 	@cd $(FRONTEND_DIR) && npm run dev
 
+.PHONY: fe-build
+fe-build:
+	@cd $(FRONTEND_DIR) && npm run build
+
+.PHONY: fe-preview
+fe-preview:
+	@cd $(FRONTEND_DIR) && npm run preview
+
 .PHONY: fe-test
 fe-test:
 	@cd $(FRONTEND_DIR) && npm run test:run
+
+.PHONY: fe-typecheck
+fe-typecheck:
+	@cd $(FRONTEND_DIR) && npx tsc --noEmit
 
 # ----------------------------------------------------------------------------- #
 # --- Diagnóstico Día 5: validación de datasets ------------------------------- #
@@ -141,3 +160,11 @@ validate-sample:
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
 
+# Igual que validate-sample pero permitiendo forzar el lector con NC_FMT=csv|xlsx|parquet
+.PHONY: validate-sample-fmt
+validate-sample-fmt:
+	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV). Ajusta NC_SAMPLE_CSV o agrega un ejemplo." && exit 1)
+	@test -n "$(NC_FMT)" || (echo "ERROR: Define NC_FMT=csv|xlsx|parquet" && exit 1)
+	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id='$(NC_DATASET_ID)' (fmt=$(NC_FMT)) contra http://$(API_HOST):$(API_PORT)/datos/validar"
+	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" -F "fmt=$(NC_FMT)" \
+		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .

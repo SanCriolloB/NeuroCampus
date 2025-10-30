@@ -6,6 +6,19 @@ SHELL := bash
 # Binario de Python
 PY := python
 
+# ==== VENV aware (Windows / POSIX) ====
+VENV ?= .venv
+
+ifeq ($(OS),Windows_NT)
+PY     := $(VENV)/Scripts/python.exe
+PIP    := $(VENV)/Scripts/pip.exe
+PYTEST := $(VENV)/Scripts/pytest.exe
+else
+PY     := $(VENV)/bin/python
+PIP    := $(VENV)/bin/pip
+PYTEST := $(PY) -m pytest
+endif
+
 # Archivo de variables de entorno (puede redefinir API_HOST, API_PORT, etc.)
 ENV ?= .env
 -include $(ENV)
@@ -119,7 +132,7 @@ be-dev:
 # Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
 .PHONY: be-test
 be-test:
-	@PYTHONPATH=$(BACKEND_SRC) $(PY) -m pytest -q
+	@NC_DISABLE_ADMIN_AUTH=1 PYTHONPATH=$(BACKEND_SRC) $(PYTEST) -q
 
 # ----------------------------------------------------------------------------- #
 # --- Frontend (desarrollo, build y pruebas) ---------------------------------- #
@@ -175,3 +188,8 @@ validate-sample-fmt:
 .PHONY: venv
 venv:
 	@python -m venv .venv && echo ">> Activa el entorno: source .venv/Scripts/activate"
+
+.PHONY: deps-be
+deps-be:
+	@$(PIP) install -U pip wheel setuptools
+	@$(PIP) install -r backend/requirements.txt

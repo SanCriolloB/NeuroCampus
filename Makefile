@@ -35,8 +35,8 @@ NC_TRASH_RETENTION_DAYS ?= 7
 NC_ADMIN_TOKEN ?= dev-admin-token
 
 # Para el helper de validación
-NC_DATASET_ID ?= docentes
-NC_SAMPLE_CSV ?= examples/docentes.csv
+NC_DATASET_ID ?= Evaluacion
+NC_SAMPLE_CSV ?= examples/Evaluacion.csv
 NC_FMT ?=
 
 # Rutas comunes

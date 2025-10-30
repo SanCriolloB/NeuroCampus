@@ -36,3 +36,5 @@ Thumbs.db
 data/tmp/
 *.log
 *.tmp
+# Node (raíz)
+/node_modules/

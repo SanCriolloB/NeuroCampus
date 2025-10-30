@@ -132,7 +132,13 @@ be-dev:
 # Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
 .PHONY: be-test
 be-test:
+	@PYTHONPATH=$(BACKEND_SRC) $(PYTEST) -q
+
+# Opcional: ejecutar tests desactivando auth admin (útil para depurar)
+.PHONY: be-test-noauth
+be-test-noauth:
 	@NC_DISABLE_ADMIN_AUTH=1 PYTHONPATH=$(BACKEND_SRC) $(PYTEST) -q
+
 
 # ----------------------------------------------------------------------------- #
 # --- Frontend (desarrollo, build y pruebas) ---------------------------------- #

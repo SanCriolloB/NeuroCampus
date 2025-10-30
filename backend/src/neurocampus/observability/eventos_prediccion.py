@@ -4,7 +4,9 @@ Constantes y helpers para eventos de predicción.
 No implementa predicción; solo estandariza nombres y payloads, y valida su forma.
 """
 
-from typing import Dict
+from __future__ import annotations
+
+from typing import Dict, Optional
 from datetime import datetime, timezone
 
 from .bus_eventos import publicador  # ya existe y registra en log_handler (Día 4)
@@ -74,19 +76,22 @@ def emit_completed(
 def emit_failed(
     correlation_id: str,
     error: str,
-    stage: str | None = None,
+    stage: Optional[str] = None,
+    *,
+    error_code: Optional[str] = None,
 ) -> None:
     """
     Emite `prediction.failed` validando el payload con Pydantic.
     - correlation_id: mismo del ciclo.
     - error: mensaje legible y corto (sin PII).
     - stage: etapa opcional ("vectorize" | "predict" | "postprocess" | "io").
-    Nota: se usa error_code por defecto "INTERNAL_ERROR" para mantener firma.
+    - error_code: código de error (p.ej. "MODEL_NOT_AVAILABLE"). Si no se provee,
+      se usa "INTERNAL_ERROR" para compatibilidad.
     """
     payload = PredFailed(
         correlation_id=correlation_id,
         error=error,
-        error_code="INTERNAL_ERROR",   # valor por defecto; firma pública se mantiene
+        error_code=error_code or "INTERNAL_ERROR",
         stage=stage,
         ts=_now_utc(),
     ).model_dump(mode="json", exclude_none=True)

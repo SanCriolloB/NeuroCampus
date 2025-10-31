@@ -122,14 +122,12 @@ admin-clean:
 # ----------------------------------------------------------------------------- #
 
 # Levantar backend de desarrollo (equivalente a run-admin; alias más neutral).
-# Incluye límite de tamaño en uvicorn como en run-admin.
+# El límite de tamaño se aplica vía middleware (NC_MAX_UPLOAD_MB), no por flag de Uvicorn.
 .PHONY: be-dev
 be-dev:
-	@echo ">> Iniciando uvicorn (desarrollo) con límite máx. de request: $${NC_MAX_UPLOAD_MB:-10} MB"
+	@echo ">> Iniciando uvicorn (desarrollo). Límite de subida via middleware: $${NC_MAX_UPLOAD_MB:-10} MB"
 	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
-		--host $${API_HOST} --port $${API_PORT} --reload \
-		--limit-max-request-size $$(( $${NC_MAX_UPLOAD_MB:-10} * 1024 * 1024 ))
-
+		--host $${API_HOST} --port $${API_PORT} --reload
 # Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
 .PHONY: be-test
 be-test:

@@ -8,14 +8,17 @@ Responsabilidades:
 - Habilitar CORS para permitir acceso desde el frontend (Vite, puerto 5173)
 - Conectar el destino de observabilidad (logging) para eventos training.* y prediction.*
 - Inyectar middleware de Correlation-Id (X-Correlation-Id) para trazabilidad
+- Aplicar límite de tamaño de subida (413) según NC_MAX_UPLOAD_MB
 """
 
 from __future__ import annotations
 
 import os
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Configuración de logging (dictConfig)
 from neurocampus.app.logging_config import setup_logging
@@ -30,13 +33,20 @@ from .routers import datos, jobs, modelos, prediccion, admin_cleanup
 # Instancia de la aplicación (título visible en /docs y /openapi.json)
 app = FastAPI(title="NeuroCampus API", version=os.getenv("API_VERSION", "0.6.0"))
 
-# --- CORS (necesario para que el navegador permita las peticiones desde Vite) ---
-# Permite sobreescribir orígenes por variable de entorno (coma-separados).
+# ---------------------------------------------------------------------------
+# CORS (necesario para que el navegador permita las peticiones desde Vite)
+#   - NC_ALLOWED_ORIGINS tiene prioridad (coma-separados)
+#   - CORS_ALLOW_ORIGINS se acepta como respaldo (compat)
+#   - Si ninguno está definido, se usan los defaults locales
+# ---------------------------------------------------------------------------
 _default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
-_env_origins = os.getenv("CORS_ALLOW_ORIGINS")  # p. ej.: "http://localhost:5173,http://127.0.0.1:5173"
+_env_origins_nc = os.getenv("NC_ALLOWED_ORIGINS")  # p. ej.: "http://localhost:5173,http://127.0.0.1:5173"
+_env_origins_old = os.getenv("CORS_ALLOW_ORIGINS")  # compat retro
+
+_raw_origins = _env_origins_nc if _env_origins_nc else _env_origins_old
 ALLOWED_ORIGINS = (
-    [o.strip() for o in _env_origins.split(",") if o.strip()]
-    if _env_origins
+    [o.strip() for o in _raw_origins.split(",") if o.strip()]
+    if _raw_origins
     else _default_origins
 )
 
@@ -44,9 +54,35 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,   # en desarrollo podrías usar ["*"] si lo prefieres
     allow_credentials=True,
-    allow_methods=["*"],             # permite OPTIONS del preflight
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
+
+# ---------------------------------------------------------------------------
+# Límite de subida por Content-Length → 413 Payload Too Large
+#   - Controlado por NC_MAX_UPLOAD_MB (entero, por defecto 10)
+#   - Defensa adicional a la de uvicorn (que puede configurarse con --limit-max-request-size)
+# ---------------------------------------------------------------------------
+MAX_MB = int(os.getenv("NC_MAX_UPLOAD_MB", "10"))
+MAX_BYTES = MAX_MB * 1024 * 1024
+
+class MaxSizeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        content_len = request.headers.get("content-length")
+        try:
+            if content_len is not None and int(content_len) > MAX_BYTES:
+                return JSONResponse(
+                    {"detail": f"Archivo demasiado grande (> {MAX_MB}MB)"},
+                    status_code=413,
+                )
+        except ValueError:
+            # Si el header no es un entero válido, dejamos que continúe el flujo normal.
+            pass
+        return await call_next(request)
+
+app.add_middleware(MaxSizeMiddleware)
 
 # --- Correlation-Id Middleware (trazabilidad end-to-end) ---
 # Agrega/propaga X-Correlation-Id y lo expone en request.state.correlation_id

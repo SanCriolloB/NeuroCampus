@@ -8,15 +8,17 @@
  *    • FormData → NO seteamos "Content-Type" (el navegador añade boundary).
  *    • JSON     → "Content-Type: application/json".
  * - Devuelve siempre { data } para compatibilidad "axios-like".
- *
- * Mejora clave (alineado Día 3):
- * - Parseo de errores: intenta JSON; si hay {detail} o {error:{code,message}} lo incorpora al mensaje.
+ * - Añadido: X-Correlation-Id (si no lo pasas tú) para trazar peticiones FE↔BE.
+ * - Añadido: mensajes claros para 413 (payload demasiado grande).
  */
 
-const BASE =
+const RAW_BASE =
   (import.meta as any).env?.VITE_API_BASE ??
   (import.meta as any).env?.VITE_API_URL ??
   "http://127.0.0.1:8000";
+
+/** Normaliza BASE sin trailing slash. */
+const BASE = String(RAW_BASE).replace(/\/+$/, "");
 
 type Json = Record<string, unknown>;
 
@@ -48,6 +50,26 @@ function extractErrorMessage(raw: string): { message: string; json?: any } {
   }
 }
 
+/** Obtiene/genera un X-Correlation-Id. */
+function correlationIdFrom(init?: RequestInit): string | undefined {
+  // Si ya viene en headers, respétalo
+  const h = init?.headers as Record<string, string> | undefined;
+  const existing =
+    (h && (h["X-Correlation-Id"] || h["x-correlation-id"])) ||
+    undefined;
+  if (existing) return existing;
+  // Si el runtime soporta crypto.randomUUID, úsalo
+  try {
+    // @ts-ignore
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+      // @ts-ignore
+      return crypto.randomUUID();
+    }
+  } catch {}
+  // Fallback simple (no estrictamente UUIDv4, pero suficiente para trazas locales)
+  return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 /** Hace la request y gestiona errores/timeout. Devuelve { data }. */
 async function request<T = unknown>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
@@ -61,6 +83,12 @@ async function request<T = unknown>(
   const timeoutMs = init?.timeoutMs ?? 30000;
   const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
 
+  // Construir headers sin mutar los entrantes
+  const baseHeaders: Record<string, string> = {};
+  if (!isForm) baseHeaders["Content-Type"] = "application/json";
+  const cid = correlationIdFrom(init);
+  if (cid) baseHeaders["X-Correlation-Id"] = cid;
+
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
@@ -68,8 +96,8 @@ async function request<T = unknown>(
       signal: controller.signal,
       ...init,
       headers: {
+        ...baseHeaders,
         ...(init?.headers || {}),
-        ...(isForm ? {} : { "Content-Type": "application/json" }),
       },
       body:
         method === "GET" || method === "DELETE"
@@ -80,6 +108,8 @@ async function request<T = unknown>(
           : body !== undefined
           ? JSON.stringify(body)
           : undefined,
+      // Keep-Alive puede ayudar a estabilizar peticiones seguidas en local
+      keepalive: init?.keepalive ?? false,
     });
   } catch (e: any) {
     const err = new Error(`NETWORK ${e?.name || "Error"} — ${e?.message || "sin detalle"}`);
@@ -94,7 +124,13 @@ async function request<T = unknown>(
   if (!res.ok) {
     const raw = await res.text().catch(() => "");
     const { message, json } = extractErrorMessage(raw);
-    const err = new Error(`HTTP ${res.status} ${res.statusText} — ${message}`);
+    // Mensaje más claro para 413 (día 7: límite de subida)
+    const is413 = res.status === 413;
+    const pretty = is413
+      ? `El archivo excede el límite permitido por el servidor (HTTP 413). ${message || ""}`.trim()
+      : `HTTP ${res.status} ${res.statusText} — ${message}`;
+
+    const err = new Error(pretty);
     // @ts-expect-error adjuntamos datos crudos por si el caller quiere inspeccionarlos
     err.response = { status: res.status, statusText: res.statusText, body: raw, json };
     throw err;
@@ -102,7 +138,9 @@ async function request<T = unknown>(
 
   // Intentamos parsear JSON; si no hay body o no es JSON, devolvemos null
   const ct = res.headers.get("content-type") || "";
-  const data: T | null = ct.includes("application/json") ? await res.json() : (null as any);
+  if (!ct) return { data: null as any };
+  const isJson = /\bapplication\/json\b/i.test(ct);
+  const data: T | null = isJson ? await res.json() : (null as any);
 
   return { data: data as T };
 }
@@ -130,7 +168,7 @@ export const apiClient = {
   },
 };
 
-/** 
+/**
  * Compatibilidad: alias nombrado `api` y default export.
  * - Permite `import api from "./apiClient"` (default).
  * - Mantiene `import { apiClient } from "./apiClient"` (named).

@@ -8,6 +8,9 @@ Router del contexto 'datos'.
 Día 6: /datos/validar usa el facade que conecta con el wrapper unificado
 y, por compatibilidad con tests previos, añade también 'sample' en la respuesta.
 Además, rechaza formatos no soportados con 400 (p. ej. .txt).
+
+Día 7: también se valida el formato en /datos/upload (csv/xlsx/parquet) y se
+retorna 400 si no es soportado.
 """
 
 from __future__ import annotations
@@ -130,6 +133,11 @@ async def upload_dataset(
 ) -> DatosUploadResponse:
     if not periodo:
         raise HTTPException(status_code=400, detail="periodo es requerido")
+
+    # Día 7: gating de formato también en /datos/upload
+    name = (file.filename or "").lower()
+    if not (name.endswith(".csv") or name.endswith(".xlsx") or name.endswith(".parquet")):
+        raise HTTPException(status_code=400, detail="Formato no soportado en upload. Use csv/xlsx/parquet.")
 
     stored_uri = f"localfs://neurocampus/datasets/{periodo}.parquet"
     return DatosUploadResponse(

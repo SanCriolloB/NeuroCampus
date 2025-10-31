@@ -1,23 +1,10 @@
-# --- NeuroCampus: Limpieza de artefactos, administración y diagnóstico Día 5 ---
+# --- NeuroCampus: Limpieza de artefactos, administración y diagnóstico Día 7 ---
 
 # Usar bash para comandos con tuberías/expansiones
 SHELL := bash
 
 # Binario de Python
 PY := python
-
-# ==== VENV aware (Windows / POSIX) ====
-VENV ?= .venv
-
-ifeq ($(OS),Windows_NT)
-PY     := $(VENV)/Scripts/python.exe
-PIP    := $(VENV)/Scripts/pip.exe
-PYTEST := $(VENV)/Scripts/pytest.exe
-else
-PY     := $(VENV)/bin/python
-PIP    := $(VENV)/bin/pip
-PYTEST := $(PY) -m pytest
-endif
 
 # Archivo de variables de entorno (puede redefinir API_HOST, API_PORT, etc.)
 ENV ?= .env
@@ -27,6 +14,8 @@ export
 # Valores por defecto (si no vienen de .env)
 API_HOST ?= 127.0.0.1
 API_PORT ?= 8000
+
+# Administración de limpieza
 NC_RETENTION_DAYS ?= 90
 NC_KEEP_LAST ?= 3
 NC_EXCLUDE_GLOBS ?=
@@ -34,10 +23,15 @@ NC_TRASH_DIR ?= .trash
 NC_TRASH_RETENTION_DAYS ?= 7
 NC_ADMIN_TOKEN ?= dev-admin-token
 
-# Para el helper de validación
-NC_DATASET_ID ?= Evaluacion
-NC_SAMPLE_CSV ?= examples/Evaluacion.csv
-NC_FMT ?=
+# Validación datasets (helper)
+NC_DATASET_ID ?= docentes
+NC_SAMPLE_CSV ?= examples/docentes.csv
+
+# CORS / Límite de subida
+# - NC_ALLOWED_ORIGINS se usa en main.py (middleware CORS)
+# - NC_MAX_UPLOAD_MB se usa en main.py (middleware) y también aquí para uvicorn
+NC_ALLOWED_ORIGINS ?= http://localhost:5173
+NC_MAX_UPLOAD_MB ?= 10
 
 # Rutas comunes
 BACKEND_SRC ?= backend/src
@@ -45,7 +39,7 @@ BACKEND_APP ?= neurocampus.app.main:app
 FRONTEND_DIR ?= frontend
 
 # ----------------------------------------------------------------------------- #
-# Objetivos
+# Ayuda
 # ----------------------------------------------------------------------------- #
 
 .PHONY: help
@@ -54,22 +48,21 @@ help:
 	@echo "  clean-inventory             - Ver inventario local de artefactos (herramienta CLI)."
 	@echo "  clean-artifacts-dry-run     - Simulación de limpieza local (no borra, muestra plan)."
 	@echo "  clean-artifacts             - Limpieza local real (mueve a .trash/)."
-	@echo "  run-admin                   - Levantar API con routers (modo admin/desarrollo)."
-	@echo "  admin-inventory             - Inventario remoto vía /admin/cleanup/inventory."
-	@echo "  admin-clean                 - Limpieza remota vía /admin/cleanup (force)."
+	@echo "  run-admin                   - Levanta API (uvicorn) con routers de administración."
+	@echo "  admin-inventory             - Inventario remoto vía endpoint /admin/cleanup/inventory."
+	@echo "  admin-clean                 - Limpieza remota vía endpoint /admin/cleanup (force)."
 	@echo "  be-dev                      - Levantar backend en modo desarrollo (uvicorn)."
 	@echo "  be-test                     - Ejecutar pruebas del backend (pytest)."
 	@echo "  fe-dev                      - Levantar frontend (Vite) en :5173."
-	@echo "  fe-build                    - Construir frontend (Vite build)."
-	@echo "  fe-preview                  - Previsualizar build del FE en :4173."
 	@echo "  fe-test                     - Ejecutar pruebas del frontend (vitest)."
-	@echo "  fe-typecheck                - Chequeo de tipos del FE (tsc --noEmit)."
 	@echo "  validate-sample             - Enviar CSV de ejemplo a /datos/validar."
-	@echo "  validate-sample-fmt         - Igual que arriba pero forzando formato (NC_FMT=csv|xlsx|parquet)."
-	@echo ""
-	@echo "Variables (.env o CLI):"
-	@echo "  API_HOST, API_PORT, NC_ADMIN_TOKEN, NC_RETENTION_DAYS, NC_KEEP_LAST"
-	@echo "  NC_TRASH_DIR, NC_TRASH_RETENTION_DAYS, NC_DATASET_ID, NC_SAMPLE_CSV, NC_FMT"
+	@echo
+	@echo "Variables útiles (pueden ir en .env o CLI):"
+	@echo "  API_HOST, API_PORT, NC_ADMIN_TOKEN"
+	@echo "  NC_RETENTION_DAYS, NC_KEEP_LAST, NC_EXCLUDE_GLOBS"
+	@echo "  NC_TRASH_DIR, NC_TRASH_RETENTION_DAYS"
+	@echo "  NC_DATASET_ID, NC_SAMPLE_CSV"
+	@echo "  NC_ALLOWED_ORIGINS, NC_MAX_UPLOAD_MB"
 
 # ----------------------------------------------------------------------------- #
 # --- Limpieza de artefactos y cache (local, vía herramienta CLI) -------------- #
@@ -100,9 +93,13 @@ clean-artifacts:
 # ----------------------------------------------------------------------------- #
 
 # Levanta FastAPI/uvicorn apuntando al directorio del backend.
+# Defensa adicional Día 7: límite de tamaño en uvicorn en BYTES (MB * 1024 * 1024).
 .PHONY: run-admin
 run-admin:
-	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) --host $${API_HOST} --port $${API_PORT} --reload
+	@echo ">> Iniciando uvicorn con límite máx. de request: $${NC_MAX_UPLOAD_MB:-10} MB"
+	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
+		--host $${API_HOST} --port $${API_PORT} --reload \
+		--limit-max-request-size $$(( $${NC_MAX_UPLOAD_MB:-10} * 1024 * 1024 ))
 
 # Consulta inventario remoto del endpoint de administración.
 .PHONY: admin-inventory
@@ -125,47 +122,31 @@ admin-clean:
 # ----------------------------------------------------------------------------- #
 
 # Levantar backend de desarrollo (equivalente a run-admin; alias más neutral).
+# El límite de tamaño se aplica vía middleware (NC_MAX_UPLOAD_MB), no por flag de Uvicorn.
 .PHONY: be-dev
 be-dev:
-	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) --host $${API_HOST} --port $${API_PORT} --reload
-
+	@echo ">> Iniciando uvicorn (desarrollo). Límite de subida via middleware: $${NC_MAX_UPLOAD_MB:-10} MB"
+	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
+		--host $${API_HOST} --port $${API_PORT} --reload
 # Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
 .PHONY: be-test
 be-test:
-	@PYTHONPATH=$(BACKEND_SRC) $(PYTEST) -q
-
-# Opcional: ejecutar tests desactivando auth admin (útil para depurar)
-.PHONY: be-test-noauth
-be-test-noauth:
-	@NC_DISABLE_ADMIN_AUTH=1 PYTHONPATH=$(BACKEND_SRC) $(PYTEST) -q
-
+	@PYTHONPATH=$(BACKEND_SRC) $(PY) -m pytest -q
 
 # ----------------------------------------------------------------------------- #
-# --- Frontend (desarrollo, build y pruebas) ---------------------------------- #
+# --- Frontend (desarrollo y pruebas) ----------------------------------------- #
 # ----------------------------------------------------------------------------- #
 
 .PHONY: fe-dev
 fe-dev:
 	@cd $(FRONTEND_DIR) && npm run dev
 
-.PHONY: fe-build
-fe-build:
-	@cd $(FRONTEND_DIR) && npm run build
-
-.PHONY: fe-preview
-fe-preview:
-	@cd $(FRONTEND_DIR) && npm run preview
-
 .PHONY: fe-test
 fe-test:
 	@cd $(FRONTEND_DIR) && npm run test:run
 
-.PHONY: fe-typecheck
-fe-typecheck:
-	@cd $(FRONTEND_DIR) && npx tsc --noEmit
-
 # ----------------------------------------------------------------------------- #
-# --- Diagnóstico Día 5: validación de datasets ------------------------------- #
+# --- Diagnóstico: validación de datasets ------------------------------------- #
 # ----------------------------------------------------------------------------- #
 
 # Helper: envía un CSV de ejemplo al endpoint /datos/validar del backend.
@@ -178,32 +159,3 @@ validate-sample:
 	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id='$(NC_DATASET_ID)' contra http://$(API_HOST):$(API_PORT)/datos/validar"
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
-
-# Igual que validate-sample pero permitiendo forzar el lector con NC_FMT=csv|xlsx|parquet
-.PHONY: validate-sample-fmt
-validate-sample-fmt:
-	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV). Ajusta NC_SAMPLE_CSV o agrega un ejemplo." && exit 1)
-	@test -n "$(NC_FMT)" || (echo "ERROR: Define NC_FMT=csv|xlsx|parquet" && exit 1)
-	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id='$(NC_DATASET_ID)' (fmt=$(NC_FMT)) contra http://$(API_HOST):$(API_PORT)/datos/validar"
-	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" -F "fmt=$(NC_FMT)" \
-		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
-
-# Probar dataset_id explícito
-.PHONY: validate-sample-with-id
-validate-sample-with-id:
-	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV)" && exit 1)
-	@test -n "$(NC_DATASET_ID)" || (echo "ERROR: Define NC_DATASET_ID" && exit 1)
-	@echo ">> Validando $(NC_SAMPLE_CSV) con dataset_id=$(NC_DATASET_ID)"
-	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
-		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
-
-# Activar el entorno virtual
-
-.PHONY: venv
-venv:
-	@python -m venv .venv && echo ">> Activa el entorno: source .venv/Scripts/activate"
-
-.PHONY: deps-be
-deps-be:
-	@$(PIP) install -U pip wheel setuptools
-	@$(PIP) install -r backend/requirements.txt

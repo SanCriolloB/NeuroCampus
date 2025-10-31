@@ -165,41 +165,45 @@ export default function DataUpload() {
   }
 
   // Validar sin guardar
-async function onValidate() {
-  setValError(null);
-  setValidRes(null);
+  async function onValidate() {
+    setValError(null);
+    setValidRes(null);
 
-  const pre = preflightChecks(file);
-  if (!pre.ok) {
-    setValError(pre.message || "Archivo inválido para validar.");
-    return;
+    const pre = preflightChecks(file);
+    if (!pre.ok) {
+      setValError(pre.message || "Archivo inválido para validar.");
+      return;
+    }
+
+    setValLoading(true);
+    try {
+      // Inferimos formato por nombre y lo mapeamos a la union que admite el servicio
+      const inferred = inferFormatFromFilename((file as File).name); // "csv" | "xlsx" | "xls" | "parquet" | undefined
+      // Normalizamos: "xls" -> "xlsx" y solo pasamos csv/xlsx/parquet
+      const fmtNarrow =
+        inferred === "csv" || inferred === "xlsx" || inferred === "parquet"
+          ? inferred
+          : inferred === "xls"
+          ? "xlsx"
+          : undefined;
+
+      // ⬅️ Ahora enviamos: (file, datasetId, { fmt? })
+      const res = await validarDatos(
+        file as File,
+        periodo.trim(),
+        fmtNarrow ? { fmt: fmtNarrow } : undefined
+      );
+      setValidRes(res);
+    } catch (e: any) {
+      setValError(
+        e?.message ||
+          e?.response?.data?.detail ||
+          "Error al validar el archivo."
+      );
+    } finally {
+      setValLoading(false);
+    }
   }
-
-  setValLoading(true);
-  try {
-    // Inferimos formato por nombre y lo mapeamos a la union que admite el servicio
-    const inferred = inferFormatFromFilename((file as File).name); // "csv" | "xlsx" | "xls" | "parquet" | undefined
-    // Normalizamos: "xls" -> "xlsx" y solo pasamos csv/xlsx/parquet
-    const fmtNarrow =
-      inferred === "csv" || inferred === "xlsx" || inferred === "parquet"
-        ? inferred
-        : inferred === "xls"
-        ? "xlsx"
-        : undefined;
-
-    // ⬅️ Ahora enviamos: (file, datasetId, { fmt? })
-    const res = await validarDatos(file as File, periodo.trim(), fmtNarrow ? { fmt: fmtNarrow } : undefined);
-    setValidRes(res);
-  } catch (e: any) {
-    setValError(
-      e?.message ||
-        e?.response?.data?.detail ||
-        "Error al validar el archivo."
-    );
-  } finally {
-    setValLoading(false);
-  }
-}
 
   function onClear() {
     setFile(null);

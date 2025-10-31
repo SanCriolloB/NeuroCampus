@@ -18,8 +18,18 @@ import {
 
 /* ===== Helpers locales ===== */
 
+// Límite de tamaño (MB) desde .env, por defecto 10 MB
+const MAX_UPLOAD_MB =
+  Number((import.meta as any).env?.VITE_MAX_UPLOAD_MB ?? 10) || 10;
+const MAX_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
+// Extensiones soportadas en FE (deben coincidir con el BE)
+const ALLOWED_EXT = [".csv", ".xlsx", ".xls", ".parquet"] as const;
+
 // Inferir formato a partir del nombre del archivo (opcional para logs/UI)
-function inferFormatFromFilename(name?: string): "csv" | "xlsx" | "xls" | "parquet" | undefined {
+function inferFormatFromFilename(
+  name?: string
+): "csv" | "xlsx" | "xls" | "parquet" | undefined {
   if (!name) return undefined;
   const n = name.toLowerCase();
   if (n.endsWith(".csv")) return "csv";
@@ -50,6 +60,32 @@ function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
   req.forEach((name) => rows.push({ name, dtype: undefined, required: true, desc: "" }));
   opt.forEach((name) => rows.push({ name, dtype: undefined, required: false, desc: "" }));
   return rows;
+}
+
+// Verifica extensión y tamaño en el cliente
+function preflightChecks(file: File | null): { ok: boolean; message?: string } {
+  if (!file) return { ok: false, message: "Selecciona un archivo CSV/XLSX/Parquet." };
+
+  // Extensión permitida
+  const lower = (file.name || "").toLowerCase();
+  const hasAllowedExt = ALLOWED_EXT.some((ext) => lower.endsWith(ext));
+  if (!hasAllowedExt) {
+    return {
+      ok: false,
+      message: `Formato no soportado. Usa: ${ALLOWED_EXT.join(", ")}.`,
+    };
+  }
+
+  // Tamaño máximo
+  if (file.size > MAX_BYTES) {
+    return {
+      ok: false,
+      message: `El archivo pesa ${(file.size / (1024 * 1024)).toFixed(
+        2
+      )} MB y supera el límite de ${MAX_UPLOAD_MB} MB. Reduce el archivo o contacta a soporte.`,
+    };
+  }
+  return { ok: true };
 }
 
 export default function DataUpload() {
@@ -101,8 +137,9 @@ export default function DataUpload() {
     setError(null);
     setResult(null);
 
-    if (!file) {
-      setError("Selecciona un archivo CSV/XLSX/Parquet.");
+    const pre = preflightChecks(file);
+    if (!pre.ok) {
+      setError(pre.message || "Archivo inválido.");
       return;
     }
     if (!periodo?.trim()) {
@@ -113,12 +150,13 @@ export default function DataUpload() {
     setSubmitting(true);
     try {
       // El servicio upload ahora envía `periodo` (además de dataset_id) automáticamente
-      const r = await uploadDatos(file, periodo.trim(), overwrite);
+      const r = await uploadDatos(file as File, periodo.trim(), overwrite);
       setResult(r);
     } catch (e: any) {
+      // apiClient ya produce mensaje claro para 413 y otros errores
       setError(
-        e?.response?.data?.detail ||
-          e?.message ||
+        e?.message ||
+          e?.response?.data?.detail ||
           "Error al subir el archivo (verifica backend y CORS)."
       );
     } finally {
@@ -127,31 +165,41 @@ export default function DataUpload() {
   }
 
   // Validar sin guardar
-  async function onValidate() {
-    setValError(null);
-    setValidRes(null);
+async function onValidate() {
+  setValError(null);
+  setValidRes(null);
 
-    if (!file) {
-      setValError("Selecciona un archivo primero.");
-      return;
-    }
-
-    setValLoading(true);
-    try {
-      // La API de validar solo necesita file (FormData), el formato es informativo
-      const _fmt = inferFormatFromFilename(file.name);
-      const res = await validarDatos(file);
-      setValidRes(res);
-    } catch (e: any) {
-      setValError(
-        e?.response?.data?.detail ||
-          e?.message ||
-          "Error al validar el archivo."
-      );
-    } finally {
-      setValLoading(false);
-    }
+  const pre = preflightChecks(file);
+  if (!pre.ok) {
+    setValError(pre.message || "Archivo inválido para validar.");
+    return;
   }
+
+  setValLoading(true);
+  try {
+    // Inferimos formato por nombre y lo mapeamos a la union que admite el servicio
+    const inferred = inferFormatFromFilename((file as File).name); // "csv" | "xlsx" | "xls" | "parquet" | undefined
+    // Normalizamos: "xls" -> "xlsx" y solo pasamos csv/xlsx/parquet
+    const fmtNarrow =
+      inferred === "csv" || inferred === "xlsx" || inferred === "parquet"
+        ? inferred
+        : inferred === "xls"
+        ? "xlsx"
+        : undefined;
+
+    // ⬅️ Ahora enviamos: (file, datasetId, { fmt? })
+    const res = await validarDatos(file as File, periodo.trim(), fmtNarrow ? { fmt: fmtNarrow } : undefined);
+    setValidRes(res);
+  } catch (e: any) {
+    setValError(
+      e?.message ||
+        e?.response?.data?.detail ||
+        "Error al validar el archivo."
+    );
+  } finally {
+    setValLoading(false);
+  }
+}
 
   function onClear() {
     setFile(null);
@@ -170,11 +218,25 @@ export default function DataUpload() {
           Esquema versión <strong>{version || "…"}</strong>{" "}
           <span className="opacity-60">(GET /datos/esquema)</span>
         </p>
+        <p className="text-xs opacity-60">
+          Límite de archivo en cliente: <b>{MAX_UPLOAD_MB} MB</b>
+        </p>
       </header>
 
       {/* Formulario */}
       <form onSubmit={onSubmit} className="space-y-4">
-        <UploadDropzone onFileSelected={setFile} accept=".csv,.xlsx,.xls,.parquet" />
+        <UploadDropzone
+          onFileSelected={setFile}
+          accept=".csv,.xlsx,.xls,.parquet"
+        />
+
+        {/* Info rápida del archivo seleccionado */}
+        {file && (
+          <div className="text-xs opacity-80">
+            Archivo: <b>{file.name}</b> — {(file.size / (1024 * 1024)).toFixed(2)} MB — formato:{" "}
+            <code>{inferFormatFromFilename(file.name) ?? "desconocido"}</code>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
           <label className="block">

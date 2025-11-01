@@ -298,6 +298,7 @@ export default function DataUpload() {
       {result && (
         <div className="p-4 rounded-xl border space-y-2">
           <h2 className="font-semibold">Resultado de carga</h2>
+
           <div className="text-sm space-y-1">
             <div>
               <strong>dataset_id:</strong> {result.dataset_id ?? periodo}
@@ -309,6 +310,8 @@ export default function DataUpload() {
               <strong>stored_as:</strong>{" "}
               <span className="mono">{result.stored_as ?? "—"}</span>
             </div>
+
+            {/* Mensaje opcional del backend (si viene) */}
             {typeof (result as any)?.message === "string" && (
               <div
                 className="mono"
@@ -317,14 +320,38 @@ export default function DataUpload() {
                 message: {(result as any).message}
               </div>
             )}
+
+            {/* Mostrar warnings si existen */}
+            {Array.isArray((result as any)?.warnings) && (result as any).warnings.length > 0 && (
+              <div className="text-amber-400 mono">
+                warnings: {(result as any).warnings.join(", ")}
+              </div>
+            )}
           </div>
-          {!result.ok && (
-            <div className="mt-2 text-sm text-red-600">
-              Ingesta no realizada. Revisa el mensaje del backend o usa “Validar sin guardar”.
-            </div>
-          )}
+
+          {/* ✅ Mensaje final condicionado */}
+          {(() => {
+            const ok = (result as any)?.ok ?? false;
+            const ing = Number(result.rows_ingested ?? 0);
+
+            if (ing > 0 || ok === true) {
+              return (
+                <div className="mt-2 text-sm text-green-500">
+                  Ingesta realizada correctamente. Ya puedes continuar con el flujo.
+                </div>
+              );
+            }
+
+            // Caso sin ingesta confirmada
+            return (
+              <div className="mt-2 text-sm text-yellow-400">
+                Ingesta no realizada. Revisa el mensaje del backend o usa “Validar sin guardar”.
+              </div>
+            );
+          })()}
         </div>
       )}
+
 
       {/* Errores de validación */}
       {valError && (

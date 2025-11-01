@@ -2,15 +2,17 @@
 """
 Router del contexto 'datos'.
 
-- GET  /datos/esquema  → expone el esquema de la plantilla (lee JSON o usa fallback).
-- POST /datos/upload   → mock de carga (valida campos mínimos y responde metadatos).
+Incluye:
+- GET  /datos/esquema   → expone el esquema de la plantilla (lee JSON si existe o usa fallback).
+- POST /datos/validar   → valida un archivo (csv/xlsx/parquet) con el wrapper unificado y devuelve 'sample'.
+- POST /datos/upload    → ingesta real del archivo (a parquet por defecto) en datasets/{periodo}.parquet,
+                          con control de sobrescritura.
 
-Día 6: /datos/validar usa el facade que conecta con el wrapper unificado
-y, por compatibilidad con tests previos, añade también 'sample' en la respuesta.
-Además, rechaza formatos no soportados con 400 (p. ej. .txt).
-
-Día 7: también se valida el formato en /datos/upload (csv/xlsx/parquet) y se
-retorna 400 si no es soportado.
+Notas:
+- Gating de formato (400) para extensiones no soportadas (.txt, etc.).
+- Respuesta de /validar mantiene compat: añade `dataset_id` y `sample` (primeras filas).
+- /upload escribe en <repo_root>/datasets/. Si ya existe y overwrite=False → 409.
+- Si no hay motor parquet disponible, hace fallback a CSV (mismo nombre con .csv) y lo indica en stored_as.
 """
 
 from __future__ import annotations
@@ -18,20 +20,47 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import io
+import os
+
 import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
+# Esquemas de respuesta del dominio
 from ..schemas.datos import (
     DatosUploadResponse,
     EsquemaCol,
     EsquemaResponse,
 )
 
-# Usamos el facade que llama al wrapper unificado
+# Facade que conecta con el wrapper unificado de validación
 from ...data.facades.datos_facade import validar_archivo
 
 router = APIRouter(tags=["datos"])
 
+
+# ---------------------------------------------------------------------------
+# Utilidades
+# ---------------------------------------------------------------------------
+
+def _repo_root_from_here() -> Path:
+    """Detecta la raíz del repo subiendo niveles desde este archivo."""
+    here = Path(__file__).resolve()
+    # [0]=routers, [1]=app, [2]=neurocampus, [3]=src, [4]=backend, [5]=repo_root
+    return here.parents[5]
+
+
+def _to_bool(x) -> bool:
+    """Convierte valores sueltos de formularios a bool."""
+    if isinstance(x, bool):
+        return x
+    if x is None:
+        return False
+    return str(x).strip().lower() in {"true", "1", "yes", "on", "t", "y"}
+
+
+# ---------------------------------------------------------------------------
+# Ping
+# ---------------------------------------------------------------------------
 
 @router.get("/ping")
 def ping() -> dict:
@@ -62,19 +91,15 @@ _FALLBACK_SCHEMA: Dict[str, Any] = {
     ],
 }
 
-
-def _repo_root_from_here() -> Path:
-    here = Path(__file__).resolve()
-    # [0]=routers, [1]=app, [2]=neurocampus, [3]=src, [4]=backend, [5]=repo_root
-    return here.parents[5]
-
-
 @router.get("/esquema", response_model=EsquemaResponse)
 def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
+    """
+    Lee schemas/plantilla_dataset.schema.json en la raíz del repo si existe;
+    si no, devuelve un esquema mínimo de fallback.
+    """
     import json
 
-    repo_root = _repo_root_from_here()
-    schema_file = repo_root / "schemas" / "plantilla_dataset.schema.json"
+    schema_file = _repo_root_from_here() / "schemas" / "plantilla_dataset.schema.json"
 
     if schema_file.exists():
         try:
@@ -106,45 +131,19 @@ def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
                 if "maxLength" in spec:
                     col["max_len"] = int(spec["maxLength"])
 
-                if "enum" in spec and isinstance(spec["enum"], list):
+                if isinstance(spec.get("enum"), list):
                     col["domain"] = [str(v) for v in spec["enum"]]
 
                 columns.append(EsquemaCol(**col))
 
             return EsquemaResponse(version=str(data.get("version", "v0.3.0")), columns=columns)
         except Exception:
+            # Cualquier error leyendo el JSON → usar fallback
             pass
 
     return EsquemaResponse(
         version=_FALLBACK_SCHEMA["version"],
         columns=[EsquemaCol(**c) for c in _FALLBACK_SCHEMA["columns"]],
-    )
-
-
-# ---------------------------------------------------------------------------
-# Mock de carga
-# ---------------------------------------------------------------------------
-
-@router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=DatosUploadResponse)
-async def upload_dataset(
-    file: UploadFile = File(...),
-    periodo: str = Form(...),
-    overwrite: bool = Form(False),
-) -> DatosUploadResponse:
-    if not periodo:
-        raise HTTPException(status_code=400, detail="periodo es requerido")
-
-    # Día 7: gating de formato también en /datos/upload
-    name = (file.filename or "").lower()
-    if not (name.endswith(".csv") or name.endswith(".xlsx") or name.endswith(".parquet")):
-        raise HTTPException(status_code=400, detail="Formato no soportado en upload. Use csv/xlsx/parquet.")
-
-    stored_uri = f"localfs://neurocampus/datasets/{periodo}.parquet"
-    return DatosUploadResponse(
-        dataset_id=periodo,
-        rows_ingested=0,
-        stored_as=stored_uri,
-        warnings=[],
     )
 
 
@@ -184,16 +183,20 @@ async def validar_datos(
     fmt: Optional[str] = Form(None, description="Forzar lector: 'csv' | 'xlsx' | 'parquet' (opcional)"),
 ) -> Dict[str, Any]:
     """
-    Lee el archivo, verifica formato soportado (csv/xlsx/parquet), delega en el facade (wrapper unificado)
-    y añade 'sample' por compatibilidad con tests anteriores.
+    Valida un archivo de datos contra el validador unificado.
+    - Gatea formato para responder 400 si no es csv/xlsx/parquet.
+    - Enriquecer respuesta con `dataset_id` y `sample` (compat tests/herramientas).
     """
     try:
         raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="Archivo vacío o no leído.")
+
         name = file.filename or "upload"
         lower = name.lower()
         forced = (fmt or "").strip().lower()
 
-        # 1) Gating de formato para retornar 400 en no soportados (p.ej. .txt)
+        # 1) Gating de formato para retornar 400 en no soportados
         allowed = {"csv", "xlsx", "parquet"}
         ext_ok = (
             (forced in allowed) or
@@ -202,20 +205,23 @@ async def validar_datos(
             lower.endswith(".parquet")
         )
         if not ext_ok:
-            raise HTTPException(status_code=400, detail="Formato no soportado. Use csv/xlsx/parquet o especifique 'fmt'.")
+            raise HTTPException(
+                status_code=400,
+                detail="Formato no soportado. Use csv/xlsx/parquet o especifique 'fmt'.",
+            )
 
-        # 2) Construir 'sample' (compat con tests que lo esperan)
+        # 2) Construir 'sample' (compat con tests/herramientas que lo esperan)
         sample = _first_rows_sample(raw, name, forced)
 
         # 3) Delegar validación al facade (wrapper unificado)
         report = validar_archivo(
             fileobj=io.BytesIO(raw),
             filename=name,
-            fmt=fmt,
+            fmt=forced or None,
             dataset_id=dataset_id,
         )
 
-        # 4) Enriquecer respuesta: asegurar dataset_id y sample por compatibilidad
+        # 4) Enriquecer respuesta con dataset_id y sample por compatibilidad
         if isinstance(report, dict):
             report.setdefault("dataset_id", dataset_id)
             report.setdefault("sample", sample)
@@ -231,3 +237,89 @@ async def validar_datos(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al validar: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Ingesta (upload) real a datasets/{periodo}.parquet con control de overwrite
+# ---------------------------------------------------------------------------
+
+@router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=DatosUploadResponse)
+async def upload_dataset(
+    file: UploadFile = File(..., description="CSV/XLSX/Parquet"),
+    periodo: str = Form(..., description="Identificador de periodo (p. ej. '2024-2')"),
+    dataset_id: str = Form(..., description="Compat alias (se ignora; usamos 'periodo')"),
+    overwrite: bool = Form(False, description="Sobrescribir si existe"),
+) -> DatosUploadResponse:
+    """
+    Ingesta real del dataset:
+    - Lee CSV/XLSX/Parquet y lo escribe en <repo_root>/datasets/{periodo}.parquet (por defecto).
+    - Si el fichero ya existe y overwrite=False → 409.
+    - Si falta motor parquet (pyarrow/fastparquet), cae a CSV y lo informa en stored_as.
+    """
+    if not periodo:
+        raise HTTPException(status_code=400, detail="periodo es requerido")
+
+    # Gateo de formato por extensión del filename (simple y suficiente para el flujo actual)
+    name = (file.filename or "").lower()
+    if not (name.endswith(".csv") or name.endswith(".xlsx") or name.endswith(".parquet")):
+        raise HTTPException(status_code=400, detail="Formato no soportado en upload. Use csv/xlsx/parquet.")
+
+    # Directorio de destino: <repo_root>/datasets
+    repo_root = _repo_root_from_here()
+    outdir = repo_root / "datasets"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # Rutas de salida
+    parquet_path = outdir / f"{periodo}.parquet"
+    csv_fallback_path = outdir / f"{periodo}.csv"
+
+    # Control de sobrescritura
+    if parquet_path.exists() or csv_fallback_path.exists():
+        if not _to_bool(overwrite):
+            raise HTTPException(
+                status_code=409,
+                detail=f"El dataset '{periodo}' ya existe. Activa 'overwrite' para reemplazarlo."
+            )
+
+    # Leer el archivo en memoria y a DataFrame (que el facade ya usa)
+    try:
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="Archivo vacío o no leído.")
+
+        # Valernos del mismo lector que usa el facade (si lo prefieres)
+        from ...data.adapters.formato_adapter import read_file
+        df = read_file(io.BytesIO(raw), file.filename or "upload", explicit=None)
+
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            # Permitimos subir aunque esté vacío, pero indicamos filas 0
+            rows = 0
+            # Aún así creamos un parquet vacío para mantener consistencia de pipeline
+            try:
+                df.to_parquet(parquet_path, index=False)  # podría fallar sin motor parquet
+                stored_uri = f"localfs://neurocampus/datasets/{periodo}.parquet"
+            except Exception:
+                df.to_csv(csv_fallback_path, index=False)
+                stored_uri = f"localfs://neurocampus/datasets/{periodo}.csv"
+            return DatosUploadResponse(dataset_id=periodo, rows_ingested=rows, stored_as=stored_uri, warnings=[])
+
+        # Escribir parquet; si no hay motor parquet, caer a CSV
+        try:
+            df.to_parquet(parquet_path, index=False)  # requiere pyarrow o fastparquet
+            stored_uri = f"localfs://neurocampus/datasets/{periodo}.parquet"
+        except (ImportError, ValueError, RuntimeError) as _e:
+            # Fallback sin romper el flujo: persistimos como CSV
+            df.to_csv(csv_fallback_path, index=False)
+            stored_uri = f"localfs://neurocampus/datasets/{periodo}.csv"
+
+        return DatosUploadResponse(
+            dataset_id=periodo,
+            rows_ingested=int(len(df)),
+            stored_as=stored_uri,
+            warnings=[],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al subir dataset: {e}")

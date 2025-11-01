@@ -165,41 +165,45 @@ export default function DataUpload() {
   }
 
   // Validar sin guardar
-async function onValidate() {
-  setValError(null);
-  setValidRes(null);
+  async function onValidate() {
+    setValError(null);
+    setValidRes(null);
 
-  const pre = preflightChecks(file);
-  if (!pre.ok) {
-    setValError(pre.message || "Archivo inválido para validar.");
-    return;
+    const pre = preflightChecks(file);
+    if (!pre.ok) {
+      setValError(pre.message || "Archivo inválido para validar.");
+      return;
+    }
+
+    setValLoading(true);
+    try {
+      // Inferimos formato por nombre y lo mapeamos a la union que admite el servicio
+      const inferred = inferFormatFromFilename((file as File).name); // "csv" | "xlsx" | "xls" | "parquet" | undefined
+      // Normalizamos: "xls" -> "xlsx" y solo pasamos csv/xlsx/parquet
+      const fmtNarrow =
+        inferred === "csv" || inferred === "xlsx" || inferred === "parquet"
+          ? inferred
+          : inferred === "xls"
+          ? "xlsx"
+          : undefined;
+
+      // ⬅️ Ahora enviamos: (file, datasetId, { fmt? })
+      const res = await validarDatos(
+        file as File,
+        periodo.trim(),
+        fmtNarrow ? { fmt: fmtNarrow } : undefined
+      );
+      setValidRes(res);
+    } catch (e: any) {
+      setValError(
+        e?.message ||
+          e?.response?.data?.detail ||
+          "Error al validar el archivo."
+      );
+    } finally {
+      setValLoading(false);
+    }
   }
-
-  setValLoading(true);
-  try {
-    // Inferimos formato por nombre y lo mapeamos a la union que admite el servicio
-    const inferred = inferFormatFromFilename((file as File).name); // "csv" | "xlsx" | "xls" | "parquet" | undefined
-    // Normalizamos: "xls" -> "xlsx" y solo pasamos csv/xlsx/parquet
-    const fmtNarrow =
-      inferred === "csv" || inferred === "xlsx" || inferred === "parquet"
-        ? inferred
-        : inferred === "xls"
-        ? "xlsx"
-        : undefined;
-
-    // ⬅️ Ahora enviamos: (file, datasetId, { fmt? })
-    const res = await validarDatos(file as File, periodo.trim(), fmtNarrow ? { fmt: fmtNarrow } : undefined);
-    setValidRes(res);
-  } catch (e: any) {
-    setValError(
-      e?.message ||
-        e?.response?.data?.detail ||
-        "Error al validar el archivo."
-    );
-  } finally {
-    setValLoading(false);
-  }
-}
 
   function onClear() {
     setFile(null);
@@ -294,6 +298,7 @@ async function onValidate() {
       {result && (
         <div className="p-4 rounded-xl border space-y-2">
           <h2 className="font-semibold">Resultado de carga</h2>
+
           <div className="text-sm space-y-1">
             <div>
               <strong>dataset_id:</strong> {result.dataset_id ?? periodo}
@@ -305,6 +310,8 @@ async function onValidate() {
               <strong>stored_as:</strong>{" "}
               <span className="mono">{result.stored_as ?? "—"}</span>
             </div>
+
+            {/* Mensaje opcional del backend (si viene) */}
             {typeof (result as any)?.message === "string" && (
               <div
                 className="mono"
@@ -313,14 +320,38 @@ async function onValidate() {
                 message: {(result as any).message}
               </div>
             )}
+
+            {/* Mostrar warnings si existen */}
+            {Array.isArray((result as any)?.warnings) && (result as any).warnings.length > 0 && (
+              <div className="text-amber-400 mono">
+                warnings: {(result as any).warnings.join(", ")}
+              </div>
+            )}
           </div>
-          {!result.ok && (
-            <div className="mt-2 text-sm text-red-600">
-              Ingesta no realizada. Revisa el mensaje del backend o usa “Validar sin guardar”.
-            </div>
-          )}
+
+          {/* ✅ Mensaje final condicionado */}
+          {(() => {
+            const ok = (result as any)?.ok ?? false;
+            const ing = Number(result.rows_ingested ?? 0);
+
+            if (ing > 0 || ok === true) {
+              return (
+                <div className="mt-2 text-sm text-green-500">
+                  Ingesta realizada correctamente. Ya puedes continuar con el flujo.
+                </div>
+              );
+            }
+
+            // Caso sin ingesta confirmada
+            return (
+              <div className="mt-2 text-sm text-yellow-400">
+                Ingesta no realizada. Revisa el mensaje del backend o usa “Validar sin guardar”.
+              </div>
+            );
+          })()}
         </div>
       )}
+
 
       {/* Errores de validación */}
       {valError && (

@@ -115,3 +115,66 @@ export default {
   upload,
   uploadWithOptions,
 };
+
+// --- Subida con progreso usando XHR (opcional) ---
+// Mantiene compatibilidad con la API de nuestro backend y reporta %.
+export async function uploadWithProgress(
+  file: File,
+  dataset_id: string,
+  overwrite: boolean,
+  onProgress?: (percent: number) => void
+) {
+  const url = "/datos/upload";
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("periodo", dataset_id);    // backend actual espera 'periodo'
+  fd.append("dataset_id", dataset_id); // compat hacia atrás
+  fd.append("overwrite", String(overwrite));
+
+  const base =
+    (import.meta as any).env?.VITE_API_BASE ??
+    (import.meta as any).env?.VITE_API_URL ??
+    "http://127.0.0.1:8000";
+
+  const full = `${base}${url}`;
+
+  // Envolvemos XHR en una Promise para usar await/try-catch desde el componente.
+  const data = await new Promise<UploadResp>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", full, true);
+
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable && onProgress) {
+        const pct = Math.round((evt.loaded / evt.total) * 100);
+        onProgress(pct);
+      }
+    };
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState !== 4) return;
+      const ct = xhr.getResponseHeader("content-type") || "";
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const json = ct.includes("application/json") ? JSON.parse(xhr.responseText) : null;
+          resolve(json || { ok: true } as any);
+        } catch (e) {
+          resolve({ ok: true } as any); // fallback benigno si no es JSON
+        }
+      } else {
+        let msg = `HTTP ${xhr.status} ${xhr.statusText}`;
+        try {
+          const body = ct.includes("application/json") ? JSON.parse(xhr.responseText) : xhr.responseText;
+          const detail = (typeof body === "object" && body?.detail) ? body.detail : String(body || "");
+          msg = `${msg} — ${detail}`;
+        } catch {}
+        reject(new Error(msg));
+      }
+    };
+
+    // NOTA: Si requieres auth headers, añádelos aquí con xhr.setRequestHeader(...)
+    xhr.send(fd);
+  });
+
+  return data;
+}
+

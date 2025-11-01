@@ -62,6 +62,13 @@ _FALLBACK_SCHEMA: Dict[str, Any] = {
     ],
 }
 
+def _to_bool(x) -> bool:
+    if isinstance(x, bool):
+        return x
+    if x is None:
+        return False
+    s = str(x).strip().lower()
+    return s in {"true", "1", "yes", "on", "t", "y"}
 
 def _repo_root_from_here() -> Path:
     here = Path(__file__).resolve()
@@ -129,6 +136,7 @@ def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
 async def upload_dataset(
     file: UploadFile = File(...),
     periodo: str = Form(...),
+    dataset_id: str = Form(...),     # compat: seguimos aceptando ambos nombres
     overwrite: bool = Form(False),
 ) -> DatosUploadResponse:
     if not periodo:
@@ -184,11 +192,15 @@ async def validar_datos(
     fmt: Optional[str] = Form(None, description="Forzar lector: 'csv' | 'xlsx' | 'parquet' (opcional)"),
 ) -> Dict[str, Any]:
     """
-    Lee el archivo, verifica formato soportado (csv/xlsx/parquet), delega en el facade (wrapper unificado)
-    y añade 'sample' por compatibilidad con tests anteriores.
+    Valida un archivo de datos contra el validador unificado.
+    - Gatea formato para responder 400 si no es csv/xlsx/parquet (o si no coincide el 'fmt' forzado).
+    - Enriquecer respuesta con `dataset_id` y `sample` (compat tests).
     """
     try:
         raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="Archivo vacío o no leído.")
+
         name = file.filename or "upload"
         lower = name.lower()
         forced = (fmt or "").strip().lower()
@@ -202,7 +214,10 @@ async def validar_datos(
             lower.endswith(".parquet")
         )
         if not ext_ok:
-            raise HTTPException(status_code=400, detail="Formato no soportado. Use csv/xlsx/parquet o especifique 'fmt'.")
+            raise HTTPException(
+                status_code=400,
+                detail="Formato no soportado. Use csv/xlsx/parquet o especifique 'fmt'.",
+            )
 
         # 2) Construir 'sample' (compat con tests que lo esperan)
         sample = _first_rows_sample(raw, name, forced)
@@ -211,7 +226,7 @@ async def validar_datos(
         report = validar_archivo(
             fileobj=io.BytesIO(raw),
             filename=name,
-            fmt=fmt,
+            fmt=forced or None,   # usar el formato forzado si viene
             dataset_id=dataset_id,
         )
 
@@ -225,6 +240,7 @@ async def validar_datos(
     except HTTPException:
         raise
     except UnicodeDecodeError:
+        # Lectura CSV fallida por encoding
         raise HTTPException(
             status_code=400,
             detail="No se pudo leer el CSV con UTF-8. Intente especificar 'fmt' o convertir la codificación.",

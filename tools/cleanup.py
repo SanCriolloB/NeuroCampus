@@ -1,20 +1,5 @@
-"""
-tools/cleanup.py — NeuroCampus
-Día 2: Borrado real seguro (mover a papelera), logs y exclusiones
-
-Modos:
-  - Inventario:      python -m tools.cleanup --inventory
-  - Dry-run:         python -m tools.cleanup --dry-run --retention-days 90 --keep-last 3
-  - Borrado real:    python -m tools.cleanup --force --retention-days 90 --keep-last 3
-
-Seguridad:
-  - Champions protegidos (artifacts/champions/**)
-  - Exclusiones por glob (--exclude-globs)
-  - Borrado reversible: mueve a .trash/<YYYYMMDD>/<ruta_relativa>
-  - Logs CSV en logs/cleanup.log con: ts,action,path,size,age_days,reason
-
-Siguientes días (3-4): endpoint FastAPI & UI de administración.
-"""
+# tools/cleanup.py — NeuroCampus
+# Día 2: Borrado real seguro (mover a papelera), logs y exclusiones
 
 from __future__ import annotations
 import argparse
@@ -25,7 +10,7 @@ import os
 import shutil
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -221,6 +206,13 @@ def ensure_dirs():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _utc_iso_seconds_z() -> str:
+    """
+    ISO-8601 en UTC a segundos con sufijo Z, sin offset (+00:00).
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def log_action(action: str, file: FileInfo, reason: str):
     ensure_dirs()
     is_new = not LOG_FILE.exists()
@@ -229,7 +221,7 @@ def log_action(action: str, file: FileInfo, reason: str):
         if is_new:
             w.writerow(["timestamp", "action", "path", "size", "age_days", "reason"])
         w.writerow([
-            datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            _utc_iso_seconds_z(),   # ← reemplazo de datetime.utcnow()
             action,
             str(file.path),
             file.size,
@@ -242,7 +234,7 @@ def safe_move_to_trash(file: FileInfo, trash_dir: Path):
     """
     Mueve el archivo a .trash/YYYYMMDD/<ruta_relativa> para borrado reversible.
     """
-    date_bucket = datetime.utcnow().strftime("%Y%m%d")
+    date_bucket = datetime.now(timezone.utc).strftime("%Y%m%d")  # ← reemplazo de utcnow()
     rel = file.path.resolve().relative_to(BASE_DIR.resolve())
     dst = trash_dir / date_bucket / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -336,6 +328,7 @@ def main(argv: List[str]) -> int:
     purge_old_trash(trash_dir, args.trash_retention_days)
     return 0
 
+
 # --- fachada programática para uso interno (API/servicios) ---
 def run_cleanup(*,
     retention_days: int = DEFAULT_RETENTION_DAYS,
@@ -404,6 +397,7 @@ def run_cleanup(*,
         "trash_dir": str((BASE_DIR / trash_dir).resolve()),
     }
     return result
+
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

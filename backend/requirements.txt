@@ -15,6 +15,11 @@ pandas>=2.2
 pyarrow>=15.0
 openpyxl>=3.1
 
-# Utilidades base (compatibilidad según entorno)
+# Utilidades base
 numpy>=1.26
 typing-extensions>=4.8
+
+# --- PyTorch (CPU) ---
+# Usamos el índice extra de PyTorch para resolver el wheel CPU sin romper PyPI.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu

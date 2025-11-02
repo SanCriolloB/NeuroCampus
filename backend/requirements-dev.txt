@@ -1,28 +1,29 @@
-# --- Core API / Tests
-fastapi>=0.115
-uvicorn>=0.30
-pydantic>=2.7
-python-multipart>=0.0.9
-httpx>=0.27
+# --- Desarrollo y pruebas ---
+# Hereda todo lo de producción:
+-r requirements.txt
+
+# Testing
 pytest>=8.2
+httpx>=0.27
 
-# --- Data I/O
-pandas>=2.2
-openpyxl>=3.1      # Excel
-pyarrow>=17.0      # Parquet/Arrow
+# (Opcional) Calidad de código / tipeo estático
+# ruff>=0.5
+# black>=24.8
+# isort>=5.13
+# mypy>=1.10
 
-# --- Ciencia de datos / ML clásico
-numpy>=1.26
-scipy>=1.11
-scikit-learn>=1.5
-joblib>=1.4
+# (Opcional) Notebooks
+# ipykernel>=6.29
+# jupyterlab>=4.2
 
-# --- NLP (según árbol del proyecto)
-transformers>=4.40
-sentencepiece>=0.2
-accelerate>=0.33   # opcional para acelerar/compat, no CUDA
+# (Opcional) NLP / Experimentos
+# transformers>=4.44
+# sentencepiece>=0.2
+# accelerate>=0.34
 
-# --- PyTorch (CPU only) se instala con índice oficial más abajo
-# torch
-# torchvision
-# torchaudio
+# (Opcional) PyTorch: elige el wheel apropiado para tu entorno (CPU/GPU)
+# CPU-only (ejemplo):
+# torch==2.3.1+cpu --index-url https://download.pytorch.org/whl/cpu
+#
+# CUDA (elige versión compatible con tu GPU/driver):
+# torch==2.3.1+cu121 --index-url https://download.pytorch.org/whl/cu121

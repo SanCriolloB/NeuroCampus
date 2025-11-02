@@ -1,12 +1,11 @@
 # --- Desarrollo y pruebas ---
-# Hereda todo lo de producción:
 -r requirements.txt
 
 # Testing
 pytest>=8.2
 httpx>=0.27
 
-# (Opcional) Calidad de código / tipeo estático
+# (Opcional) Calidad de código / tipeo
 # ruff>=0.5
 # black>=24.8
 # isort>=5.13
@@ -21,9 +20,6 @@ httpx>=0.27
 # sentencepiece>=0.2
 # accelerate>=0.34
 
-# (Opcional) PyTorch: elige el wheel apropiado para tu entorno (CPU/GPU)
-# CPU-only (ejemplo):
-# torch==2.3.1+cpu --index-url https://download.pytorch.org/whl/cpu
-#
-# CUDA (elige versión compatible con tu GPU/driver):
-# torch==2.3.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+# (Opcional) Si quieres forzar CUDA en dev, sobreescribe aquí (comentado por defecto):
+# --extra-index-url https://download.pytorch.org/whl/cu121
+# torch==2.3.1+cu121

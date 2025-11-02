@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -28,9 +29,6 @@ from neurocampus.observability.logging_context import install_logrecord_factory
 
 # Routers del dominio
 from .routers import datos, jobs, modelos, prediccion, admin_cleanup
-
-# Instancia de la aplicación (título visible en /docs y /openapi.json)
-app = FastAPI(title="NeuroCampus API", version=os.getenv("API_VERSION", "0.6.0"))
 
 # ---------------------------------------------------------------------------
 # CORS (necesario para que el navegador permita las peticiones desde Vite)
@@ -49,16 +47,6 @@ ALLOWED_ORIGINS = (
     else _default_origins
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,   # en desarrollo podrías usar ["*"] si lo prefieres
-    allow_credentials=True,
-    allow_methods=["*"],             # permite OPTIONS del preflight y cualquier método
-    allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=600,
-)
-
 # ---------------------------------------------------------------------------
 # Límite de subida por Content-Length → 413 Payload Too Large (solo datos.*)
 #   - Controlado por NC_MAX_UPLOAD_MB (entero, por defecto 10)
@@ -66,12 +54,10 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 MAX_MB = int(os.getenv("NC_MAX_UPLOAD_MB", "10"))
 MAX_BYTES = MAX_MB * 1024 * 1024
-
 _UPLOAD_PATHS = ("/datos/upload", "/datos/validar")
 
-@app.middleware("http")
 async def limit_upload_size(request: Request, call_next):
-    # Solo aplicamos a los endpoints de carga/validación de datasets
+    """Middleware para limitar el tamaño de carga en endpoints de datos."""
     path = request.url.path
     if path.startswith(_UPLOAD_PATHS):
         cl = request.headers.get("content-length")
@@ -82,65 +68,74 @@ async def limit_upload_size(request: Request, call_next):
                     status_code=413,
                 )
         except ValueError:
-            # Si el header no es un entero válido, dejamos que continúe el flujo normal.
-            # Uvicorn/Starlette gestionarán el body; si termina fallando, el cliente verá el error correspondiente.
             pass
     return await call_next(request)
 
-# --- Correlation-Id Middleware (trazabilidad end-to-end) ---
-# Agrega/propaga X-Correlation-Id y lo expone en request.state.correlation_id
-app.add_middleware(CorrelationIdMiddleware)
-
 
 def _wire_observability_safe() -> None:
-    """
-    Conecta el handler de logging a los eventos training.* y prediction.* si el módulo existe.
-    Si no existe (aún no creado), la app sigue funcionando sin observabilidad.
-    """
+    """Conecta el handler de logging a los eventos training.* y prediction.*."""
     log = logging.getLogger("neurocampus")
     try:
-        # Preferimos import absoluto con --app-dir backend/src
         from neurocampus.observability.destinos.log_handler import wire_logging_destination
-
         wire_logging_destination()
         log.info("Observability wiring OK: training.* & prediction.* -> logging.INFO")
     except ModuleNotFoundError as e:
         log.warning(
-            "Observability module not found: %s. La API arrancará sin logging de training.* / prediction.* "
-            "(crea backend/src/neurocampus/observability/destinos/log_handler.py y __init__.py).",
+            "Observability module not found: %s. La API arrancará sin logging de training.* / prediction.*.",
             e,
         )
     except Exception as e:
         log.warning("Fallo conectando observabilidad (se ignora para no bloquear): %s", e)
 
 
-@app.on_event("startup")
-def _startup_observability_wiring() -> None:
-    """
-    - Configura logging (dictConfig con filtro cid)
-    - Instala LogRecordFactory que inyecta correlation_id desde ContextVar
-    - Conecta el destino de logging para eventos training.* y prediction.*
-    """
-    # 1) dictConfig con filtro cid
+# ---------------------------------------------------------------------------
+# Lifespan moderno (reemplaza @app.on_event("startup"))
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Bloque lifespan para configurar logging y observabilidad."""
     setup_logging()
-
-    # 2) LogRecordFactory que añade correlation_id automáticamente
     install_logrecord_factory()
-
-    # 3) Wiring de observabilidad existente
     _wire_observability_safe()
+    yield  # Aquí se podría agregar lógica de shutdown si fuera necesario.
 
 
+# ---------------------------------------------------------------------------
+# Instanciación de la aplicación
+# ---------------------------------------------------------------------------
+app = FastAPI(
+    title="NeuroCampus API",
+    version=os.getenv("API_VERSION", "0.6.0"),
+    lifespan=lifespan,
+)
+
+# --- Middlewares ---
+app.add_middleware(CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
+)
+app.middleware("http")(limit_upload_size)
+app.add_middleware(CorrelationIdMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 @app.get("/health")
 def health() -> dict:
     """Endpoint de salud: permite saber si la API está arriba."""
     return {"status": "ok"}
 
 
-# Registro de routers bajo prefijos. Cada router agrupa rutas por contexto
-# y define su propia etiqueta (tags) para la documentación automática.
-app.include_router(datos.router,         prefix="/datos",       tags=["datos"])
-app.include_router(jobs.router,          prefix="/jobs",        tags=["jobs"])
-app.include_router(modelos.router,       prefix="/modelos",     tags=["modelos"])
-app.include_router(prediccion.router,    prefix="/prediccion",  tags=["prediccion"])
+# ---------------------------------------------------------------------------
+# Registro de routers
+# ---------------------------------------------------------------------------
+app.include_router(datos.router,      prefix="/datos",       tags=["datos"])
+app.include_router(jobs.router,       prefix="/jobs",        tags=["jobs"])
+app.include_router(modelos.router,    prefix="/modelos",     tags=["modelos"])
+app.include_router(prediccion.router, prefix="/prediccion",  tags=["prediccion"])
 app.include_router(admin_cleanup.router,                     tags=["admin"])

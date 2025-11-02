@@ -1,20 +1,20 @@
-fastapi>=0.110
-uvicorn==0.30.6
-pydantic==2.9.2
-httpx==0.27.2
-pandas>=2.2
-polars>=0.20
-pyarrow>=15
-openpyxl>=3.1
+# --- Runtime mínimo para la API (Producción) ---
+
+# Web framework
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Validación (Pydantic v2)
+pydantic>=2.7
+
+# Subidas de archivos (FormData / UploadFile)
 python-multipart>=0.0.9
-torch>=2.3
-# transformers>=4.41
-# torch>=2.2
-# emoji
-# spacy
-scikit-learn>=1.3
-joblib>=1.3
 
-anyio>=4.3
+# Procesamiento de datos (lectura CSV/XLSX/Parquet)
+pandas>=2.2
+pyarrow>=15.0
+openpyxl>=3.1
 
-pytest>=8.2
+# Utilidades base (compatibilidad según entorno)
+numpy>=1.26
+typing-extensions>=4.8

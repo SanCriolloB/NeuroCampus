@@ -1,25 +1,30 @@
-# --- Runtime mínimo para la API (Producción) ---
+# --- Runtime mínimo para la API (producción) ---
 
 # Web framework
-fastapi>=0.115
-uvicorn[standard]>=0.30
+fastapi>=0.118.0
+uvicorn[standard]>=0.30.6
 
 # Validación (Pydantic v2)
-pydantic>=2.7
+pydantic>=2.9.2
+typing-extensions>=4.15.0
 
 # Subidas de archivos (FormData / UploadFile)
-python-multipart>=0.0.9
+python-multipart>=0.0.20
 
-# Procesamiento de datos (lectura CSV/XLSX/Parquet)
-pandas>=2.2
+# Procesamiento de datos (CSV/XLSX/Parquet)
+pandas>=2.3.3
 pyarrow>=15.0
-openpyxl>=3.1
+openpyxl>=3.1.5
+numpy>=2.3.0
 
-# Utilidades base
-numpy>=1.26
-typing-extensions>=4.8
+# Configuración (YAML)
+pyyaml>=6.0.1
+
+# Métricas y validación experimental (Día 10 auditoría k-fold)
+# Nota: scikit-learn >=1.6 incluye ruedas para Python 3.13.
+scikit-learn>=1.6.0
 
 # --- PyTorch (CPU) ---
-# Usamos el índice extra de PyTorch para resolver el wheel CPU sin romper PyPI.
+# Usamos el índice oficial CPU; fija versión conocida disponible para Py 3.13.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.3.1+cpu
+torch==2.9.0+cpu

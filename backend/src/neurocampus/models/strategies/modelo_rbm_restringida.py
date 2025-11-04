@@ -164,6 +164,20 @@ class _RBM(nn.Module):
         return torch.sigmoid(x)
 
     def sample_h(self, v: Tensor) -> Tuple[Tensor, Tensor]:
+        # --- AUTOFIX: sincronizar visibles de W/b_v con la cantidad de columnas de v ---
+        try:
+            nv = v.shape[1]
+            vW, hW = self.W.shape
+            if nv != vW:
+                device = self.W.device
+                dtype = self.W.dtype
+                std = 0.01
+                # mantener como nn.Parameter
+                self.W  = nn.Parameter(torch.randn((nv, hW), device=device, dtype=dtype) * std)
+                self.b_v = nn.Parameter(torch.zeros((nv,), device=device, dtype=dtype))
+        except Exception:
+            pass
+        # --- fin AUTOFIX ---
         p_h = self._sigmoid(v @ self.W + self.b_h)
         h = torch.bernoulli(p_h)
         return p_h, h
@@ -174,11 +188,31 @@ class _RBM(nn.Module):
         return p_v, v
 
     def cd_step(self, v0: Tensor) -> Dict[str, float]:
+        # --- AUTOFIX visibles: sincroniza W/b_v con n_features del batch (v0) ---
+        try:
+            nv = v0.shape[1]
+            vW, hW = self.W.shape
+            if nv != vW:
+                device = self.W.device
+                dtype  = self.W.dtype
+                std = 0.01
+                self.W  = nn.Parameter(torch.randn((nv, hW), device=device, dtype=dtype) * std)
+                self.b_v = nn.Parameter(torch.zeros((nv,), device=device, dtype=dtype))
+        except Exception:
+            pass
+        # --- fin AUTOFIX ---
+
         ph0, h0 = self.sample_h(v0)
-        vk, hk, pvk, phk = v0, h0, None, None
+        vk, hk = v0, h0
+        pvk, phk = None, None
         for _ in range(self.cd_k):
             pvk, vk = self.sample_v(hk)
             phk, hk = self.sample_h(vk)
+
+        if pvk is None:
+            pvk, _ = self.sample_v(h0)
+        if phk is None:
+            phk, _ = self.sample_h(vk)
 
         pos = v0.t() @ ph0
         neg = vk.t() @ phk
@@ -329,17 +363,17 @@ class RBMRestringida:
         accept_threshold  = float(hparams.get("accept_threshold", 0.80))
         max_calif         = int(hparams.get("max_calif", 10))
 
-        # En restringida, por defecto no usar probs para reducir fuga; pero permite override.
         include_text_probs  = bool(hparams.get("use_text_probs", False))
         include_text_embeds = bool(hparams.get("use_text_embeds", False))
         self.text_embed_prefix_ = str(hparams.get("text_embed_prefix", "x_text_"))
 
         if not data_ref:
-            if self.rbm is None:
-                self.rbm = _RBM(n_visible=10, n_hidden=int(hparams.get("n_hidden", 32)), cd_k=self.cd_k, seed=self.seed).to(self.device)
-                self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum, weight_decay=self.weight_decay)
-                self.head = nn.Linear(int(hparams.get("n_hidden", 32)), len(_CLASSES)).to(self.device)
-                self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+            # **Cambio clave**: NO pre-crear RBM de 10 visibles aquí.
+            # Se diferirá la creación a fit(X, y), cuando conozcamos X.shape[1].
+            self.rbm = None
+            self.head = None
+            self.opt_rbm = None
+            self.opt_head = None
             return
 
         df = self._load_df(data_ref)
@@ -469,6 +503,7 @@ class RBMRestringida:
                 y_np = np.clip(y_np, 0, n_classes - 1)
             self.y = torch.from_numpy(y_np).to(self.device)
 
+        # **Clave**: crear (o re-crear) la RBM con el número correcto de visibles
         if self.rbm is None or self.head is None:
             if self.X is None:
                 raise RuntimeError("No hay datos para entrenar. Llama setup(data_ref=...) o fit(X=...).")
@@ -478,6 +513,18 @@ class RBMRestringida:
             self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum, weight_decay=self.weight_decay)
             self.head = nn.Linear(n_hidden, len(_CLASSES)).to(self.device)
             self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+        else:
+            # Si ya existía una RBM previa (p.ej. creada en setup() sin data_ref), ajustarla al tamaño real
+            if self.X is not None:
+                nv_need = int(self.X.shape[1])
+                nv_curr, n_hidden = int(self.rbm.W.shape[0]), int(self.rbm.W.shape[1])
+                if nv_need != nv_curr:
+                    device = self.rbm.W.device
+                    dtype  = self.rbm.W.dtype
+                    g = torch.Generator().manual_seed(int(self.seed))
+                    self.rbm = _RBM(n_visible=nv_need, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(device)
+                    self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum, weight_decay=self.weight_decay)
+                    # head no depende de visibles; no es necesario reconstruirla
 
         for ep in range(1, int(epochs) + 1):
             _, _ = self.train_step(ep)

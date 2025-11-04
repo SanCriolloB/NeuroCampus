@@ -160,6 +160,11 @@ validate-sample:
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
 
+
 .PHONY: rbm-audit
 rbm-audit:
-	PYTHONPATH="$(PWD)/backend/src" python -m neurocampus.models.audit_kfold --config configs/rbm_audit.yaml
+	@PY=$$( [ -x ".venv/Scripts/python.exe" ] && echo ".venv/Scripts/python.exe" || ( [ -x ".venv/bin/python" ] && echo ".venv/bin/python" || echo "python" ) ); \
+	echo "Usando Python: $$PY"; \
+	"$$PY" -c "import numpy" 2>/dev/null || ( echo "Instalando deps en $$PY"; "$$PY" -m pip install --upgrade pip && "$$PY" -m pip install -r backend/requirements.txt ); \
+	PPATH="$(PWD)/backend/src"; echo "PYTHONPATH: $$PPATH"; \
+	PYTHONPATH="$$PPATH" "$$PY" -m neurocampus.models.audit_kfold --config configs/rbm_audit.yaml

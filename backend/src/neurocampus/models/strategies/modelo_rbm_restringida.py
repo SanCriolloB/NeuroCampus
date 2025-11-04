@@ -164,6 +164,30 @@ class _RBM(nn.Module):
         return torch.sigmoid(x)
 
     def sample_h(self, v: Tensor) -> Tuple[Tensor, Tensor]:
+        # --- AUTOFIX: sincronizar visibles de W/b_v con la cantidad de columnas de v ---
+        try:
+            nv = v.shape[1]                 # visibles reales del batch
+            vW, hW = self.W.shape          # visibles y ocultas actuales de la RBM
+            if nv != vW:
+                # re-inicializa W (nv x hW) y b_v (nv,) preservando device/dtype
+                device = self.W.device
+                dtype = self.W.dtype
+                std = 0.01
+                self.W = torch.randn((nv, hW), device=device, dtype=dtype) * std
+                self.b_v = torch.zeros((nv,), device=device, dtype=dtype)
+
+                # si hay metadatos de tamaño visibles, actualízalos silenciosamente
+                for attr in ("n_visible", "visible_units", "input_dim", "in_features", "v_dim"):
+                    if hasattr(self, attr):
+                        try:
+                            setattr(self, attr, nv)
+                        except Exception:
+                            pass
+        except Exception:
+            # no bloquear la ejecución si algo falla en el autofix
+            pass
+        # --- fin AUTOFIX ---
+
         p_h = self._sigmoid(v @ self.W + self.b_h)
         h = torch.bernoulli(p_h)
         return p_h, h
@@ -390,6 +414,38 @@ class RBMRestringida:
         for _ in range(max(1, self.epochs_rbm)):
             for xb, _ in self._iter_minibatches(self.X, self.y):
                 self.opt_rbm.zero_grad(set_to_none=True)
+                try:
+                    print("[DEBUG] model type:", type(self))
+                    has_rbm = hasattr(self, "rbm")
+                    print("[DEBUG] has self.rbm:", has_rbm)
+                    if has_rbm:
+                        print("[DEBUG] type(self.rbm):", type(self.rbm))
+                        # Obtener shape de W con soporte numpy/torch
+                        W = getattr(self.rbm, "W", None)
+                        if W is not None:
+                            try:
+                                shape_W = tuple(W.shape)  # funciona en numpy y torch
+                            except Exception:
+                                import numpy as _np
+                                shape_W = _np.asarray(W).shape
+                            print("[DEBUG] self.rbm.W.shape:", shape_W)
+                        else:
+                            print("[DEBUG] self.rbm no tiene atributo W")
+
+                        # b_v y b_h por si ayudan
+                        for name in ("b_v", "b_h"):
+                            B = getattr(self.rbm, name, None)
+                            if B is not None:
+                                try:
+                                    shape_B = tuple(B.shape)
+                                except Exception:
+                                    import numpy as _np
+                                    shape_B = _np.asarray(B).shape
+                                print(f"[DEBUG] self.rbm.{name}.shape:", shape_B)
+                    else:
+                        print("[DEBUG] NO hay self.rbm en la strategy")
+                except Exception as _e:
+                    print("[DEBUG] introspección previa a cd_step falló:", repr(_e))
                 m = self.rbm.cd_step(xb)
                 rbm_losses.append(m["recon_error"])
                 rbm_grad.append(m["grad_norm"])

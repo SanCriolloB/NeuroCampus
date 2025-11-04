@@ -28,3 +28,5 @@ scikit-learn>=1.6.0
 # Usamos el índice oficial CPU; fija versión conocida disponible para Py 3.13.
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.9.0+cpu
+torchvision==0.24.0+cpu
+torchaudio==2.9.0+cpu

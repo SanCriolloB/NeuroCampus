@@ -159,3 +159,7 @@ validate-sample:
 	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id='$(NC_DATASET_ID)' contra http://$(API_HOST):$(API_PORT)/datos/validar"
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
+
+.PHONY: rbm-audit
+rbm-audit:
+	PYTHONPATH="$(PWD)/backend/src" python -m neurocampus.models.audit_kfold --config configs/rbm_audit.yaml

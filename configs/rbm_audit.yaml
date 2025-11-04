@@ -1,0 +1,31 @@
+dataset:
+  # Elegimos un dataset con etiqueta "teacher" para evitar dudas de target:
+  path: data/labeled/evaluaciones_2025_teacher.parquet
+  # El target se auto-detectará si no lo pones. Si quieres fijarlo explícitamente, usa:
+  # target: "sentiment_label_teacher"
+
+evaluation:
+  n_splits: 5
+  shuffle: true
+  stratify: true
+  random_seed: 42
+  metrics: ["accuracy", "f1", "roc_auc", "precision", "recall", "mcc"]
+
+models:
+  - name: "RBM_general"
+    params:
+      hidden_units: 128
+      lr: 0.01
+      batch_size: 128
+      epochs: 10
+      cd_k: 1
+  - name: "RBM_restringido"
+    params:
+      hidden_units: 128
+      lr: 0.01
+      batch_size: 128
+      epochs: 10
+      cd_k: 1
+
+artifacts:
+  root: artifacts/runs

@@ -1,7 +1,9 @@
+# configs/rbm_audit.yaml  (ubicado en la RAÍZ del repo)
+
 dataset:
   # Elegimos un dataset con etiqueta "teacher" para evitar dudas de target:
   path: data/labeled/evaluaciones_2025_teacher.parquet
-  # El target se auto-detectará si no lo pones. Si quieres fijarlo explícitamente, usa:
+  # Si deseas fijar el target explícitamente, descomenta:
   # target: "sentiment_label_teacher"
 
 evaluation:
@@ -11,17 +13,45 @@ evaluation:
   random_seed: 42
   metrics: ["accuracy", "f1", "roc_auc", "precision", "recall", "mcc"]
 
+# Hiperparámetros/flags globales opcionales que el auditor puede propagar a los modelos
+# (déjalos comentados si no los necesitas)
+# globals:
+#   accept_teacher: true        # usar solo etiquetas aceptadas por el teacher (si existe la columna)
+#   accept_threshold: 0.80      # umbral si se usa p_neg/p_neu/p_pos en ausencia de 'accepted_by_teacher'
+#   use_text_probs: false       # incluir p_neg/p_neu/p_pos como features si existen
+#   use_text_embeds: false      # incluir x_text_* como features si existen
+#   max_calif: 10               # número máximo de columnas calif_* a considerar
+#   text_embed_prefix: "x_text_"
+#   scale_mode: "minmax"        # o "scale_0_5"
+
 models:
   - name: "RBM_general"
+    params:
+      hidden_units: 128   # el auditor mapea esto al tamaño de la capa oculta
+      lr: 0.01
+      batch_size: 128
+      epochs: 10
+      cd_k: 1
+      # Puedes pasar flags globales aquí si quieres forzar por modelo:
+      # accept_teacher: true
+      # use_text_probs: false
+      # use_text_embeds: false
+
+  - name: "RBM_restringido"
     params:
       hidden_units: 128
       lr: 0.01
       batch_size: 128
       epochs: 10
       cd_k: 1
-  - name: "RBM_restringido"
+      # accept_teacher: true
+      # use_text_probs: false
+      # use_text_embeds: false
+
+  # Modelo implementado desde las matemáticas base (Día 11)
+  - name: "rbm_pura"
     params:
-      hidden_units: 128
+      hidden_units: 128   # si tu implementación usa 'n_hidden', el auditor lo mapeará
       lr: 0.01
       batch_size: 128
       epochs: 10

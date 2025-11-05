@@ -56,6 +56,13 @@ help:
 	@echo "  fe-dev                      - Levantar frontend (Vite) en :5173."
 	@echo "  fe-test                     - Ejecutar pruebas del frontend (vitest)."
 	@echo "  validate-sample             - Enviar CSV de ejemplo a /datos/validar."
+	@echo "  rbm-audit                   - Ejecutar auditoría K-Fold (YAML en la raíz)."
+	@echo "  rbm-pura-audit              - Alias de rbm-audit (foco en rbm_pura en CI/logs)."
+	@echo "  rbm-general-audit           - Alias de rbm-audit (foco en rbm_general en CI/logs)."
+	@echo "  rbm-restringido-audit       - Alias de rbm-audit (foco en rbm_restringido en CI/logs)."
+	@echo "  sim-data                    - Genera dataset sintético compatible."
+	@echo "  train-rbm-pura              - Entrena RBM pura (script CLI)."
+	@echo "  train-rbm-general           - Entrena RBM general (script CLI)."
 	@echo
 	@echo "Variables útiles (pueden ir en .env o CLI):"
 	@echo "  API_HOST, API_PORT, NC_ADMIN_TOKEN"
@@ -63,6 +70,7 @@ help:
 	@echo "  NC_TRASH_DIR, NC_TRASH_RETENTION_DAYS"
 	@echo "  NC_DATASET_ID, NC_SAMPLE_CSV"
 	@echo "  NC_ALLOWED_ORIGINS, NC_MAX_UPLOAD_MB"
+	@echo "  BACKEND_SRC, BACKEND_APP, FRONTEND_DIR"
 
 # ----------------------------------------------------------------------------- #
 # --- Limpieza de artefactos y cache (local, vía herramienta CLI) -------------- #
@@ -188,3 +196,24 @@ rbm-general-audit:
 
 rbm-restringido-audit:
 	@$(MAKE) rbm-audit
+
+# ----------------------------------------------------------------------------- #
+# --- Simulación de datos y entrenamiento directo ----------------------------- #
+# ----------------------------------------------------------------------------- #
+
+.PHONY: sim-data train-rbm-pura train-rbm-general
+
+# Genera dataset sintético coherente con el pipeline (calif_*, p_*, label teacher)
+sim-data:
+	@$(PY) tools/sim/generate_synthetic.py --n 5000 --out data/simulated/evals_sim_5k.parquet
+
+# Entrena RBM Pura de forma directa (no supervisada)
+train-rbm-pura:
+	@PYTHONPATH=$(BACKEND_SRC) $(PY) backend/scripts/train_rbm_pura.py \
+		--data data/labeled/evaluaciones_2025_teacher.parquet
+
+# Entrena RBM General de forma directa (supervisada mínima)
+train-rbm-general:
+	@PYTHONPATH=$(BACKEND_SRC) $(PY) backend/scripts/train_rbm_general.py \
+		--data data/labeled/evaluaciones_2025_teacher.parquet \
+		--target sentiment_label_teacher

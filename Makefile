@@ -128,6 +128,7 @@ be-dev:
 	@echo ">> Iniciando uvicorn (desarrollo). Límite de subida via middleware: $${NC_MAX_UPLOAD_MB:-10} MB"
 	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
 		--host $${API_HOST} --port $${API_PORT} --reload
+
 # Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
 .PHONY: be-test
 be-test:
@@ -160,6 +161,9 @@ validate-sample:
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
 
+# ----------------------------------------------------------------------------- #
+# --- Auditoría RBM (K-Fold) -------------------------------------------------- #
+# ----------------------------------------------------------------------------- #
 
 .PHONY: rbm-audit
 rbm-audit:
@@ -168,3 +172,19 @@ rbm-audit:
 	"$$PY" -c "import numpy" 2>/dev/null || ( echo "Instalando deps en $$PY"; "$$PY" -m pip install --upgrade pip && "$$PY" -m pip install -r backend/requirements.txt ); \
 	PPATH="$(PWD)/backend/src"; echo "PYTHONPATH: $$PPATH"; \
 	PYTHONPATH="$$PPATH" "$$PY" -m neurocampus.models.audit_kfold --config configs/rbm_audit.yaml
+
+# ----------------------------------------------------------------------------- #
+# --- Auditorías por modelo (alias de conveniencia) --------------------------- #
+# ----------------------------------------------------------------------------- #
+
+.PHONY: rbm-pura-audit rbm-general-audit rbm-restringido-audit
+
+# Nota: estos targets son alias y reutilizan el mismo YAML (que incluye los 3 modelos).
+rbm-pura-audit:
+	@$(MAKE) rbm-audit
+
+rbm-general-audit:
+	@$(MAKE) rbm-audit
+
+rbm-restringido-audit:
+	@$(MAKE) rbm-audit

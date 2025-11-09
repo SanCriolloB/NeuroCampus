@@ -1,6 +1,61 @@
 # backend/src/neurocampus/app/jobs/cmd_preprocesar_batch.py
 import argparse, os, sys, glob, subprocess
 from pathlib import Path
+from shutil import which
+
+def _detect_project_python() -> str:
+    """
+    Devuelve la ruta del intérprete de Python del proyecto con esta prioridad:
+      1) VIRTUAL_ENV (venv activado)
+      2) CONDA_PREFIX (entorno conda activo)
+      3) ./.venv (venv local del repo) [Windows/Linux]
+      4) sys.executable (intérprete actual)
+
+    Garantiza una ruta ejecutable existente.
+    """
+    env = os.environ
+
+    # 1) venv activo
+    venv = env.get("VIRTUAL_ENV")
+    if venv:
+        cand = Path(venv) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if cand.exists():
+            return str(cand)
+
+    # 2) conda activo
+    conda = env.get("CONDA_PREFIX")
+    if conda:
+        cand = Path(conda) / ("python.exe" if os.name == "nt" else "bin/python")
+        if cand.exists():
+            return str(cand)
+
+    # 3) venv local en el repo
+    repo_root = Path(__file__).resolve().parents[4]  # .../NeuroCampus (raíz)
+    local_venv = repo_root / ".venv"
+    if local_venv.exists():
+        cand = local_venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if cand.exists():
+            return str(cand)
+
+    # 4) intérprete actual
+    return sys.executable
+
+def _build_env_with_src() -> dict:
+    """
+    Construye un entorno de ejecución que añade backend/src al PYTHONPATH
+    y preserva el resto de variables.
+    """
+    env = os.environ.copy()
+    # Este archivo está en .../backend/src/neurocampus/app/jobs/cmd_preprocesar_batch.py
+    src_dir = Path(__file__).resolve().parents[3]  # .../backend/src
+    pypp = str(src_dir)
+    if env.get("PYTHONPATH"):
+        env["PYTHONPATH"] = pypp + os.pathsep + env["PYTHONPATH"]
+    else:
+        env["PYTHONPATH"] = pypp
+    # Evita mezclar site-packages del usuario con el del entorno del proyecto
+    env.setdefault("PYTHONNOUSERSITE", "1")
+    return env
 
 def main():
     ap = argparse.ArgumentParser()
@@ -24,23 +79,16 @@ def main():
     ap.add_argument("--neu-min", type=float, default=0.10)
     args = ap.parse_args()
 
-    # Preparar dirs
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # === PYTHONPATH robusto para layout "src" ===
-    # Este archivo está en .../backend/src/neurocampus/app/jobs/cmd_preprocesar_batch.py
-    # parents[3] -> .../backend/src
-    src_dir = Path(__file__).resolve().parents[3]
-    env = os.environ.copy()
-    pypp = str(src_dir)
-    if "PYTHONPATH" in env and env["PYTHONPATH"]:
-        # Preprender para priorizar src correcto sin perder lo existente
-        env["PYTHONPATH"] = pypp + os.pathsep + env["PYTHONPATH"]
-    else:
-        env["PYTHONPATH"] = pypp
+    # Elegir el Python correcto del proyecto
+    py = _detect_project_python()
 
-    # Colección de CSV
+    # Entorno con PYTHONPATH a backend/src
+    env = _build_env_with_src()
+
+    # Recolectar CSVs
     in_dirs = [d.strip() for d in args.in_dirs.split(",") if d.strip()]
     csvs = []
     for d in in_dirs:
@@ -50,7 +98,6 @@ def main():
         print("[batch] No se encontraron CSV en:", in_dirs)
         sys.exit(0)
 
-    # Donde guardar el featurizer si no lo pasan
     feats_out = args.text_feats_out_dir
     if feats_out is None and args.text_feats != "none":
         feats_out = str(out_dir / "textfeats")
@@ -61,7 +108,7 @@ def main():
         out_path = str(out_dir / f"{base}.parquet")
 
         cmd = [
-            sys.executable, "-m", "neurocampus.app.jobs.cmd_preprocesar_beto",
+            py, "-m", "neurocampus.app.jobs.cmd_preprocesar_beto",
             "--in", f,
             "--out", out_path,
             "--text-col", args.text_cols,

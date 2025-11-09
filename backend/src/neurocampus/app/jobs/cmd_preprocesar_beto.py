@@ -169,10 +169,8 @@ def main():
 
     # 3.1) (Nuevo) Mantener filas sin texto si se pide
     if args.keep_empty_text:
-        # Para filas sin texto: etiqueta neutral y conf=1.0 (o el valor que prefieras)
         df.loc[mask_no_text, "sentiment_label_teacher"] = "neu"
         df.loc[mask_no_text, "sentiment_conf"] = 1.0
-        # Se consideran aceptadas para propósitos de entrenamiento
         df.loc[mask_no_text, "accepted_by_teacher"] = 1
 
     # 3.5) (Nuevo) Feats de texto opcionales (con overrides TF-IDF)
@@ -182,13 +180,11 @@ def main():
 
             # Defaults anteriores del pipeline (compatibilidad)
             _default_min_df = 3
-            _default_max_df = None  # si el featurizer soporta None → usa su default interno
+            _default_max_df = None
 
             min_df = args.tfidf_min_df if args.tfidf_min_df is not None else _default_min_df
             max_df = args.tfidf_max_df if args.tfidf_max_df is not None else _default_max_df
 
-            # Construcción del featurizador con overrides si existen
-            # (suponiendo que TfidfLSAFeaturizer acepte min_df y max_df)
             feat_kwargs = dict(n_components=64, ngram_range=(1, 2), min_df=min_df)
             if max_df is not None:
                 feat_kwargs["max_df"] = max_df
@@ -198,18 +194,15 @@ def main():
             texts = df["_texto_lemmas"].astype(str).fillna("").tolist()
             Z = feat.fit_transform(texts)  # shape: (N, 64)
 
-            # Si se pidió mantener vacíos, aseguramos embeddings cero para los sin texto
             if args.keep_empty_text and Z is not None and len(Z) == len(df):
-                # Convertimos a np.array por si el featurizador devuelve matriz dispersa
-                Z = np.asarray(Z)
+                import numpy as _np
+                Z = _np.asarray(Z)
                 Z[mask_no_text.values, :] = 0.0
 
-            # Volcar como feat_t_*
             if Z is not None:
                 for i in range(Z.shape[1]):
                     df[f"feat_t_{i+1}"] = Z[:, i]
 
-            # Persistir featurizador si se pidió
             if args.text_feats_out_dir:
                 Path(args.text_feats_out_dir).mkdir(parents=True, exist_ok=True)
                 feat.save(args.text_feats_out_dir)
@@ -225,7 +218,6 @@ def main():
     else:
         df.to_csv(args.dst, index=False)
 
-    # Métricas y meta
     meta = {
         "model": args.beto_model,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

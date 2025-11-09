@@ -1,43 +1,46 @@
 # backend/src/neurocampus/app/jobs/cmd_preprocesar_batch.py
 import argparse, os, sys, glob, subprocess
 from pathlib import Path
-from shutil import which
 
 def _detect_project_python() -> str:
     """
-    Devuelve la ruta del intérprete de Python del proyecto con esta prioridad:
-      1) VIRTUAL_ENV (venv activado)
-      2) CONDA_PREFIX (entorno conda activo)
-      3) ./.venv (venv local del repo) [Windows/Linux]
-      4) sys.executable (intérprete actual)
-
-    Garantiza una ruta ejecutable existente.
+    Prioridad del intérprete de Python:
+      1) Entorno virtual ACTIVADO (VIRTUAL_ENV/Scripts|bin/python)
+      2) Entorno conda ACTIVO (CONDA_PREFIX/python)
+      3) .venv en la RAÍZ del repo (./.venv/Scripts|bin/python)
+      4) .venv en backend/ (./backend/.venv/Scripts|bin/python)
+      5) sys.executable (intérprete actual)
+    Devuelve una ruta existente.
     """
     env = os.environ
 
-    # 1) venv activo
+    # 1) venv activado
     venv = env.get("VIRTUAL_ENV")
     if venv:
         cand = Path(venv) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if cand.exists():
             return str(cand)
 
-    # 2) conda activo
+    # 2) conda activado
     conda = env.get("CONDA_PREFIX")
     if conda:
         cand = Path(conda) / ("python.exe" if os.name == "nt" else "bin/python")
         if cand.exists():
             return str(cand)
 
-    # 3) venv local en el repo
+    # 3) .venv en la raíz del repo
     repo_root = Path(__file__).resolve().parents[4]  # .../NeuroCampus (raíz)
-    local_venv = repo_root / ".venv"
-    if local_venv.exists():
-        cand = local_venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        if cand.exists():
-            return str(cand)
+    cand = repo_root / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+    if cand.exists():
+        return str(cand)
 
-    # 4) intérprete actual
+    # 4) .venv dentro de backend/
+    backend_dir = repo_root / "backend"
+    cand = backend_dir / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+    if cand.exists():
+        return str(cand)
+
+    # 5) intérprete actual
     return sys.executable
 
 def _build_env_with_src() -> dict:
@@ -85,7 +88,7 @@ def main():
     # Elegir el Python correcto del proyecto
     py = _detect_project_python()
 
-    # Entorno con PYTHONPATH a backend/src
+    # Entorno con PYTHONPATH → backend/src
     env = _build_env_with_src()
 
     # Recolectar CSVs

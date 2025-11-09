@@ -28,11 +28,17 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # PYTHONPATH para layout src
-    project_root = Path(__file__).resolve().parents[4]  # .../NeuroCampus-main
-    src_dir = project_root / "backend" / "src"
+    # === PYTHONPATH robusto para layout "src" ===
+    # Este archivo está en .../backend/src/neurocampus/app/jobs/cmd_preprocesar_batch.py
+    # parents[3] -> .../backend/src
+    src_dir = Path(__file__).resolve().parents[3]
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(src_dir)
+    pypp = str(src_dir)
+    if "PYTHONPATH" in env and env["PYTHONPATH"]:
+        # Preprender para priorizar src correcto sin perder lo existente
+        env["PYTHONPATH"] = pypp + os.pathsep + env["PYTHONPATH"]
+    else:
+        env["PYTHONPATH"] = pypp
 
     # Colección de CSV
     in_dirs = [d.strip() for d in args.in_dirs.split(",") if d.strip()]

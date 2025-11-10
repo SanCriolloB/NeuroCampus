@@ -114,35 +114,18 @@ prep-all:
 		--margin "$(strip $(MARGIN))" \
 		--neu-min "$(strip $(NEU_MIN))"
 
-# Validación sin heredoc
+# ===========================
+# Validación (sin heredoc)
+# ===========================
+
 .PHONY: prep-validate
 prep-validate:
-	@echo "[validate] Inspeccionando parquet en $(OUT_DIR)"; \
-	$(PYTHON) - <<'PY' \
-import os, sys, pandas as pd; \
-d="$(OUT_DIR)"; \
-print("[validate] dir:", d); \
-if not os.path.isdir(d): \
-    print("[validate] No existe el directorio:", d); sys.exit(0); \
-fs=[f for f in os.listdir(d) if f.endswith(".parquet")]; \
-if not fs: \
-    print("[validate] No hay archivos .parquet en", d); sys.exit(0); \
-def short(cols): \
-    cols=list(cols); \
-    return cols[:10]+(["..."] if len(cols)>10 else []); \
-for f in sorted(fs): \
-    p=os.path.join(d,f); \
-    try: \
-        df=pd.read_parquet(p); \
-        print("\\n[OK]", f, "→", len(df), "filas"); \
-        print("  columnas:", short(df.columns)); \
-        nn=df.notna().sum().to_dict(); \
-        for k in ("p_neg","p_neu","p_pos","sentiment_label_teacher","accepted_by_teacher","feat_t_1"): \
-            if k in df.columns: \
-                print(f"  {k}: not-null={nn.get(k,0)}"); \
-    except Exception as e: \
-        print("\\n[ERR]", f, "→", e) \
-PY
+	@echo "[validate] Inspeccionando parquet en $(OUT_DIR)"
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.validate_prep_dir \
+		--dir "$(OUT_DIR)" \
+		--must-exist-cols "accepted_by_teacher,sentiment_label_teacher,sentiment_conf,has_text" \
+		--require-any-prefix "feat_t_"
 
 # ===========================
 # spaCy (opcional)

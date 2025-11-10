@@ -26,3 +26,8 @@ torch==2.9.0+cpu
 torchvision==0.24.0+cpu
 torchaudio==2.9.0+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- NLP opcional: spaCy (modelo se instala aparte con make) ---
+spacy>=3.7,<4
+spacy-lookups-data>=1.0.5
+emoji>=2.12.1

@@ -7,7 +7,7 @@
 #
 # Flujo end-to-end:
 #   1) Preprocesamiento por archivo (prep-one) o masivo (prep-all / prep-all-probs)
-#   2) Validación de .parquet (prep-validate o prep-validate-compact)
+#   2) Validación de .parquet (prep-validate)
 #   3) Entrenamiento RBM pura (train-rbm-pura)
 #   4) Datos sintéticos (synth-gen + synth-prep)
 #   5) Tests mínimos (tests)
@@ -74,8 +74,7 @@ help:
 	@echo "  make prep-one IN=examples/Evaluacion.csv [OUT=...]   -> Preprocesa un CSV a .parquet"
 	@echo "  make prep-all                                        -> Preprocesa en masa examples/ y examples/synthetic/"
 	@echo "  make prep-all-probs                                   -> Igual que prep-all pero BETO_MODE=probs"
-	@echo "  make prep-validate                                   -> Valida que .parquet tengan feat_t_* y etiqueta (heredoc)"
-	@echo "  make prep-validate-compact                           -> Lo mismo, versión one-liner (sin heredoc)"
+	@echo "  make prep-validate                                   -> Valida que .parquet tengan feat_t_* y etiqueta"
 	@echo "  make train-rbm-pura                                  -> Entrena RBM pura sobre data/prep_auto/*.parquet"
 	@echo "  make synth-gen [ROWS=100000]                         -> Genera CSV sintético (examples/synthetic)"
 	@echo "  make synth-prep                                      -> Preprocesa todo lo sintético (usa prep-all)"
@@ -134,35 +133,11 @@ prep-all-probs:
 	@mkdir -p "$(PREP_DIR)" "$(PREP_TEXTFEATS)"
 	$(MAKE) prep-all BETO_MODE=probs
 
-# -------- Validación de .parquet (heredoc corregido) --------
+# -------- Validación de .parquet (one-liner sin heredoc) --------
 .PHONY: prep-validate
 prep-validate:
 	@echo "[validate] Revisando feat_t_* y etiqueta en $(PREP_DIR)/*.parquet ..."
-	$(PYTHON) - << 'PY'
-import glob, pyarrow.parquet as pq
-ok=True
-files=sorted(glob.glob("$(PREP_DIR)/*.parquet"))
-if not files:
-    print("[validate] No hay archivos .parquet en $(PREP_DIR)")
-    raise SystemExit(1)
-for p in files:
-    t = pq.read_table(p); cols = t.column_names
-    feats = any(c.startswith("feat_t_") for c in cols)
-    label = any(c in cols for c in ("y_sent","sentimiento","label_sent"))
-    print(p, "feat_t_*:", feats, "label:", label, "n_cols:", len(cols))
-    ok = ok and feats and label
-raise SystemExit(0 if ok else 1)
-PY
-
-# -------- Validación de .parquet (one-liner sin heredoc) --------
-.PHONY: prep-validate-compact
-prep-validate-compact:
-	@echo "[validate] Revisando feat_t_* y etiqueta en $(PREP_DIR)/*.parquet ..."
-	$(PYTHON) -c "import glob,pyarrow.parquet as pq,sys; files=sorted(glob.glob('$(PREP_DIR)/*.parquet')); \
-sys.exit(1) if not files else None; ok=True; \
-[ (lambda cols: (print(p,'feat_t_*:', any(c.startswith(\"feat_t_\") for c in cols), 'label:', any(c in cols for c in ('y_sent','sentimiento','label_sent')), 'n_cols:', len(cols)), \
-globals().__setitem__('ok', ok and any(c.startswith('feat_t_') for c in cols) and any(c in cols for c in ('y_sent','sentimiento','label_sent')))) \
-)(pq.read_table(p).column_names) for p in files ]; sys.exit(0 if ok else 1)"
+	$(PYTHON) -c "import glob,pyarrow.parquet as pq,sys; files=sorted(glob.glob('$(PREP_DIR)/*.parquet')); sys.exit(1) if not files else None; ok=True; [ (lambda cols: (print(p,'feat_t_*:', any(c.startswith(\"feat_t_\") for c in cols), 'label:', any(c in cols for c in ('y_sent','sentimiento','label_sent')), 'n_cols:', len(cols)), globals().__setitem__('ok', ok and any(c.startswith('feat_t_') for c in cols) and any(c in cols for c in ('y_sent','sentimiento','label_sent')))) )(pq.read_table(p).column_names) for p in files ]; sys.exit(0 if ok else 1)"
 
 # -------- Entrenamiento RBM pura --------
 .PHONY: train-rbm-pura
@@ -246,3 +221,7 @@ clean-artifacts:
 .PHONY: clean-all
 clean-all: clean-prep clean-artifacts
 	@echo "[clean-all] Limpieza de prep y artifacts completada."
+
+.PHONY: spacy-model
+spacy-model:
+	$(PYTHON) -m spacy download es_core_news_sm

@@ -1,32 +1,28 @@
-# --- Runtime mínimo para la API (producción) ---
-
-# Web framework
+# --- API & server ---
 fastapi>=0.118.0
 uvicorn[standard]>=0.30.6
-
-# Validación (Pydantic v2)
+python-multipart>=0.0.20
 pydantic>=2.9.2
 typing-extensions>=4.15.0
 
-# Subidas de archivos (FormData / UploadFile)
-python-multipart>=0.0.20
-
-# Procesamiento de datos (CSV/XLSX/Parquet)
+# --- Data & IO ---
 pandas>=2.3.3
 pyarrow>=15.0
 openpyxl>=3.1.5
 numpy>=2.3.0
-
-# Configuración (YAML)
 pyyaml>=6.0.1
 
-# Métricas y validación experimental (Día 10 auditoría k-fold)
-# Nota: scikit-learn >=1.6 incluye ruedas para Python 3.13.
+# --- ML / NLP ---
 scikit-learn>=1.6.0
 
-# --- PyTorch (CPU) ---
-# Usamos el índice oficial CPU; fija versión conocida disponible para Py 3.13.
---extra-index-url https://download.pytorch.org/whl/cpu
+# Hugging Face stack (para BETO: modo simple y probs)
+transformers>=4.46.0
+tokenizers>=0.20.0
+huggingface-hub>=0.25.0
+safetensors>=0.4.5
+
+# --- PyTorch CPU (según tu pin) ---
 torch==2.9.0+cpu
 torchvision==0.24.0+cpu
 torchaudio==2.9.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu

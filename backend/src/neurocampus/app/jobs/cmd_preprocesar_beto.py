@@ -4,13 +4,12 @@
 #    * probs (recomendado): p_neg/p_neu/p_pos + gating (threshold, margin, neu_min)
 #    * simple: pipeline tipo notebook (top1 + score) [import perezoso de transformers]
 # - Deja 'comentario' estandarizado y columnas para el Student (RBM).
-# - Trata el texto como opcional (has_text), ejecuta BETO sólo donde hay texto suficiente
-#   y reporta cobertura de texto.
-# - (Nuevo) Genera embeddings clásicos de texto (TF-IDF + LSA) como feat_t_1..feat_t_64 si se pide.
-# - (Nuevo Nivel 2)
-#   * --text-col admite múltiples columnas separadas por comas ("comentario,observaciones")
-#   * --keep-empty-text: no descarta filas sin texto; etiqueta = neutral y embeddings = vector cero
-#   * Overrides opcionales de TF-IDF: --tfidf-min-df / --tfidf-max-df
+# - Trata el texto como opcional (has_text) y reporta cobertura.
+# - Embeddings clásicos (TF-IDF + LSA) si se pide.
+# - Nivel 2:
+#   * --text-col admite múltiples columnas separadas por comas o el valor 'auto'
+#   * --keep-empty-text mantiene filas sin texto (neutral + feats cero)
+#   * --tfidf-min-df / --tfidf-max-df permiten afinar TF-IDF
 
 import argparse, json, time, re
 from pathlib import Path
@@ -41,23 +40,24 @@ def _pick_text_col(df: pd.DataFrame, prefer: str | None) -> str:
 
 def _cols_from_arg(text_col_arg: str | None, df: pd.DataFrame) -> list[str]:
     """
-    Devuelve lista de columnas a usar. Soporta "a,b,c".
-    Si es None, cae al detector de una sola columna.
-    Filtra columnas inexistentes silenciosamente, pero si no queda ninguna, lanza error.
+    Devuelve lista de columnas a usar. Soporta 'a,b,c' o 'auto'.
+    Si es 'auto' o None → autodetección robusta.
+    Si ninguna de las indicadas existe → autodetección robusta (en vez de error).
     """
     if text_col_arg is None:
         return [_pick_text_col(df, None)]
-    cols = [c.strip() for c in str(text_col_arg).split(",") if c.strip()]
+    arg = str(text_col_arg).strip()
+    if arg.lower() == "auto" or arg == "":
+        return [_pick_text_col(df, None)]
+    cols = [c.strip() for c in arg.split(",") if c.strip()]
     existing = [c for c in cols if c in df.columns]
-    if not existing:
-        raise ValueError(f"No se encontró ninguna de las columnas de texto indicadas: {cols}")
-    return existing
+    if existing:
+        return existing
+    # Fallback a autodetección si ninguna existe
+    return [_pick_text_col(df, None)]
 
 def _concat_text_cols(df: pd.DataFrame, cols: list[str]) -> pd.Series:
-    """
-    Concatena columnas de texto existentes (ya crudas) con un separador.
-    Convierte NaN a "" para evitar nulos.
-    """
+    """Concatena columnas de texto existentes con separador ' . ' (evita NaN)."""
     parts = [df[c].astype(str).fillna("") for c in cols]
     if len(parts) == 1:
         return parts[0]
@@ -71,7 +71,7 @@ def main():
     ap.add_argument("--in", dest="src", required=True, help="CSV/Parquet estandarizado (calif_1..10 + texto).")
     ap.add_argument("--out", dest="dst", required=True, help="Salida etiquetada (parquet/csv).")
     ap.add_argument("--text-col", default=None,
-                    help="Nombre(s) de columna de texto. Acepta múltiples separadas por coma p.ej. 'comentario,observaciones'.")
+                    help="Nombre(s) de columna de texto. Acepta múltiples separadas por coma o 'auto'.")
     ap.add_argument("--beto-model", default="finiteautomata/beto-sentiment-analysis")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--threshold", type=float, default=0.75)
@@ -80,142 +80,119 @@ def main():
     ap.add_argument("--beto-mode", choices=["probs", "simple"], default="probs",
                     help="probs: p_neg/p_neu/p_pos + gating; simple: pipeline tipo notebook (top1 + score)")
     ap.add_argument("--min-tokens", type=int, default=3,
-                    help="Mínimo de tokens lematizados para considerar que hay texto. Default=3")
+                    help="Mínimo de tokens lematizados para considerar que hay texto.")
 
-    # (Nuevo) Embeddings clásicos de texto
+    # Embeddings clásicos de texto
     ap.add_argument("--text-feats", choices=["none", "tfidf_lsa"], default="none",
-                    help="Genera embeddings clásicos de texto (feat_t_*). Recomendado: tfidf_lsa")
+                    help="Genera embeddings clásicos de texto (feat_t_*).")
     ap.add_argument("--text-feats-out-dir", default=None,
-                    help="Directorio para guardar el featurizer (recomendado para reproducibilidad).")
+                    help="Directorio para guardar el featurizer.")
 
-    # (Nuevo Nivel 2) Comportamientos inclusivos y overrides TF-IDF
+    # Inclusión de filas vacías y overrides TF-IDF
     ap.add_argument("--keep-empty-text", action="store_true",
-                    help="Si se activa, no descarta filas con texto vacío: etiqueta neutral y embeddings cero.")
+                    help="No descarta filas sin texto: etiqueta neutral y embeddings cero.")
     ap.add_argument("--tfidf-min-df", type=float, default=None,
-                    help="Override de min_df en TF-IDF. Si no se especifica, usa el default anterior del pipeline.")
+                    help="Override min_df en TF-IDF. Si no se especifica, usa el default (3).")
     ap.add_argument("--tfidf-max-df", type=float, default=None,
-                    help="Override de max_df en TF-IDF. Si no se especifica, usa el default anterior del pipeline.")
+                    help="Override max_df en TF-IDF. Si no se especifica, no se aplica límite superior.")
 
     args = ap.parse_args()
 
     # 1) Cargar datos
     df = pd.read_parquet(args.src) if args.src.lower().endswith(".parquet") else pd.read_csv(args.src)
 
-    # 2) Seleccionar y preparar texto (multi-columna soportado)
-    text_cols = _cols_from_arg(args.text_col, df)  # lista de columnas
+    # 2) Seleccionar y preparar texto
+    text_cols = _cols_from_arg(args.text_col, df)
     df["_texto_raw_concat"] = _concat_text_cols(df, text_cols)
 
     # 2.1) Limpiar + lematizar
     df["_texto_clean"]  = df["_texto_raw_concat"].astype(str).map(limpiar_texto)
     df["_texto_lemmas"] = tokenizar_y_lematizar_batch(df["_texto_clean"].tolist(), batch_size=512)
 
-    # 2.2) Cobertura de texto: has_text si hay al menos min_tokens
+    # 2.2) Cobertura de texto
     toklen = df["_texto_lemmas"].fillna("").str.split().map(len)
     df["has_text"] = (toklen >= args.min_tokens).astype(int)
     mask_has_text = df["has_text"] == 1
     mask_no_text  = ~mask_has_text
 
-    # Inicializa columnas de salida comunes
+    # Columnas de salida comunes
     df["p_neg"], df["p_neu"], df["p_pos"] = np.nan, np.nan, np.nan
     df["sentiment_label_teacher"] = pd.NA
     df["sentiment_conf"] = np.nan
     df["accepted_by_teacher"] = 0
 
-    # 3) BETO (dos modos) — sólo para filas con texto suficiente
+    # 3) BETO
     if args.beto_mode == "simple":
-        # --- MODO SIMPLE (top1 + score) ---
         if mask_has_text.any():
             try:
-                from transformers import pipeline  # import perezoso, sólo si se usa el modo simple
+                from transformers import pipeline  # import perezoso
             except Exception as e:
                 raise RuntimeError(
-                    "Falta el paquete 'transformers' para usar --beto-mode simple. "
-                    "Instala las dependencias (ver backend/requirements.txt) o usa --beto-mode probs."
+                    "Falta 'transformers' para --beto-mode simple. Instálalo o usa --beto-mode probs."
                 ) from e
-
             sentiment_analyzer = pipeline("sentiment-analysis", model=args.beto_model)
             df['Sugerencias_lemmatizadas'] = df['_texto_lemmas'].fillna('').astype(str)
             results = sentiment_analyzer(df.loc[mask_has_text, 'Sugerencias_lemmatizadas'].tolist())
-
-            lbl_map = {"NEG": "neg", "NEU": "neu", "POS": "pos",
-                       "negative": "neg", "neutral": "neu", "positive": "pos"}
+            lbl_map = {"NEG":"neg","NEU":"neu","POS":"pos","negative":"neg","neutral":"neu","positive":"pos"}
             labels_simple = [lbl_map.get(r['label'], str(r['label']).lower()) for r in results]
             conf_simple   = [r.get("score", 1.0) for r in results]
-
             df.loc[mask_has_text, "sentiment_label_teacher"] = labels_simple
             df.loc[mask_has_text, "sentiment_conf"] = conf_simple
             df.loc[mask_has_text, "accepted_by_teacher"] = (df.loc[mask_has_text, "sentiment_conf"] >= args.threshold).astype(int)
-
     else:
-        # --- MODO PROBS (recomendado) ---
         if mask_has_text.any():
             P_text = run_transformer(
                 df.loc[mask_has_text, "_texto_lemmas"].astype(str).tolist(),
                 args.beto_model,
                 batch_size=args.batch_size
             )
-            # asignar probs sólo a filas con texto
             df.loc[mask_has_text, "p_neg"] = P_text[:, 0]
             df.loc[mask_has_text, "p_neu"] = P_text[:, 1]
             df.loc[mask_has_text, "p_pos"] = P_text[:, 2]
-
-            # top-1 + confianza
             idx = P_text.argmax(axis=1)
-            labels = np.array(["neg", "neu", "pos"], dtype=object)[idx]
+            labels = np.array(["neg","neu","pos"], dtype=object)[idx]
             conf   = P_text.max(axis=1)
-
             df.loc[mask_has_text, "sentiment_label_teacher"] = labels
             df.loc[mask_has_text, "sentiment_conf"] = conf
-
-            # aceptación (gating)
             acc = accept_mask(P_text, labels, threshold=args.threshold, margin=args.margin, neu_min=args.neu_min)
             df.loc[mask_has_text, "accepted_by_teacher"] = acc.astype(int)
 
-    # 3.1) (Nuevo) Mantener filas sin texto si se pide
+    # 3.1) Mantener filas sin texto si se pide
     if args.keep_empty_text:
         df.loc[mask_no_text, "sentiment_label_teacher"] = "neu"
         df.loc[mask_no_text, "sentiment_conf"] = 1.0
         df.loc[mask_no_text, "accepted_by_teacher"] = 1
 
-    # 3.5) (Nuevo) Feats de texto opcionales (con overrides TF-IDF)
+    # 3.5) Feats de texto opcionales
     if args.text_feats != "none":
         if args.text_feats == "tfidf_lsa":
             from neurocampus.features.tfidf_lsa import TfidfLSAFeaturizer
-
-            # Defaults anteriores del pipeline (compatibilidad)
             _default_min_df = 3
             _default_max_df = None
-
             min_df = args.tfidf_min_df if args.tfidf_min_df is not None else _default_min_df
             max_df = args.tfidf_max_df if args.tfidf_max_df is not None else _default_max_df
-
-            feat_kwargs = dict(n_components=64, ngram_range=(1, 2), min_df=min_df)
+            feat_kwargs = dict(n_components=64, ngram_range=(1,2), min_df=min_df)
             if max_df is not None:
                 feat_kwargs["max_df"] = max_df
-
             feat = TfidfLSAFeaturizer(**feat_kwargs)
-
             texts = df["_texto_lemmas"].astype(str).fillna("").tolist()
-            Z = feat.fit_transform(texts)  # shape: (N, 64)
-
+            Z = feat.fit_transform(texts)
             if args.keep_empty_text and Z is not None and len(Z) == len(df):
                 import numpy as _np
                 Z = _np.asarray(Z)
                 Z[mask_no_text.values, :] = 0.0
-
             if Z is not None:
                 for i in range(Z.shape[1]):
                     df[f"feat_t_{i+1}"] = Z[:, i]
-
             if args.text_feats_out_dir:
                 Path(args.text_feats_out_dir).mkdir(parents=True, exist_ok=True)
                 feat.save(args.text_feats_out_dir)
 
-    # 4) Asegurar columna 'comentario' (trazabilidad humana)
+    # 4) Asegurar 'comentario'
     if "comentario" not in df.columns:
         df["comentario"] = df["_texto_clean"]
 
-    # 5) Guardar dataset + meta
+    # 5) Guardado + meta
     Path(args.dst).parent.mkdir(parents=True, exist_ok=True)
     if args.dst.lower().endswith(".parquet"):
         df.to_parquet(args.dst, index=False)

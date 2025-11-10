@@ -10,53 +10,33 @@ def _detect_project_python() -> str:
       3) .venv en la RAÍZ del repo (./.venv/Scripts|bin/python)
       4) .venv en backend/ (./backend/.venv/Scripts|bin/python)
       5) sys.executable (intérprete actual)
-    Devuelve una ruta existente.
     """
     env = os.environ
-
-    # 1) venv activado
     venv = env.get("VIRTUAL_ENV")
     if venv:
         cand = Path(venv) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if cand.exists():
             return str(cand)
-
-    # 2) conda activado
     conda = env.get("CONDA_PREFIX")
     if conda:
         cand = Path(conda) / ("python.exe" if os.name == "nt" else "bin/python")
         if cand.exists():
             return str(cand)
-
-    # 3) .venv en la raíz del repo
-    repo_root = Path(__file__).resolve().parents[4]  # .../NeuroCampus (raíz)
+    repo_root = Path(__file__).resolve().parents[4]
     cand = repo_root / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
     if cand.exists():
         return str(cand)
-
-    # 4) .venv dentro de backend/
     backend_dir = repo_root / "backend"
     cand = backend_dir / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
     if cand.exists():
         return str(cand)
-
-    # 5) intérprete actual
     return sys.executable
 
 def _build_env_with_src() -> dict:
-    """
-    Construye un entorno de ejecución que añade backend/src al PYTHONPATH
-    y preserva el resto de variables.
-    """
     env = os.environ.copy()
-    # Este archivo está en .../backend/src/neurocampus/app/jobs/cmd_preprocesar_batch.py
     src_dir = Path(__file__).resolve().parents[3]  # .../backend/src
     pypp = str(src_dir)
-    if env.get("PYTHONPATH"):
-        env["PYTHONPATH"] = pypp + os.pathsep + env["PYTHONPATH"]
-    else:
-        env["PYTHONPATH"] = pypp
-    # Evita mezclar site-packages del usuario con el del entorno del proyecto
+    env["PYTHONPATH"] = pypp + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env.setdefault("PYTHONNOUSERSITE", "1")
     return env
 
@@ -66,8 +46,8 @@ def main():
                     help="Directorios separados por coma para buscar *.csv")
     ap.add_argument("--out-dir", default="data/prep_auto",
                     help="Directorio de salida para los .parquet generados")
-    ap.add_argument("--text-cols", default="comentario,observaciones",
-                    help="Columnas de texto (coma-separadas) que se concatenarán")
+    ap.add_argument("--text-cols", default="auto",
+                    help="Columnas de texto (coma-separadas) o 'auto' para autodetección")
     ap.add_argument("--beto-mode", choices=["probs","simple"], default="simple")
     ap.add_argument("--min-tokens", type=int, default=1)
     ap.add_argument("--keep-empty-text", action="store_true", default=True)
@@ -85,18 +65,13 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Elegir el Python correcto del proyecto
     py = _detect_project_python()
-
-    # Entorno con PYTHONPATH → backend/src
     env = _build_env_with_src()
 
-    # Recolectar CSVs
     in_dirs = [d.strip() for d in args.in_dirs.split(",") if d.strip()]
     csvs = []
     for d in in_dirs:
         csvs.extend(sorted(glob.glob(os.path.join(d, "*.csv"))))
-
     if not csvs:
         print("[batch] No se encontraron CSV en:", in_dirs)
         sys.exit(0)
@@ -114,7 +89,6 @@ def main():
             py, "-m", "neurocampus.app.jobs.cmd_preprocesar_beto",
             "--in", f,
             "--out", out_path,
-            "--text-col", args.text_cols,
             "--beto-mode", args.beto_mode,
             "--min-tokens", str(args.min_tokens),
             "--text-feats", args.text_feats,
@@ -126,6 +100,10 @@ def main():
             "--tfidf-min-df", str(args.tfidf_min_df),
             "--tfidf-max-df", str(args.tfidf_max_df),
         ]
+        # Solo pasamos --text-col si el usuario NO dejó 'auto'
+        if args.text_cols and args.text_cols.strip().lower() != "auto":
+            cmd.extend(["--text-col", args.text_cols])
+
         if args.keep_empty_text:
             cmd.append("--keep-empty-text")
         if feats_out is not None:

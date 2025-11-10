@@ -2,7 +2,7 @@
 # - Limpia + lematiza texto
 # - Etiqueta sentimiento con BETO (dos modos):
 #    * probs (recomendado): p_neg/p_neu/p_pos + gating (threshold, margin, neu_min)
-#    * simple: replica pipeline del notebook y etiqueta top1 con score
+#    * simple: pipeline tipo notebook (top1 + score) [import perezoso de transformers]
 # - Deja 'comentario' estandarizado y columnas para el Student (RBM).
 # - Trata el texto como opcional (has_text), ejecuta BETO sólo donde hay texto suficiente
 #   y reporta cobertura de texto.
@@ -19,29 +19,25 @@ import pandas as pd
 
 from neurocampus.services.nlp.preprocess import limpiar_texto, tokenizar_y_lematizar_batch
 from neurocampus.services.nlp.teacher import run_transformer, accept_mask
-from transformers import pipeline  # para el modo simple del notebook
-
 
 TEXT_CANDIDATES = [
     "Sugerencias", "sugerencias", "comentario", "comentarios",
     "observaciones", "obs", "texto", "review", "opinion"
 ]
 
-
 def _pick_text_col(df: pd.DataFrame, prefer: str | None) -> str:
     """Detecta una sola columna de texto (compatibilidad hacia atrás)."""
     if prefer and prefer in df.columns:
         return prefer
-    norm = {c: re.sub(r"\s+", "", c).lower() for c in df.columns}
+    norm = {c: re.sub(r"\s+","",c).lower() for c in df.columns}
     for cand in TEXT_CANDIDATES:
         if cand in df.columns:
             return cand
-        n_cand = re.sub(r"\s+", "", cand).lower()
+        n_cand = re.sub(r"\s+","",cand).lower()
         for raw, n in norm.items():
             if n == n_cand:
                 return raw
-    raise ValueError("No se encontró columna de texto. Usa --text-col para forzarlo.")
-
+    raise ValueError("No se encontró columna de texto. Usa --text-col para forzar.")
 
 def _cols_from_arg(text_col_arg: str | None, df: pd.DataFrame) -> list[str]:
     """
@@ -57,7 +53,6 @@ def _cols_from_arg(text_col_arg: str | None, df: pd.DataFrame) -> list[str]:
         raise ValueError(f"No se encontró ninguna de las columnas de texto indicadas: {cols}")
     return existing
 
-
 def _concat_text_cols(df: pd.DataFrame, cols: list[str]) -> pd.Series:
     """
     Concatena columnas de texto existentes (ya crudas) con un separador.
@@ -70,7 +65,6 @@ def _concat_text_cols(df: pd.DataFrame, cols: list[str]) -> pd.Series:
     for p in parts[1:]:
         out = out.str.cat(p, sep=" . ")
     return out
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -112,14 +106,14 @@ def main():
     df["_texto_raw_concat"] = _concat_text_cols(df, text_cols)
 
     # 2.1) Limpiar + lematizar
-    df["_texto_clean"] = df["_texto_raw_concat"].astype(str).map(limpiar_texto)
+    df["_texto_clean"]  = df["_texto_raw_concat"].astype(str).map(limpiar_texto)
     df["_texto_lemmas"] = tokenizar_y_lematizar_batch(df["_texto_clean"].tolist(), batch_size=512)
 
     # 2.2) Cobertura de texto: has_text si hay al menos min_tokens
     toklen = df["_texto_lemmas"].fillna("").str.split().map(len)
     df["has_text"] = (toklen >= args.min_tokens).astype(int)
     mask_has_text = df["has_text"] == 1
-    mask_no_text = ~mask_has_text
+    mask_no_text  = ~mask_has_text
 
     # Inicializa columnas de salida comunes
     df["p_neg"], df["p_neu"], df["p_pos"] = np.nan, np.nan, np.nan
@@ -131,6 +125,14 @@ def main():
     if args.beto_mode == "simple":
         # --- MODO SIMPLE (top1 + score) ---
         if mask_has_text.any():
+            try:
+                from transformers import pipeline  # import perezoso, sólo si se usa el modo simple
+            except Exception as e:
+                raise RuntimeError(
+                    "Falta el paquete 'transformers' para usar --beto-mode simple. "
+                    "Instala las dependencias (ver backend/requirements.txt) o usa --beto-mode probs."
+                ) from e
+
             sentiment_analyzer = pipeline("sentiment-analysis", model=args.beto_model)
             df['Sugerencias_lemmatizadas'] = df['_texto_lemmas'].fillna('').astype(str)
             results = sentiment_analyzer(df.loc[mask_has_text, 'Sugerencias_lemmatizadas'].tolist())
@@ -138,7 +140,7 @@ def main():
             lbl_map = {"NEG": "neg", "NEU": "neu", "POS": "pos",
                        "negative": "neg", "neutral": "neu", "positive": "pos"}
             labels_simple = [lbl_map.get(r['label'], str(r['label']).lower()) for r in results]
-            conf_simple = [r.get("score", 1.0) for r in results]
+            conf_simple   = [r.get("score", 1.0) for r in results]
 
             df.loc[mask_has_text, "sentiment_label_teacher"] = labels_simple
             df.loc[mask_has_text, "sentiment_conf"] = conf_simple
@@ -157,13 +159,15 @@ def main():
             df.loc[mask_has_text, "p_neu"] = P_text[:, 1]
             df.loc[mask_has_text, "p_pos"] = P_text[:, 2]
 
+            # top-1 + confianza
             idx = P_text.argmax(axis=1)
             labels = np.array(["neg", "neu", "pos"], dtype=object)[idx]
-            conf = P_text.max(axis=1)
+            conf   = P_text.max(axis=1)
 
             df.loc[mask_has_text, "sentiment_label_teacher"] = labels
             df.loc[mask_has_text, "sentiment_conf"] = conf
 
+            # aceptación (gating)
             acc = accept_mask(P_text, labels, threshold=args.threshold, margin=args.margin, neu_min=args.neu_min)
             df.loc[mask_has_text, "accepted_by_teacher"] = acc.astype(int)
 
@@ -248,7 +252,6 @@ def main():
         "tfidf_min_df": meta["tfidf_min_df"],
         "tfidf_max_df": meta["tfidf_max_df"]
     })
-
 
 if __name__ == "__main__":
     main()

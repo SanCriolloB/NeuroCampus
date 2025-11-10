@@ -3,7 +3,6 @@
 # ===========================
 
 # -------- Detección robusta de PYTHON --------
-# Prioridad: backend/.venv -> ./.venv -> python del sistema
 ifeq ($(OS),Windows_NT)
 PY_BACKEND := ./backend/.venv/Scripts/python.exe
 PY_ROOT    := ./.venv/Scripts/python.exe
@@ -26,20 +25,20 @@ SRC_DIR   := $(REPO_ROOT)/backend/src
 EXAMPLES  := examples
 OUT_DIR   := data/prep_auto
 
-# Variables por defecto para el pipeline de texto
-BETO_MODE        ?= simple          # cambia a 'probs' si lo prefieres
-MIN_TOKENS       ?= 1
-KEEP_EMPTY_TEXT  ?= 1               # 1 → añade --keep-empty-text
-TEXT_FEATS       ?= tfidf_lsa
-TFIDF_MIN_DF     ?= 1.0
-TFIDF_MAX_DF     ?= 1.0
-BETO_MODEL       ?= finiteautomata/beto-sentiment-analysis
-BATCH_SIZE       ?= 32
-THRESHOLD        ?= 0.45
-MARGIN           ?= 0.05
-NEU_MIN          ?= 0.10
+# -------- Variables del pipeline (sin espacios basura) --------
+BETO_MODE       ?= simple
+MIN_TOKENS      ?= 1
+KEEP_EMPTY_TEXT ?= 1
+TEXT_FEATS      ?= tfidf_lsa
+TFIDF_MIN_DF    ?= 1.0
+TFIDF_MAX_DF    ?= 1.0
+BETO_MODEL      ?= finiteautomata/beto-sentiment-analysis
+BATCH_SIZE      ?= 32
+THRESHOLD       ?= 0.45
+MARGIN          ?= 0.05
+NEU_MIN         ?= 0.10
 
-# Auto-detección de columna de texto por defecto (no forzar columnas)
+# Auto-detección de columna de texto por defecto
 TEXT_COLS ?= auto
 
 .PHONY: which-python
@@ -81,18 +80,18 @@ prep-one:
 	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_beto \
 		--in "$(IN)" \
 		--out "$(OUT)" \
-		--beto-mode "$(BETO_MODE)" \
-		--min-tokens "$(MIN_TOKENS)" \
-		--text-feats "$(TEXT_FEATS)" \
-		--beto-model "$(BETO_MODEL)" \
-		--batch-size "$(BATCH_SIZE)" \
-		--threshold "$(THRESHOLD)" \
-		--margin "$(MARGIN)" \
-		--neu-min "$(NEU_MIN)" \
-		--tfidf-min-df "$(TFIDF_MIN_DF)" \
-		--tfidf-max-df "$(TFIDF_MAX_DF)" \
+		--beto-mode "$(strip $(BETO_MODE))" \
+		--min-tokens "$(strip $(MIN_TOKENS))" \
+		--text-feats "$(strip $(TEXT_FEATS))" \
+		--beto-model "$(strip $(BETO_MODEL))" \
+		--batch-size "$(strip $(BATCH_SIZE))" \
+		--threshold "$(strip $(THRESHOLD))" \
+		--margin "$(strip $(MARGIN))" \
+		--neu-min "$(strip $(NEU_MIN))" \
+		--tfidf-min-df "$(strip $(TFIDF_MIN_DF))" \
+		--tfidf-max-df "$(strip $(TFIDF_MAX_DF))" \
 		$(if $(filter $(KEEP_EMPTY_TEXT),1),--keep-empty-text,) \
-		$(if $(filter-out auto,$(TEXT_COLS)),--text-col "$(TEXT_COLS)",)
+		$(if $(filter-out auto,$(TEXT_COLS)),--text-col "$(strip $(TEXT_COLS))",)
 
 .PHONY: prep-all
 prep-all:
@@ -102,20 +101,20 @@ prep-all:
 	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_batch \
 		--in-dirs "examples,$(EXAMPLES)/synthetic" \
 		--out-dir "$(OUT_DIR)" \
-		--text-cols "$(TEXT_COLS)" \
-		--beto-mode "$(BETO_MODE)" \
-		--min-tokens "$(MIN_TOKENS)" \
+		--text-cols "$(strip $(TEXT_COLS))" \
+		--beto-mode "$(strip $(BETO_MODE))" \
+		--min-tokens "$(strip $(MIN_TOKENS))" \
 		--keep-empty-text \
-		--tfidf-min-df "$(TFIDF_MIN_DF)" \
-		--tfidf-max-df "$(TFIDF_MAX_DF)" \
-		--text-feats "$(TEXT_FEATS)" \
-		--beto-model "$(BETO_MODEL)" \
-		--batch-size "$(BATCH_SIZE)" \
-		--threshold "$(THRESHOLD)" \
-		--margin "$(MARGIN)" \
-		--neu-min "$(NEU_MIN)"
+		--tfidf-min-df "$(strip $(TFIDF_MIN_DF))" \
+		--tfidf-max-df "$(strip $(TFIDF_MAX_DF))" \
+		--text-feats "$(strip $(TEXT_FEATS))" \
+		--beto-model "$(strip $(BETO_MODEL))" \
+		--batch-size "$(strip $(BATCH_SIZE))" \
+		--threshold "$(strip $(THRESHOLD))" \
+		--margin "$(strip $(MARGIN))" \
+		--neu-min "$(strip $(NEU_MIN))"
 
-# Validación sin heredoc (todo en una sola línea para evitar separadores)
+# Validación sin heredoc
 .PHONY: prep-validate
 prep-validate:
 	@echo "[validate] Inspeccionando parquet en $(OUT_DIR)"; \

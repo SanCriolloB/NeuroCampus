@@ -1,18 +1,17 @@
 # ===========================
-# Makefile - NeuroCampus
-# Detección robusta de PYTHON + jobs de preprocessing
+# Makefile - NeuroCampus (simple y robusto)
 # ===========================
-
-SHELL := /usr/bin/env bash
 
 # -------- Detección robusta de PYTHON --------
 # Prioridad: backend/.venv -> ./.venv -> python del sistema
 ifeq ($(OS),Windows_NT)
 PY_BACKEND := ./backend/.venv/Scripts/python.exe
 PY_ROOT    := ./.venv/Scripts/python.exe
+PATHSEP    := ;
 else
 PY_BACKEND := ./backend/.venv/bin/python
 PY_ROOT    := ./.venv/bin/python
+PATHSEP    := :
 endif
 
 PYTHON ?= $(shell \
@@ -28,7 +27,7 @@ EXAMPLES  := examples
 OUT_DIR   := data/prep_auto
 
 # Variables por defecto para el pipeline de texto
-BETO_MODE        ?= simple          # puedes poner 'probs' si lo prefieres por defecto
+BETO_MODE        ?= simple          # cambia a 'probs' si lo prefieres
 MIN_TOKENS       ?= 1
 KEEP_EMPTY_TEXT  ?= 1               # 1 → añade --keep-empty-text
 TEXT_FEATS       ?= tfidf_lsa
@@ -40,19 +39,17 @@ THRESHOLD        ?= 0.45
 MARGIN           ?= 0.05
 NEU_MIN          ?= 0.10
 
-# Auto-detección de columna de texto: por defecto no forzamos --text-col
+# Auto-detección de columna de texto por defecto (no forzar columnas)
 TEXT_COLS ?= auto
 
-# Utilidad: imprime el intérprete elegido
 .PHONY: which-python
 which-python:
 	@echo "Using PYTHON=$(PYTHON)"
 
 # ===========================
-# Virtualenvs de conveniencia
+# Virtualenv/requirements
 # ===========================
 
-# Crea backend/.venv (si no existe) con pip actualizado
 .PHONY: venv-backend-create
 venv-backend-create:
 ifeq ($(OS),Windows_NT)
@@ -63,19 +60,16 @@ else
 	./backend/.venv/bin/python -m pip install --upgrade pip
 endif
 
-# Instala requirements en backend/.venv (usa $(PYTHON) detectado)
 .PHONY: install-reqs
 install-reqs:
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install -r backend/requirements.txt
 
 # ===========================
-# Jobs de preprocesamiento
+# Preprocesamiento
 # ===========================
 
-# Prepara UN archivo CSV a parquet usando el job BETO
-# Uso:
-#   make prep-one IN=examples/dataset_ejemplo.csv OUT=data/prep_auto/dataset_ejemplo.parquet
+# make prep-one IN=examples/dataset_ejemplo.csv OUT=data/prep_auto/dataset_ejemplo.parquet
 .PHONY: prep-one
 prep-one:
 	@if [ -z "$(IN)" ] || [ -z "$(OUT)" ]; then \
@@ -83,7 +77,7 @@ prep-one:
 	fi
 	@mkdir -p $(dir $(OUT))
 	@echo "[one] Procesando: $(IN) → $(OUT)"
-	@PYTHONPATH="$(SRC_DIR):$$PYTHONPATH" \
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
 	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_beto \
 		--in "$(IN)" \
 		--out "$(OUT)" \
@@ -100,12 +94,11 @@ prep-one:
 		$(if $(filter $(KEEP_EMPTY_TEXT),1),--keep-empty-text,) \
 		$(if $(filter-out auto,$(TEXT_COLS)),--text-col "$(TEXT_COLS)",)
 
-# Prepara TODOS los CSV dentro de examples/ (y examples/synthetic si existe)
 .PHONY: prep-all
 prep-all:
 	@mkdir -p "$(OUT_DIR)"
 	@echo "[batch] Buscando CSV en 'examples' y 'examples/synthetic' (si existe)..."
-	@PYTHONPATH="$(SRC_DIR):$$PYTHONPATH" \
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
 	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_batch \
 		--in-dirs "examples,$(EXAMPLES)/synthetic" \
 		--out-dir "$(OUT_DIR)" \
@@ -122,43 +115,38 @@ prep-all:
 		--margin "$(MARGIN)" \
 		--neu-min "$(NEU_MIN)"
 
-# Validación rápida: imprime esquema y conteos de los parquet generados
+# Validación sin heredoc (todo en una sola línea para evitar separadores)
 .PHONY: prep-validate
 prep-validate:
-	@echo "[validate] Inspeccionando parquet en $(OUT_DIR)"
-	@$(PYTHON) - <<'PY'
-import os, sys, json
-import pandas as pd
-out_dir = "$(OUT_DIR)"
-if not os.path.isdir(out_dir):
-    print("[validate] No existe el directorio:", out_dir)
-    sys.exit(0)
-files = [f for f in os.listdir(out_dir) if f.endswith(".parquet")]
-if not files:
-    print("[validate] No hay archivos .parquet en", out_dir)
-    sys.exit(0)
-
-def short(cols):
-    cols = list(cols)
-    return cols[:10] + (["..."] if len(cols) > 10 else [])
-
-for f in sorted(files):
-    p = os.path.join(out_dir, f)
-    try:
-        df = pd.read_parquet(p)
-        print("\n[OK]", f, "→", len(df), "filas")
-        print("  columnas:", short(df.columns))
-        nn = df.notna().sum().to_dict()
-        # imprime algunas métricas clave si existen
-        for k in ("p_neg","p_neu","p_pos","sentiment_label_teacher","accepted_by_teacher","feat_t_1"):
-            if k in df.columns:
-                print(f"  {k}: not-null={nn.get(k,0)}")
-    except Exception as e:
-        print("\n[ERR]", f, "→", e)
+	@echo "[validate] Inspeccionando parquet en $(OUT_DIR)"; \
+	$(PYTHON) - <<'PY' \
+import os, sys, pandas as pd; \
+d="$(OUT_DIR)"; \
+print("[validate] dir:", d); \
+if not os.path.isdir(d): \
+    print("[validate] No existe el directorio:", d); sys.exit(0); \
+fs=[f for f in os.listdir(d) if f.endswith(".parquet")]; \
+if not fs: \
+    print("[validate] No hay archivos .parquet en", d); sys.exit(0); \
+def short(cols): \
+    cols=list(cols); \
+    return cols[:10]+(["..."] if len(cols)>10 else []); \
+for f in sorted(fs): \
+    p=os.path.join(d,f); \
+    try: \
+        df=pd.read_parquet(p); \
+        print("\\n[OK]", f, "→", len(df), "filas"); \
+        print("  columnas:", short(df.columns)); \
+        nn=df.notna().sum().to_dict(); \
+        for k in ("p_neg","p_neu","p_pos","sentiment_label_teacher","accepted_by_teacher","feat_t_1"): \
+            if k in df.columns: \
+                print(f"  {k}: not-null={nn.get(k,0)}"); \
+    except Exception as e: \
+        print("\\n[ERR]", f, "→", e) \
 PY
 
 # ===========================
-# spaCy opcional (librería + modelo)
+# spaCy (opcional)
 # ===========================
 
 .PHONY: spacy-install
@@ -171,10 +159,9 @@ spacy-model: spacy-install
 	$(PYTHON) -m spacy download es_core_news_sm
 
 # ===========================
-# Utilidades extra
+# Utilidades
 # ===========================
 
-# Limpia artefactos de preparación
 .PHONY: prep-clean
 prep-clean:
 	@echo "[clean] Eliminando $(OUT_DIR) y featurizers..."

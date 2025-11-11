@@ -148,3 +148,8 @@ spacy-model: spacy-install
 prep-clean:
 	@echo "[clean] Eliminando $(OUT_DIR) y featurizers..."
 	@rm -rf "$(OUT_DIR)" "data/prep/textfeats" "data/prep_auto/textfeats"
+
+.PHONY: test-manual-bm
+test-manual-bm:
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.test_rbm_bm_manual

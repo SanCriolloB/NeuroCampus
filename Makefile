@@ -149,7 +149,26 @@ prep-clean:
 	@echo "[clean] Eliminando $(OUT_DIR) y featurizers..."
 	@rm -rf "$(OUT_DIR)" "data/prep/textfeats" "data/prep_auto/textfeats"
 
+
+
 .PHONY: test-manual-bm
 test-manual-bm:
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
 	$(PYTHON) -m neurocampus.app.jobs.test_rbm_bm_manual
+
+# ===========================
+# Redes a mano (RBM)
+# ===========================
+
+.PHONY: train-rbm-manual
+train-rbm-manual:
+	@mkdir -p reports
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_train_rbm_manual \
+		--in "data/prep_auto/dataset_ejemplo.parquet" \
+		--out-dir "reports" \
+		--model "rbm" \
+		--n-hidden 64 \
+		--lr 0.05 \
+		--epochs 15 \
+		--batch-size 64

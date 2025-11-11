@@ -163,6 +163,7 @@ test-manual-bm:
 .PHONY: train-rbm-manual
 train-rbm-manual:
 	@mkdir -p reports
+	@echo "[train] RBM manual con PYTHON=$(PYTHON)"
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
 	$(PYTHON) -m neurocampus.app.jobs.cmd_train_rbm_manual \
 		--in "data/prep_auto/dataset_ejemplo.parquet" \
@@ -170,5 +171,7 @@ train-rbm-manual:
 		--model "rbm" \
 		--n-hidden 64 \
 		--lr 0.05 \
-		--epochs 15 \
-		--batch-size 64
+		--epochs 2 \
+		--batch-size 64 \
+		--binarize-input 1 \
+		--input-bin-threshold 0.5

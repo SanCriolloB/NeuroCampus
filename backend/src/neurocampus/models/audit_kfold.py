@@ -1,7 +1,7 @@
 # backend/src/neurocampus/models/audit_kfold.py
 """
-Auditoría k-fold para RBM_general y RBM_restringido usando las implementaciones existentes
-en neurocampus.models.strategies.* (NO cambia arquitectura, solo mide baseline).
+Auditoría k-fold para RBM_general, RBM_restringido y rbm_pura usando las
+implementaciones existentes en neurocampus.models.strategies.* (no cambia arquitectura; solo mide baseline).
 
 Uso:
   PYTHONPATH="$PWD/backend/src" python -m neurocampus.models.audit_kfold --config configs/rbm_audit.yaml
@@ -25,7 +25,7 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import LabelEncoder
 
-import torch  # para compatibilidad con strategies basadas en PyTorch
+import torch  # compatibilidad con strategies basadas en PyTorch
 
 from neurocampus.utils.metrics_io import (
     load_yaml,
@@ -36,17 +36,47 @@ from neurocampus.utils.metrics_io import (
 
 # ---------- Resolución dinámica de modelos ----------
 def _resolve_model(model_name: str):
-    if model_name.lower() == "rbm_general":
+    name = model_name.lower()
+    if name == "rbm_general":
         from neurocampus.models.strategies.modelo_rbm_general import (
             ModeloRBMGeneral as RBMGeneral,
         )
         return RBMGeneral
-    elif model_name.lower() == "rbm_restringido":
+    elif name == "rbm_restringido":
         from neurocampus.models.strategies.modelo_rbm_restringida import (
             ModeloRBMRestringida as RBMRestringida,
         )
         return RBMRestringida
+    elif name == "rbm_pura":
+        # RBM matemática mínima (Día 11)
+        from neurocampus.models.strategies.rbm_pura import RBM as RBMPura
+        return RBMPura
     raise ValueError(f"Modelo no soportado: {model_name}")
+
+# ---------- Normalización suave de parámetros ----------
+def _normalize_model_params(model_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normaliza algunos alias frecuentes entre modelos para minimizar fricción:
+    - hidden_units -> n_hidden
+    - lr -> lr_rbm (y si aplica, lr_head)
+    - epochs -> epochs (y, si el modelo soporta pretrain, mantenemos epochs_rbm si ya viene)
+    """
+    out = dict(params) if params else {}
+    # Dimensión oculta
+    if "hidden_units" in out and "n_hidden" not in out:
+        out["n_hidden"] = out["hidden_units"]
+
+    # Learning rates
+    if "lr" in out and "lr_rbm" not in out:
+        out["lr_rbm"] = out["lr"]
+    # Para modelos con cabeza supervisada:
+    if "lr" in out and "lr_head" not in out:
+        out["lr_head"] = out["lr"]
+
+    # Epochs: sin cambios; se respeta "epochs". Si el modelo usa epochs_rbm, lo definirá por defecto.
+    # cd_k, batch_size se pasan tal cual.
+
+    return out
 
 _METRICS = {
     "accuracy": accuracy_score,
@@ -243,11 +273,12 @@ def run_kfold_audit(
         Xtr, Xva = X[tr], X[va]
         ytr, yva = y[tr], y[va]
 
-        # 1) Inyectar dimensión de entrada al constructor si no existe
-        params = _inject_feature_dims(model_params, n_features)
+        # 1) Normalizar e inyectar parámetros (dimensión de entrada si la strategy lo soporta)
+        base_params = _normalize_model_params(model_name, model_params)
+        params = _inject_feature_dims(base_params, n_features)
         model = Model(**params)
 
-        # 2) Primer intento de ajuste preventivo (por si la strategy ignora el param)
+        # 2) Ajuste preventivo de shapes por si la strategy ignora el parámetro visible_units/n_visible
         _fix_model_internal_shapes(model, n_features)
 
         # 3) Entrenar con retry si hay mismatch de shapes
@@ -336,20 +367,31 @@ def main():
     run_dir = prepare_run_dir(cfg["artifacts"]["root"])
     save_config_snapshot(run_dir, args.config)
 
-    results: Dict[str, Any] = {"dataset": cfg["dataset"], "evaluation": cfg["evaluation"], "models": []}
+    results: Dict[str, Any] = {
+        "dataset": cfg["dataset"],
+        "evaluation": cfg["evaluation"],
+        "models": []
+    }
+
+    # Mezclar globals -> params de cada modelo (params tiene prioridad)
+    globals_cfg = dict(cfg.get("globals", {}))
+
     for mm in cfg["models"]:
+        params = dict(globals_cfg)
+        params.update(mm.get("params", {}))  # prioridad a params por modelo
+
         res = run_kfold_audit(
             df=df,
             target=cfg["dataset"].get("target"),
             model_name=mm["name"],
-            model_params=mm["params"],
+            model_params=params,
             n_splits=cfg["evaluation"]["n_splits"],
             shuffle=cfg["evaluation"]["shuffle"],
             stratify=cfg["evaluation"]["stratify"],
             random_seed=cfg["evaluation"]["random_seed"],
             metrics=cfg["evaluation"]["metrics"],
         )
-        results["models"].append({"name": mm["name"], "params": mm["params"], **res})
+        results["models"].append({"name": mm["name"], "params": params, **res})
 
     out = write_metrics(run_dir, results)
     print(f"[AUDIT] Métricas escritas en: {out}\nRun dir: {run_dir}")

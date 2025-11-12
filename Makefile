@@ -1,170 +1,177 @@
-# --- NeuroCampus: Limpieza de artefactos, administración y diagnóstico Día 7 ---
+# ===========================
+# Makefile - NeuroCampus (simple y robusto)
+# ===========================
 
-# Usar bash para comandos con tuberías/expansiones
-SHELL := bash
+# -------- Detección robusta de PYTHON --------
+ifeq ($(OS),Windows_NT)
+PY_BACKEND := ./backend/.venv/Scripts/python.exe
+PY_ROOT    := ./.venv/Scripts/python.exe
+PATHSEP    := ;
+else
+PY_BACKEND := ./backend/.venv/bin/python
+PY_ROOT    := ./.venv/bin/python
+PATHSEP    := :
+endif
 
-# Binario de Python
-PY := python
+PYTHON ?= $(shell \
+	if [ -x "$(PY_BACKEND)" ]; then echo "$(PY_BACKEND)"; \
+	elif [ -x "$(PY_ROOT)" ]; then echo "$(PY_ROOT)"; \
+	else which python; fi \
+)
 
-# Archivo de variables de entorno (puede redefinir API_HOST, API_PORT, etc.)
-ENV ?= .env
--include $(ENV)
-export
+# Rutas y variables comunes
+REPO_ROOT := $(shell pwd)
+SRC_DIR   := $(REPO_ROOT)/backend/src
+EXAMPLES  := examples
+OUT_DIR   := data/prep_auto
 
-# Valores por defecto (si no vienen de .env)
-API_HOST ?= 127.0.0.1
-API_PORT ?= 8000
+# -------- Variables del pipeline (sin espacios basura) --------
+BETO_MODE       ?= simple
+MIN_TOKENS      ?= 1
+KEEP_EMPTY_TEXT ?= 1
+TEXT_FEATS      ?= tfidf_lsa
+TFIDF_MIN_DF    ?= 1
+TFIDF_MAX_DF    ?= 1
+BETO_MODEL      ?= finiteautomata/beto-sentiment-analysis
+BATCH_SIZE      ?= 32
+THRESHOLD       ?= 0.45
+MARGIN          ?= 0.05
+NEU_MIN         ?= 0.10
 
-# Administración de limpieza
-NC_RETENTION_DAYS ?= 90
-NC_KEEP_LAST ?= 3
-NC_EXCLUDE_GLOBS ?=
-NC_TRASH_DIR ?= .trash
-NC_TRASH_RETENTION_DAYS ?= 7
-NC_ADMIN_TOKEN ?= dev-admin-token
+# Auto-detección de columna de texto por defecto
+TEXT_COLS ?= auto
 
-# Validación datasets (helper)
-NC_DATASET_ID ?= docentes
-NC_SAMPLE_CSV ?= examples/docentes.csv
+.PHONY: which-python
+which-python:
+	@echo "Using PYTHON=$(PYTHON)"
 
-# CORS / Límite de subida
-# - NC_ALLOWED_ORIGINS se usa en main.py (middleware CORS)
-# - NC_MAX_UPLOAD_MB se usa en main.py (middleware) y también aquí para uvicorn
-NC_ALLOWED_ORIGINS ?= http://localhost:5173
-NC_MAX_UPLOAD_MB ?= 10
+# ===========================
+# Virtualenv/requirements
+# ===========================
 
-# Rutas comunes
-BACKEND_SRC ?= backend/src
-BACKEND_APP ?= neurocampus.app.main:app
-FRONTEND_DIR ?= frontend
+.PHONY: venv-backend-create
+venv-backend-create:
+ifeq ($(OS),Windows_NT)
+	python -m venv backend/.venv
+	./backend/.venv/Scripts/python.exe -m pip install --upgrade pip
+else
+	python -m venv backend/.venv
+	./backend/.venv/bin/python -m pip install --upgrade pip
+endif
 
-# ----------------------------------------------------------------------------- #
-# Ayuda
-# ----------------------------------------------------------------------------- #
+.PHONY: install-reqs
+install-reqs:
+	$(PYTHON) -m pip install --upgrade pip
+	$(PYTHON) -m pip install -r backend/requirements.txt
 
-.PHONY: help
-help:
-	@echo "Targets disponibles:"
-	@echo "  clean-inventory             - Ver inventario local de artefactos (herramienta CLI)."
-	@echo "  clean-artifacts-dry-run     - Simulación de limpieza local (no borra, muestra plan)."
-	@echo "  clean-artifacts             - Limpieza local real (mueve a .trash/)."
-	@echo "  run-admin                   - Levanta API (uvicorn) con routers de administración."
-	@echo "  admin-inventory             - Inventario remoto vía endpoint /admin/cleanup/inventory."
-	@echo "  admin-clean                 - Limpieza remota vía endpoint /admin/cleanup (force)."
-	@echo "  be-dev                      - Levantar backend en modo desarrollo (uvicorn)."
-	@echo "  be-test                     - Ejecutar pruebas del backend (pytest)."
-	@echo "  fe-dev                      - Levantar frontend (Vite) en :5173."
-	@echo "  fe-test                     - Ejecutar pruebas del frontend (vitest)."
-	@echo "  validate-sample             - Enviar CSV de ejemplo a /datos/validar."
-	@echo
-	@echo "Variables útiles (pueden ir en .env o CLI):"
-	@echo "  API_HOST, API_PORT, NC_ADMIN_TOKEN"
-	@echo "  NC_RETENTION_DAYS, NC_KEEP_LAST, NC_EXCLUDE_GLOBS"
-	@echo "  NC_TRASH_DIR, NC_TRASH_RETENTION_DAYS"
-	@echo "  NC_DATASET_ID, NC_SAMPLE_CSV"
-	@echo "  NC_ALLOWED_ORIGINS, NC_MAX_UPLOAD_MB"
+# ===========================
+# Preprocesamiento
+# ===========================
 
-# ----------------------------------------------------------------------------- #
-# --- Limpieza de artefactos y cache (local, vía herramienta CLI) -------------- #
-# ----------------------------------------------------------------------------- #
+# make prep-one IN=examples/dataset_ejemplo.csv OUT=data/prep_auto/dataset_ejemplo.parquet
+.PHONY: prep-one
+prep-one:
+	@if [ -z "$(IN)" ] || [ -z "$(OUT)" ]; then \
+		echo "Uso: make prep-one IN=<csv> OUT=<parquet>"; exit 1; \
+	fi
+	@mkdir -p $(dir $(OUT))
+	@echo "[one] Procesando: $(IN) → $(OUT)"
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_beto \
+		--in "$(IN)" \
+		--out "$(OUT)" \
+		--beto-mode "$(strip $(BETO_MODE))" \
+		--min-tokens "$(strip $(MIN_TOKENS))" \
+		--text-feats "$(strip $(TEXT_FEATS))" \
+		--beto-model "$(strip $(BETO_MODEL))" \
+		--batch-size "$(strip $(BATCH_SIZE))" \
+		--threshold "$(strip $(THRESHOLD))" \
+		--margin "$(strip $(MARGIN))" \
+		--neu-min "$(strip $(NEU_MIN))" \
+		--tfidf-min-df "$(strip $(TFIDF_MIN_DF))" \
+		--tfidf-max-df "$(strip $(TFIDF_MAX_DF))" \
+		$(if $(filter $(KEEP_EMPTY_TEXT),1),--keep-empty-text,) \
+		$(if $(filter-out auto,$(TEXT_COLS)),--text-col "$(strip $(TEXT_COLS))",)
 
-.PHONY: clean-inventory
-clean-inventory:
-	@$(PY) -m tools.cleanup --inventory
+.PHONY: prep-all
+prep-all:
+	@mkdir -p "$(OUT_DIR)"
+	@echo "[batch] Buscando CSV en 'examples' y 'examples/synthetic' (si existe)..."
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_batch \
+		--in-dirs "examples,$(EXAMPLES)/synthetic" \
+		--out-dir "$(OUT_DIR)" \
+		--text-cols "$(strip $(TEXT_COLS))" \
+		--beto-mode "$(strip $(BETO_MODE))" \
+		--min-tokens "$(strip $(MIN_TOKENS))" \
+		--keep-empty-text \
+		--tfidf-min-df "$(strip $(TFIDF_MIN_DF))" \
+		--tfidf-max-df "$(strip $(TFIDF_MAX_DF))" \
+		--text-feats "$(strip $(TEXT_FEATS))" \
+		--beto-model "$(strip $(BETO_MODEL))" \
+		--batch-size "$(strip $(BATCH_SIZE))" \
+		--threshold "$(strip $(THRESHOLD))" \
+		--margin "$(strip $(MARGIN))" \
+		--neu-min "$(strip $(NEU_MIN))"
 
-.PHONY: clean-artifacts-dry-run
-clean-artifacts-dry-run:
-	@$(PY) -m tools.cleanup --dry-run \
-		--retention-days $${NC_RETENTION_DAYS:-90} \
-		--keep-last $${NC_KEEP_LAST:-3} \
-		--exclude-globs "$${NC_EXCLUDE_GLOBS:-}"
+# ===========================
+# Validación (sin heredoc)
+# ===========================
 
-# Borrado real (mueve a .trash/). Requiere --force.
-.PHONY: clean-artifacts
-clean-artifacts:
-	@$(PY) -m tools.cleanup --force \
-		--retention-days $${NC_RETENTION_DAYS:-90} \
-		--keep-last $${NC_KEEP_LAST:-3} \
-		--exclude-globs "$${NC_EXCLUDE_GLOBS:-}" \
-		--trash-dir "$${NC_TRASH_DIR:-.trash}"
+.PHONY: prep-validate
+prep-validate:
+	@echo "[validate] Inspeccionando parquet en $(OUT_DIR)"
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.validate_prep_dir \
+		--dir "$(OUT_DIR)" \
+		--must-exist-cols "accepted_by_teacher,sentiment_label_teacher,sentiment_conf,has_text" \
+		--require-any-prefix "feat_t_"
 
-# ----------------------------------------------------------------------------- #
-# --- Administración (vía API) ------------------------------------------------- #
-# ----------------------------------------------------------------------------- #
+# ===========================
+# spaCy (opcional)
+# ===========================
 
-# Levanta FastAPI/uvicorn apuntando al directorio del backend.
-# Defensa adicional Día 7: límite de tamaño en uvicorn en BYTES (MB * 1024 * 1024).
-.PHONY: run-admin
-run-admin:
-	@echo ">> Iniciando uvicorn con límite máx. de request: $${NC_MAX_UPLOAD_MB:-10} MB"
-	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
-		--host $${API_HOST} --port $${API_PORT} --reload \
-		--limit-max-request-size $$(( $${NC_MAX_UPLOAD_MB:-10} * 1024 * 1024 ))
+.PHONY: spacy-install
+spacy-install:
+	$(PYTHON) -m pip install --upgrade pip
+	$(PYTHON) -m pip install "spacy>=3.7,<4" "spacy-lookups-data>=1.0.5" emoji>=2.12.1
 
-# Consulta inventario remoto del endpoint de administración.
-.PHONY: admin-inventory
-admin-inventory:
-	@curl -s \
-		-H "Authorization: Bearer $(NC_ADMIN_TOKEN)" \
-		"http://$(API_HOST):$(API_PORT)/admin/cleanup/inventory?retention_days=$(NC_RETENTION_DAYS)&keep_last=$(NC_KEEP_LAST)" | jq .
+.PHONY: spacy-model
+spacy-model: spacy-install
+	$(PYTHON) -m spacy download es_core_news_sm
 
-# Ejecuta limpieza remota en el backend (force=true).
-.PHONY: admin-clean
-admin-clean:
-	@curl -s -X POST \
-		-H "Authorization: Bearer $(NC_ADMIN_TOKEN)" \
-		-H "Content-Type: application/json" \
-		-d "{\"retention_days\":$(NC_RETENTION_DAYS),\"keep_last\":$(NC_KEEP_LAST),\"dry_run\":false,\"force\":true,\"trash_dir\":\"$(NC_TRASH_DIR)\",\"trash_retention_days\":$(NC_TRASH_RETENTION_DAYS)}" \
-		"http://$(API_HOST):$(API_PORT)/admin/cleanup" | jq .
+# ===========================
+# Utilidades
+# ===========================
 
-# ----------------------------------------------------------------------------- #
-# --- Backend (desarrollo y pruebas) ------------------------------------------ #
-# ----------------------------------------------------------------------------- #
-
-# Levantar backend de desarrollo (equivalente a run-admin; alias más neutral).
-# El límite de tamaño se aplica vía middleware (NC_MAX_UPLOAD_MB), no por flag de Uvicorn.
-.PHONY: be-dev
-be-dev:
-	@echo ">> Iniciando uvicorn (desarrollo). Límite de subida via middleware: $${NC_MAX_UPLOAD_MB:-10} MB"
-	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
-		--host $${API_HOST} --port $${API_PORT} --reload
-# Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
-.PHONY: be-test
-be-test:
-	@PYTHONPATH=$(BACKEND_SRC) $(PY) -m pytest -q
-
-# ----------------------------------------------------------------------------- #
-# --- Frontend (desarrollo y pruebas) ----------------------------------------- #
-# ----------------------------------------------------------------------------- #
-
-.PHONY: fe-dev
-fe-dev:
-	@cd $(FRONTEND_DIR) && npm run dev
-
-.PHONY: fe-test
-fe-test:
-	@cd $(FRONTEND_DIR) && npm run test:run
-
-# ----------------------------------------------------------------------------- #
-# --- Diagnóstico: validación de datasets ------------------------------------- #
-# ----------------------------------------------------------------------------- #
-
-# Helper: envía un CSV de ejemplo al endpoint /datos/validar del backend.
-# Variables:
-#   - NC_SAMPLE_CSV (ruta del archivo CSV a enviar)
-#   - NC_DATASET_ID (identificador lógico del dataset, por defecto "docentes")
-.PHONY: validate-sample
-validate-sample:
-	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV). Ajusta NC_SAMPLE_CSV o agrega un ejemplo." && exit 1)
-	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id='$(NC_DATASET_ID)' contra http://$(API_HOST):$(API_PORT)/datos/validar"
-	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
-		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
+.PHONY: prep-clean
+prep-clean:
+	@echo "[clean] Eliminando $(OUT_DIR) y featurizers..."
+	@rm -rf "$(OUT_DIR)" "data/prep/textfeats" "data/prep_auto/textfeats"
 
 
-.PHONY: rbm-audit
-rbm-audit:
-	@PY=$$( [ -x ".venv/Scripts/python.exe" ] && echo ".venv/Scripts/python.exe" || ( [ -x ".venv/bin/python" ] && echo ".venv/bin/python" || echo "python" ) ); \
-	echo "Usando Python: $$PY"; \
-	"$$PY" -c "import numpy" 2>/dev/null || ( echo "Instalando deps en $$PY"; "$$PY" -m pip install --upgrade pip && "$$PY" -m pip install -r backend/requirements.txt ); \
-	PPATH="$(PWD)/backend/src"; echo "PYTHONPATH: $$PPATH"; \
-	PYTHONPATH="$$PPATH" "$$PY" -m neurocampus.models.audit_kfold --config configs/rbm_audit.yaml
+
+.PHONY: test-manual-bm
+test-manual-bm:
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.test_rbm_bm_manual
+
+# ===========================
+# Redes a mano (RBM)
+# ===========================
+
+.PHONY: train-rbm-manual
+train-rbm-manual:
+	@mkdir -p reports
+	@echo "[train] RBM manual con PYTHON=$(PYTHON)"
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_train_rbm_manual \
+		--in "data/prep_auto/dataset_ejemplo.parquet" \
+		--out-dir "reports" \
+		--model "rbm" \
+		--n-hidden 64 \
+		--lr 0.05 \
+		--epochs 2 \
+		--batch-size 64 \
+		--binarize-input 1 \
+		--input-bin-threshold 0.5

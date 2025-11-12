@@ -50,3 +50,10 @@ __pycache__/
 # Python bytecode
 __pycache__/
 *.pyc
+reports/
+*.parquet
+*.meta.json
+__pycache__/
+.venv/
+backend/.venv/
+*.joblib

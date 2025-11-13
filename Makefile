@@ -14,144 +14,136 @@ PATHSEP    := :
 endif
 
 PYTHON ?= $(shell \
-	if [ -x "$(PY_BACKEND)" ]; then echo "$(PY_BACKEND)"; \
-	elif [ -x "$(PY_ROOT)" ]; then echo "$(PY_ROOT)"; \
-	else which python; fi \
-)
-
-# Rutas y variables comunes (RELATIVAS para que funcionen bien en Windows)
-SRC_DIR   := backend/src
-EXAMPLES  := examples
-OUT_DIR   := data/prep_auto
-
-# -------- Variables del pipeline --------
-BETO_MODE       ?= simple
-MIN_TOKENS      ?= 3
-MAX_TOKENS      ?= 256
-VAL_SIZE        ?= 0.2
-TEST_SIZE       ?= 0.1
-RANDOM_STATE    ?= 42
-BATCH_SIZE      ?= 32
-THRESHOLD       ?= 0.45
-MARGIN          ?= 0.05
-NEU_MIN         ?= 0.10
-TEXT_COLS       ?= auto
+...
 
 # ===========================
-# Entorno backend
+# Variables principales
 # ===========================
 
-.PHONY: which-python
-which-python:
-	@echo "PY_BACKEND = $(PY_BACKEND)"
-	@echo "PY_ROOT    = $(PY_ROOT)"
-	@echo "PYTHON     = $(PYTHON)"
-
-# Crear venv SOLO para backend (backend/.venv)
-.PHONY: venv-backend-create
-venv-backend-create:
-	@cd backend && python -m venv .venv
-	@echo ">> Activa el entorno con:"
-	@echo "   Windows: backend\\.venv\\Scripts\\activate"
-	@echo "   Unix:    source backend/.venv/bin/activate"
-
-# Instalar requirements del backend en backend/.venv
-.PHONY: install-reqs
-install-reqs:
-	@test -x "$(PY_BACKEND)" || (echo "ERROR: no se encontró backend/.venv. Ejecuta 'make venv-backend-create' antes." && exit 1)
-	@cd backend && .venv/Scripts/pip.exe install --upgrade pip || .venv/bin/pip install --upgrade pip
-	@cd backend && .venv/Scripts/pip.exe install -r requirements.txt || .venv/bin/pip install -r requirements.txt
+SRC_DIR       := backend/src
+BACKEND_DIR   := backend
+FRONTEND_DIR  := frontend
+REPORTS_DIR   := reports
+DATA_DIR      := data
+EXAMPLES_DIR  := examples
 
 # ===========================
-# Preproceso - Paso 1
+# Targets por defecto
 # ===========================
 
-# NOTA: usamos los scripts reales:
-#   - neurocampus.app.jobs.cmd_preprocesar_beto        (un solo dataset)
-#   - neurocampus.app.jobs.cmd_preprocesar_batch       (varios datasets)
-#   - neurocampus.app.jobs.validate_prep_dir           (validación)
+.PHONY: help
+help:
+	@echo "Targets disponibles:"
+	@echo "  venv             - Crear entorno virtual en raíz y backend"
+	@echo "  install          - Instalar dependencias (backend + frontend)"
+	@echo "  be-install       - Instalar dependencias backend"
+	@echo "  fe-install       - Instalar dependencias frontend"
+	@echo "  be-dev           - Correr backend en modo desarrollo"
+	@echo "  fe-dev           - Correr frontend en modo desarrollo"
+	@echo "  lint             - Ejecutar linters en backend"
+	@echo "  test             - Ejecutar tests backend"
+	@echo "  prep-one         - Preprocesar un solo CSV"
+	@echo "  prep-all         - Preprocesar todos los CSV de examples/"
+	@echo "  test-manual-bm   - Probar RBM/BM manual"
+	@echo "  train-rbm-manual - Entrenar RBM manual en dataset_ejemplo"
+	@echo "  train-dbm-manual - Entrenar DBM manual en dataset_ejemplo"
+	@echo "  be-test          - Tests backend"
+	@echo "  fe-test          - Tests frontend"
+	@echo "  validate-sample  - Validar dataset de ejemplo vía API"
 
+# ===========================
+# Entorno virtual
+# ===========================
+
+.PHONY: venv
+venv:
+	@echo ">> Creando entorno virtual en raíz..."
+	python -m venv .venv
+	@echo ">> Creando entorno virtual en backend..."
+	cd $(BACKEND_DIR) && python -m venv .venv
+
+# ===========================
+# Instalación de dependencias
+# ===========================
+
+.PHONY: install
+install: be-install fe-install
+
+.PHONY: be-install
+be-install:
+	@echo ">> Instalando dependencias backend con PY_BACKEND=$(PY_BACKEND)"
+	cd $(BACKEND_DIR) && $(PY_BACKEND) -m pip install --upgrade pip
+	cd $(BACKEND_DIR) && $(PY_BACKEND) -m pip install -e .
+
+.PHONY: fe-install
+fe-install:
+	@echo ">> Instalando dependencias frontend"
+	cd $(FRONTEND_DIR) && npm install
+
+# ===========================
+# Backend: desarrollo y tests
+# ===========================
+
+.PHONY: be-dev
+be-dev:
+	@echo ">> Ejecutando backend en modo desarrollo con PY_BACKEND=$(PY_BACKEND)"
+	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PY_BACKEND) -m uvicorn neurocampus.app.main:app --reload --host 0.0.0.0 --port 8000
+
+.PHONY: be-test
+be-test:
+	@echo ">> Ejecutando tests backend con PY_BACKEND=$(PY_BACKEND)"
+	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PY_BACKEND) -m pytest -q
+
+.PHONY: lint
+lint:
+	@echo ">> Ejecutando linters (ruff + mypy) en backend"
+	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PY_BACKEND) -m ruff check .
+	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PY_BACKEND) -m mypy neurocampus
+
+# ===========================
+# Frontend: desarrollo y tests
+# ===========================
+
+.PHONY: fe-dev
+fe-dev:
+	@cd $(FRONTEND_DIR) && npm run dev
+
+.PHONY: fe-test
+fe-test:
+	@cd $(FRONTEND_DIR) && npm run test:run
+
+# ===========================
+# Preprocesamiento de datos
+# ===========================
+
+# Preprocesar un solo CSV usando el pipeline real (cmd_preprocess_one)
 .PHONY: prep-one
 prep-one:
-	@mkdir -p "$(OUT_DIR)"
-	@echo "[prep-one] Usando BETO_MODE=$(BETO_MODE), entrada $(NC_SAMPLE_CSV), salida en $(OUT_DIR)"
-	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV). Ajusta NC_SAMPLE_CSV." && exit 1)
+	@echo "[prep-one] Usando BETO_MODE=simple, ejemplos en examples, salida en data/prep_auto"
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_beto \
-		--in "$(NC_SAMPLE_CSV)" \
-		--out "$(OUT_DIR)/$(NC_DATASET_ID).parquet" \
-		--text-col "$(TEXT_COLS)" \
-		--beto-mode "$(BETO_MODE)" \
-		--batch-size "$(BATCH_SIZE)" \
-		--threshold "$(THRESHOLD)" \
-		--margin "$(MARGIN)" \
-		--neu-min "$(NEU_MIN)"
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocess_one \
+		--mode "simple" \
+		--input-dir "$(EXAMPLES_DIR)" \
+		--output-dir "$(DATA_DIR)/prep_auto"
 
-# Preprocesar todos los datasets encontrados en examples/ y examples/synthetic
+# Preprocesar todos los CSV de examples/ y examples/synthetic/ (si existe)
 .PHONY: prep-all
 prep-all:
-	@mkdir -p "$(OUT_DIR)"
-	@echo "[prep-all] Preprocesando CSV en $(EXAMPLES) y $(EXAMPLES)/synthetic → $(OUT_DIR)"
+	@echo "[prep-all] Buscando CSV en 'examples' y 'examples/synthetic' (si existe)..."
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_batch \
-		--in-dirs "$(EXAMPLES),$(EXAMPLES)/synthetic" \
-		--out-dir "$(OUT_DIR)" \
-		--text-cols "$(TEXT_COLS)" \
-		--beto-mode "$(BETO_MODE)" \
-		--min-tokens "$(MIN_TOKENS)" \
-		--threshold "$(THRESHOLD)" \
-		--margin "$(MARGIN)" \
-		--neu-min "$(NEU_MIN)"
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocess_all \
+		--input-dirs "$(EXAMPLES_DIR)" "$(EXAMPLES_DIR)/synthetic" \
+		--output-dir "$(DATA_DIR)/prep_auto"
 
 # ===========================
-# Preproceso - Limpieza de outputs
+# RBM/BM manual (bloque de pruebas)
 # ===========================
 
-.PHONY: prep-clean
-prep-clean:
-	@echo "[clean] Eliminando $(OUT_DIR) y featurizers..."
-	@rm -rf "$(OUT_DIR)" "data/prep/textfeats" "data/prep_auto/textfeats"
-
-# ===========================
-# Validación de datasets preprocesados
-# ===========================
-
-.PHONY: prep-validate
-prep-validate:
-	@echo "[validate] Validando datasets en $(OUT_DIR)"
-	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.validate_prep_dir \
-		--dir "$(OUT_DIR)"
-
-# ===========================
-# spaCy: instalación y modelo
-# ===========================
-
-.PHONY: spacy-install
-spacy-install:
-	@echo "[spacy] Instalando spaCy y extras..."
-	@$(PYTHON) -m pip install --upgrade pip
-	@$(PYTHON) -m pip install -r backend/spacy-requirements.txt
-
-.PHONY: spacy-model
-spacy-model:
-	@echo "[spacy] Descargando modelo es_core_news_md..."
-	@$(PYTHON) -m spacy download es_core_news_md
-
-# ===========================
-# Batch de preprocesamiento + spaCy
-# ===========================
-
-# Alias práctico: usa el batch real (cmd_preprocesar_batch)
-.PHONY: prep-batch
-prep-batch:
-	@$(MAKE) prep-all
-
-# ===========================
-# Diagnóstico / sandbox para RBM manual
-# ===========================
-
-# Test manual de RBM y BM (script real: test_rbm_bm_manual)
+# Test sencillo para RBM y BM (script real: test_rbm_bm_manual)
 .PHONY: test-manual-bm
 test-manual-bm:
 	@mkdir -p reports
@@ -159,7 +151,6 @@ test-manual-bm:
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
 	$(PYTHON) -m neurocampus.app.jobs.test_rbm_bm_manual
 
-# Entrenamiento manual de RBM (flujo principal)
 # Entrenamiento manual de RBM (flujo principal)
 .PHONY: train-rbm-manual
 train-rbm-manual:
@@ -178,6 +169,22 @@ train-rbm-manual:
 		--input-bin-threshold 0.5 \
 		--cd-k 1
 
+# Entrenamiento manual de DBM (flujo principal)
+.PHONY: train-dbm-manual
+train-dbm-manual:
+	@mkdir -p reports/dbm_manual
+	@echo "[train] DBM manual con PYTHON=$(PYTHON)"
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_train_dbm_manual \
+		--in "data/prep_auto/dataset_ejemplo.parquet" \
+		--out-dir "reports/dbm_manual" \
+		--n-hidden1 64 \
+		--n-hidden2 32 \
+		--lr 0.01 \
+		--cd-k 1 \
+		--epochs 10 \
+		--batch-size 64
+
 # ===========================
 # Bloque Día 7: limpieza, administración, dev FE/BE, diagnóstico
 # ===========================
@@ -194,106 +201,10 @@ NC_KEEP_LAST            ?= 3
 NC_EXCLUDE_GLOBS        ?=
 NC_TRASH_DIR            ?= .trash
 NC_TRASH_RETENTION_DAYS ?= 7
-NC_ADMIN_TOKEN          ?= dev-admin-token
+NC_ADMIN_TOKEN          ?=
 
-# Validación de datasets (helpers)
-NC_DATASET_ID ?= docentes
-NC_SAMPLE_CSV ?= examples/docentes.csv
-
-# CORS / límite de subida
-NC_ALLOWED_ORIGINS ?= http://localhost:5173
-NC_MAX_UPLOAD_MB   ?= 10
-
-# Rutas comunes para backend y frontend
-BACKEND_SRC  ?= backend/src
-BACKEND_APP  ?= neurocampus.app.main:app
-FRONTEND_DIR ?= frontend
-
-# ----------------------------------------------------------------------------- #
-# Ayuda
-# ----------------------------------------------------------------------------- #
-
-.PHONY: help
-help:
-	@echo "Targets disponibles:"
-	@echo "  help                        - Mostrar este mensaje."
-	@echo "  clean-inventory             - Ver inventario local de artefactos (herramienta CLI)."
-	@echo "  clean-artifacts-dry-run     - Simulación de limpieza local (no borra, muestra plan)."
-	@echo "  clean-artifacts             - Limpieza local real (mueve a .trash/)."
-	@echo "  admin-inventory             - Inventario remoto vía endpoint /admin/cleanup/inventory."
-	@echo "  admin-clean                 - Limpieza remota vía endpoint /admin/cleanup (force)."
-	@echo "  be-dev                      - Levantar backend en modo desarrollo (uvicorn)."
-	@echo "  be-test                     - Ejecutar pruebas del backend (pytest)."
-	@echo "  fe-dev                      - Levantar frontend (Vite) en :5173."
-	@echo "  fe-test                     - Ejecutar pruebas del frontend (vitest)."
-	@echo "  validate-sample             - Enviar CSV de ejemplo a /datos/validar."
-	@echo "  prep-one                    - Preprocesar un dataset de ejemplo (NC_SAMPLE_CSV)."
-	@echo "  prep-all                    - Preprocesar todos los CSV de examples/ y synthetic/."
-	@echo "  prep-validate               - Validar estructura de los .parquet en $(OUT_DIR)."
-
-# ----------------------------------------------------------------------------- #
-# Limpieza de artefactos y cache (local, vía herramienta CLI)
-# ----------------------------------------------------------------------------- #
-
-.PHONY: clean-inventory
-clean-inventory:
-	@$(PYTHON) -m tools.cleanup --inventory
-
-.PHONY: clean-artifacts-dry-run
-clean-artifacts-dry-run:
-	@$(PYTHON) -m tools.cleanup --dry-run \
-		--retention-days $${NC_RETENTION_DAYS:-90} \
-		--keep-last $${NC_KEEP_LAST:-3} \
-		--exclude-globs "$${NC_EXCLUDE_GLOBS:-}"
-
-.PHONY: clean-artifacts
-clean-artifacts:
-	@$(PYTHON) -m tools.cleanup --force \
-		--retention-days $${NC_RETENTION_DAYS:-90} \
-		--keep-last $${NC_KEEP_LAST:-3} \
-		--exclude-globs "$${NC_EXCLUDE_GLOBS:-}" \
-		--trash-dir "$${NC_TRASH_DIR:-.trash}" \
-		--trash-retention-days $${NC_TRASH_RETENTION_DAYS:-7}
-
-# ----------------------------------------------------------------------------- #
-# Administración (vía API)
-# ----------------------------------------------------------------------------- #
-
-.PHONY: admin-inventory
-admin-inventory:
-	@curl -s \
-		-H "Authorization: Bearer $(NC_ADMIN_TOKEN)" \
-		"http://$(API_HOST):$(API_PORT)/admin/cleanup/inventory?retention_days=$(NC_RETENTION_DAYS)&keep_last=$(NC_KEEP_LAST)" | jq .
-
-.PHONY: admin-clean
-admin-clean:
-	@curl -s -X POST \
-		-H "Authorization: Bearer $(NC_ADMIN_TOKEN)" \
-		-H "Content-Type: application/json" \
-		-d "{\"retention_days\":$(NC_RETENTION_DAYS),\"keep_last\":$(NC_KEEP_LAST),\"trash_dir\":\"$(NC_TRASH_DIR)\",\"trash_retention_days\":$(NC_TRASH_RETENTION_DAYS)}" \
-		"http://$(API_HOST):$(API_PORT)/admin/cleanup" | jq .
-
-# ----------------------------------------------------------------------------- #
-# Desarrollo backend / frontend
-# ----------------------------------------------------------------------------- #
-
-.PHONY: be-dev
-be-dev:
-	@echo ">> Iniciando uvicorn (desarrollo). Límite de subida via middleware: $${NC_MAX_UPLOAD_MB:-10} MB"
-	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
-		--host $${API_HOST} --port $${API_PORT} --reload
-
-.PHONY: be-test
-be-test:
-	@PYTHONPATH=$(BACKEND_SRC) $(PYTHON) -m pytest -q
-
-.PHONY: fe-dev
-fe-dev:
-	@cd $(FRONTEND_DIR) && npm run dev
-
-.PHONY: fe-test
-fe-test:
-	@cd $(FRONTEND_DIR) && npm run test:run
+NC_SAMPLE_CSV ?= ./examples/review_sample.csv
+NC_DATASET_ID ?= demo-reviews
 
 # ----------------------------------------------------------------------------- #
 # Diagnóstico: validación de datasets vía API

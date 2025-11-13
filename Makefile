@@ -19,13 +19,12 @@ PYTHON ?= $(shell \
 	else which python; fi \
 )
 
-# Rutas y variables comunes
-REPO_ROOT := $(shell pwd)
-SRC_DIR   := $(REPO_ROOT)/backend/src
+# Rutas y variables comunes (RELATIVAS para que funcionen bien en Windows)
+SRC_DIR   := backend/src
 EXAMPLES  := examples
 OUT_DIR   := data/prep_auto
 
-# -------- Variables del pipeline (sin espacios basura) --------
+# -------- Variables del pipeline --------
 BETO_MODE       ?= simple
 MIN_TOKENS      ?= 3
 MAX_TOKENS      ?= 256
@@ -64,37 +63,45 @@ install-reqs:
 	@cd backend && .venv/Scripts/pip.exe install -r requirements.txt || .venv/bin/pip install -r requirements.txt
 
 # ===========================
-# Preproceso - Paso 1: texto crudo -> parquet básico
+# Preproceso - Paso 1
 # ===========================
 
-# Preprocesar un solo archivo de ejemplo.
-# Usa:
-#   BETO_MODE   (simple|full)
-#   EXAMPLES    directorio con los CSV de ejemplo (por defecto: examples)
-#   OUT_DIR     directorio de salida (por defecto: data/prep_auto)
-#
-# Ejemplo:
-#   make prep-one BETO_MODE=simple
+# NOTA: usamos los scripts reales:
+#   - neurocampus.app.jobs.cmd_preprocesar_beto        (un solo dataset)
+#   - neurocampus.app.jobs.cmd_preprocesar_batch       (varios datasets)
+#   - neurocampus.app.jobs.validate_prep_dir           (validación)
+
 .PHONY: prep-one
 prep-one:
 	@mkdir -p "$(OUT_DIR)"
-	@echo "[prep-one] Usando BETO_MODE=$(BETO_MODE), ejemplos en $(EXAMPLES), salida en $(OUT_DIR)"
+	@echo "[prep-one] Usando BETO_MODE=$(BETO_MODE), entrada $(NC_SAMPLE_CSV), salida en $(OUT_DIR)"
+	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV). Ajusta NC_SAMPLE_CSV." && exit 1)
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocess_one \
-		--examples "$(EXAMPLES)" \
-		--out-dir "$(OUT_DIR)" \
-		--beto-mode "$(BETO_MODE)"
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_beto \
+		--in "$(NC_SAMPLE_CSV)" \
+		--out "$(OUT_DIR)/$(NC_DATASET_ID).parquet" \
+		--text-col "$(TEXT_COLS)" \
+		--beto-mode "$(BETO_MODE)" \
+		--batch-size "$(BATCH_SIZE)" \
+		--threshold "$(THRESHOLD)" \
+		--margin "$(MARGIN)" \
+		--neu-min "$(NEU_MIN)"
 
-# Preprocesar todos los datasets de ejemplo encontrados en EXAMPLES.
+# Preprocesar todos los datasets encontrados en examples/ y examples/synthetic
 .PHONY: prep-all
 prep-all:
 	@mkdir -p "$(OUT_DIR)"
-	@echo "[prep-all] Buscando CSV en 'examples' y 'examples/synthetic' (si existe)..."
+	@echo "[prep-all] Preprocesando CSV en $(EXAMPLES) y $(EXAMPLES)/synthetic → $(OUT_DIR)"
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocess_all \
-		--examples "$(EXAMPLES)" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_batch \
+		--in-dirs "$(EXAMPLES),$(EXAMPLES)/synthetic" \
 		--out-dir "$(OUT_DIR)" \
-		--beto-mode "$(BETO_MODE)"
+		--text-cols "$(TEXT_COLS)" \
+		--beto-mode "$(BETO_MODE)" \
+		--min-tokens "$(MIN_TOKENS)" \
+		--threshold "$(THRESHOLD)" \
+		--margin "$(MARGIN)" \
+		--neu-min "$(NEU_MIN)"
 
 # ===========================
 # Preproceso - Limpieza de outputs
@@ -106,23 +113,15 @@ prep-clean:
 	@rm -rf "$(OUT_DIR)" "data/prep/textfeats" "data/prep_auto/textfeats"
 
 # ===========================
-# Validación / split de datasets preprocesados
+# Validación de datasets preprocesados
 # ===========================
 
-# Valida un archivo parquet dentro de OUT_DIR:
-#   - Chequea columnas mínimas
-#   - Aplica splits train/val/test
-# Variables:
-#   - VAL_SIZE, TEST_SIZE, RANDOM_STATE
 .PHONY: prep-validate
 prep-validate:
 	@echo "[validate] Validando datasets en $(OUT_DIR)"
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_validate_preprocessed \
-		--out-dir "$(OUT_DIR)" \
-		--val-size "$(VAL_SIZE)" \
-		--test-size "$(TEST_SIZE)" \
-		--random-state "$(RANDOM_STATE)"
+	$(PYTHON) -m neurocampus.app.jobs.validate_prep_dir \
+		--dir "$(OUT_DIR)"
 
 # ===========================
 # spaCy: instalación y modelo
@@ -143,36 +142,22 @@ spacy-model:
 # Batch de preprocesamiento + spaCy
 # ===========================
 
-# Preprocesa texto y genera featurizers (spaCy + features numéricas)
+# Alias práctico: usa el batch real (cmd_preprocesar_batch)
 .PHONY: prep-batch
 prep-batch:
-	@mkdir -p "$(OUT_DIR)"
-	@echo "[batch] Ejecutando pipeline de preprocesamiento + spaCy"
-	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_prepro_with_spacy \
-		--examples "$(EXAMPLES)" \
-		--out-dir "$(OUT_DIR)" \
-		--beto-mode "$(BETO_MODE)" \
-		--min-tokens "$(MIN_TOKENS)" \
-		--max-tokens "$(MAX_TOKENS)"
+	@$(MAKE) prep-all
 
 # ===========================
 # Diagnóstico / sandbox para RBM manual
 # ===========================
 
-# Test manual de RBM con un subconjunto pequeño para debugging.
+# Test manual de RBM y BM (script real: test_rbm_bm_manual)
 .PHONY: test-manual-bm
 test-manual-bm:
 	@mkdir -p reports
-	@echo "[test] Probando RBM manual con un subset pequeño..."
+	@echo "[test] Probando RBM/BM manual con dataset data/prep_auto/dataset_ejemplo.parquet..."
 	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_test_rbm_manual \
-		--in "data/prep_auto/dataset_ejemplo.parquet" \
-		--out-dir "reports" \
-		--sample-size 512 \
-		--threshold "$(THRESHOLD)" \
-		--margin "$(MARGIN)" \
-		--neu-min "$(NEU_MIN)"
+	$(PYTHON) -m neurocampus.app.jobs.test_rbm_bm_manual
 
 # Entrenamiento manual de RBM (flujo principal)
 .PHONY: train-rbm-manual
@@ -195,7 +180,6 @@ train-rbm-manual:
 # Bloque Día 7: limpieza, administración, dev FE/BE, diagnóstico
 # ===========================
 
-# Variables de entorno para API y limpieza (se pueden sobreescribir o venir de .env)
 ENV ?= .env
 -include $(ENV)
 export
@@ -203,7 +187,6 @@ export
 API_HOST ?= 127.0.0.1
 API_PORT ?= 8000
 
-# Administración de limpieza (valores por defecto)
 NC_RETENTION_DAYS       ?= 90
 NC_KEEP_LAST            ?= 3
 NC_EXCLUDE_GLOBS        ?=
@@ -215,7 +198,7 @@ NC_ADMIN_TOKEN          ?= dev-admin-token
 NC_DATASET_ID ?= docentes
 NC_SAMPLE_CSV ?= examples/docentes.csv
 
-# CORS / límite de subida (coherente con main.py)
+# CORS / límite de subida
 NC_ALLOWED_ORIGINS ?= http://localhost:5173
 NC_MAX_UPLOAD_MB   ?= 10
 
@@ -242,6 +225,9 @@ help:
 	@echo "  fe-dev                      - Levantar frontend (Vite) en :5173."
 	@echo "  fe-test                     - Ejecutar pruebas del frontend (vitest)."
 	@echo "  validate-sample             - Enviar CSV de ejemplo a /datos/validar."
+	@echo "  prep-one                    - Preprocesar un dataset de ejemplo (NC_SAMPLE_CSV)."
+	@echo "  prep-all                    - Preprocesar todos los CSV de examples/ y synthetic/."
+	@echo "  prep-validate               - Validar estructura de los .parquet en $(OUT_DIR)."
 
 # ----------------------------------------------------------------------------- #
 # Limpieza de artefactos y cache (local, vía herramienta CLI)
@@ -258,7 +244,6 @@ clean-artifacts-dry-run:
 		--keep-last $${NC_KEEP_LAST:-3} \
 		--exclude-globs "$${NC_EXCLUDE_GLOBS:-}"
 
-# Borrado real (mueve a .trash/). Requiere --force.
 .PHONY: clean-artifacts
 clean-artifacts:
 	@$(PYTHON) -m tools.cleanup --force \
@@ -278,7 +263,6 @@ admin-inventory:
 		-H "Authorization: Bearer $(NC_ADMIN_TOKEN)" \
 		"http://$(API_HOST):$(API_PORT)/admin/cleanup/inventory?retention_days=$(NC_RETENTION_DAYS)&keep_last=$(NC_KEEP_LAST)" | jq .
 
-# Ejecuta limpieza remota en el backend (force=true).
 .PHONY: admin-clean
 admin-clean:
 	@curl -s -X POST \
@@ -297,12 +281,10 @@ be-dev:
 	@uvicorn $(BACKEND_APP) --app-dir $(BACKEND_SRC) \
 		--host $${API_HOST} --port $${API_PORT} --reload
 
-# Ejecutar pruebas del backend. Forzamos PYTHONPATH para resolver imports de backend/src.
 .PHONY: be-test
 be-test:
 	@PYTHONPATH=$(BACKEND_SRC) $(PYTHON) -m pytest -q
 
-# Frontend: desarrollo y pruebas
 .PHONY: fe-dev
 fe-dev:
 	@cd $(FRONTEND_DIR) && npm run dev
@@ -312,13 +294,9 @@ fe-test:
 	@cd $(FRONTEND_DIR) && npm run test:run
 
 # ----------------------------------------------------------------------------- #
-# Diagnóstico: validación de datasets
+# Diagnóstico: validación de datasets vía API
 # ----------------------------------------------------------------------------- #
 
-# Helper: envía un CSV de ejemplo al endpoint /datos/validar del backend.
-# Variables:
-#   - NC_SAMPLE_CSV (ruta del archivo CSV a enviar)
-#   - NC_DATASET_ID (identificador lógico del dataset, por defecto "docentes")
 .PHONY: validate-sample
 validate-sample:
 	@test -f "$(NC_SAMPLE_CSV)" || (echo "ERROR: No existe $(NC_SAMPLE_CSV). Ajusta NC_SAMPLE_CSV o agrega un ejemplo." && exit 1)

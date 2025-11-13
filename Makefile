@@ -160,6 +160,7 @@ test-manual-bm:
 	$(PYTHON) -m neurocampus.app.jobs.test_rbm_bm_manual
 
 # Entrenamiento manual de RBM (flujo principal)
+# Entrenamiento manual de RBM (flujo principal)
 .PHONY: train-rbm-manual
 train-rbm-manual:
 	@mkdir -p reports
@@ -170,11 +171,12 @@ train-rbm-manual:
 		--out-dir "reports" \
 		--model "rbm" \
 		--n-hidden 64 \
-		--lr 0.05 \
-		--epochs 2 \
+		--lr 0.01 \
+		--epochs 10 \
 		--batch-size 64 \
-		--binarize-input 1 \
-		--input-bin-threshold 0.5
+		--binarize-input \
+		--input-bin-threshold 0.5 \
+		--cd-k 1
 
 # ===========================
 # Bloque Día 7: limpieza, administración, dev FE/BE, diagnóstico

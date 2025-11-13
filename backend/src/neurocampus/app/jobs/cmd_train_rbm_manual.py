@@ -9,28 +9,39 @@ Entrena RBM/BM manual (NumPy) con el mismo estilo del pipeline:
 - Guarda reporte JSON en --out-dir
 """
 
-import argparse, json
+import argparse
+import json
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
-
-from sklearn.metrics import mean_squared_error, accuracy_score, f1_score
-from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, f1_score, mean_squared_error
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from neurocampus.models.strategies.rbm_manual_strategy import RBMManualStrategy
 from neurocampus.models.strategies.bm_manual_strategy import BMManualStrategy
 
+
 def _load_table(path: str) -> pd.DataFrame:
-    return pd.read_parquet(path) if path.lower().endswith(".parquet") else pd.read_csv(path)
+    if path.lower().endswith(".parquet"):
+        return pd.read_parquet(path)
+    return pd.read_csv(path)
+
 
 def _numeric_matrix(df: pd.DataFrame) -> np.ndarray:
-    X = df.select_dtypes(include=[np.number]).fillna(0.0).to_numpy(dtype=np.float32)
+    X = (
+        df.select_dtypes(include=[np.number])
+        .fillna(0.0)
+        .to_numpy(dtype=np.float32)
+    )
     return X
+
 
 def _reconstruction_mse(model_strategy, X: np.ndarray) -> float:
     X_rec = model_strategy.reconstruct(X)
     return float(mean_squared_error(X, X_rec))
+
 
 def _logreg_proxy_on_hidden(model_strategy, df: pd.DataFrame, X: np.ndarray) -> dict:
     """
@@ -77,21 +88,99 @@ def _logreg_proxy_on_hidden(model_strategy, df: pd.DataFrame, X: np.ndarray) -> 
         "f1_macro": float(f1_score(y[te], yhat, average="macro")),
     }
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="src", required=True, help="Ruta a parquet/csv preprocesado")
-    ap.add_argument("--out-dir", required=True, help="Directorio donde guardar reporte JSON")
-    ap.add_argument("--model", choices=["rbm","bm"], default="rbm")
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Entrenamiento manual de RBM/BM (NumPy) con métricas de reconstrucción y proxy de clasificación."
+    )
+    ap.add_argument(
+        "--in",
+        dest="src",
+        required=True,
+        help="Ruta a parquet/csv preprocesado",
+    )
+    ap.add_argument(
+        "--out-dir",
+        required=True,
+        help="Directorio donde guardar reporte JSON",
+    )
+    ap.add_argument(
+        "--model",
+        choices=["rbm", "bm"],
+        default="rbm",
+        help="Tipo de modelo a entrenar (rbm o bm)",
+    )
+
     # Hiperparámetros comunes
-    ap.add_argument("--n-hidden", type=int, default=64)
-    ap.add_argument("--lr", type=float, default=0.05)
-    ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--l2", type=float, default=0.0)
-    ap.add_argument("--clip-grad", type=float, default=1.0)
-    ap.add_argument("--binarize-input", action="store_true")
-    ap.add_argument("--input-bin-threshold", type=float, default=0.5)
+    ap.add_argument(
+        "--n-hidden",
+        type=int,
+        default=64,
+        help="Número de neuronas ocultas",
+    )
+    ap.add_argument(
+        "--lr",
+        type=float,
+        default=0.05,
+        help="Learning rate",
+    )
+    ap.add_argument(
+        "--epochs",
+        type=int,
+        default=20,
+        help="Número de epochs",
+    )
+    ap.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Tamaño de mini-batch",
+    )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Seed para reproducibilidad",
+    )
+    ap.add_argument(
+        "--l2",
+        type=float,
+        default=0.0,
+        help="Factor de regularización L2",
+    )
+    ap.add_argument(
+        "--clip-grad",
+        type=float,
+        default=1.0,
+        help="Umbral de clipping de gradiente",
+    )
+
+    # Binarización de entradas
+    ap.add_argument(
+        "--binarize-input",
+        action="store_true",
+        help="Si se pasa, binariza las entradas usando input_bin_threshold",
+    )
+    ap.add_argument(
+        "--input-bin-threshold",
+        type=float,
+        default=0.5,
+        help="Umbral para binarizar las entradas (si --binarize-input está activo)",
+    )
+
+    # Parámetros específicos de entrenamiento tipo CD-k / PCD
+    ap.add_argument(
+        "--cd-k",
+        type=int,
+        default=1,
+        help="Número de pasos de Gibbs para CD-k (k >= 1)",
+    )
+    ap.add_argument(
+        "--pcd",
+        action="store_true",
+        help="Usar Persistent Contrastive Divergence (PCD) en lugar de CD-k clásico",
+    )
+
     args = ap.parse_args()
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
@@ -112,6 +201,8 @@ def main():
             input_bin_threshold=args.input_bin_threshold,
             epochs=args.epochs,
             batch_size=args.batch_size,
+            cd_k=args.cd_k,
+            use_pcd=args.pcd,
         )
     else:
         strat = BMManualStrategy(
@@ -124,6 +215,8 @@ def main():
             input_bin_threshold=args.input_bin_threshold,
             epochs=args.epochs,
             batch_size=args.batch_size,
+            cd_k=args.cd_k,
+            use_pcd=args.pcd,
         )
 
     # Entrenar
@@ -140,7 +233,7 @@ def main():
         "metrics": {
             "reconstruction_mse": mse,
             "proxy_logreg_on_hidden": proxy,
-        }
+        },
     }
 
     out_path = Path(args.out_dir) / f"report_{args.model}.json"
@@ -148,6 +241,7 @@ def main():
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
     main()

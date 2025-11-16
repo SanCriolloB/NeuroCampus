@@ -196,3 +196,14 @@ class RestrictedBoltzmannMachine:
         H = self._p_h_given_v(X)
         V = self._p_v_given_h(H)
         return V.astype(np.float32)
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """
+        Alias de conveniencia para compatibilidad con otros componentes.
+        Equivalente a transform_hidden(X), devolviendo p(h|v).
+        """
+        return self.transform_hidden(X)
+
+# Alias de compatibilidad para código que espera 'RBMManual'
+RBMManual = RestrictedBoltzmannMachine
+

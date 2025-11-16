@@ -4,17 +4,16 @@
 
 # -------- Detección robusta de PYTHON --------
 ifeq ($(OS),Windows_NT)
-PY_BACKEND := ./backend/.venv/Scripts/python.exe
+PY_BACKEND := ../.venv/Scripts/python.exe
 PY_ROOT    := ./.venv/Scripts/python.exe
 PATHSEP    := ;
 else
-PY_BACKEND := ./backend/.venv/bin/python
-PY_ROOT    := ./.venv/bin/python
+PY_BACKEND := ../.venv/bin/python
+PY_ROOT    := .venv/bin/python
 PATHSEP    := :
 endif
 
-PYTHON ?= $(shell \
-...
+PYTHON ?= $(PY_ROOT)
 
 # ===========================
 # Variables principales
@@ -26,6 +25,20 @@ FRONTEND_DIR  := frontend
 REPORTS_DIR   := reports
 DATA_DIR      := data
 EXAMPLES_DIR  := examples
+OUT_DIR      ?= $(DATA_DIR)/prep_auto
+
+# -------- Variables del pipeline (sin espacios basura) --------
+BETO_MODE       ?= simple
+MIN_TOKENS      ?= 1
+KEEP_EMPTY_TEXT ?= 1
+TEXT_FEATS      ?= tfidf_lsa
+TFIDF_MIN_DF    ?= 1
+TFIDF_MAX_DF    ?= 1
+BETO_MODEL      ?= finiteautomata/beto-sentiment-analysis
+BATCH_SIZE      ?= 32
+THRESHOLD       ?= 0.45
+MARGIN          ?= 0.05
+NEU_MIN         ?= 0.10
 
 # ===========================
 # Targets por defecto
@@ -34,14 +47,13 @@ EXAMPLES_DIR  := examples
 .PHONY: help
 help:
 	@echo "Targets disponibles:"
-	@echo "  venv             - Crear entorno virtual en raíz y backend"
+	@echo "  venv             - Crear entorno virtual en raiz y backend"
 	@echo "  install          - Instalar dependencias (backend + frontend)"
 	@echo "  be-install       - Instalar dependencias backend"
 	@echo "  fe-install       - Instalar dependencias frontend"
 	@echo "  be-dev           - Correr backend en modo desarrollo"
 	@echo "  fe-dev           - Correr frontend en modo desarrollo"
 	@echo "  lint             - Ejecutar linters en backend"
-	@echo "  test             - Ejecutar tests backend"
 	@echo "  prep-one         - Preprocesar un solo CSV"
 	@echo "  prep-all         - Preprocesar todos los CSV de examples/"
 	@echo "  test-manual-bm   - Probar RBM/BM manual"
@@ -49,7 +61,7 @@ help:
 	@echo "  train-dbm-manual - Entrenar DBM manual en dataset_ejemplo"
 	@echo "  be-test          - Tests backend"
 	@echo "  fe-test          - Tests frontend"
-	@echo "  validate-sample  - Validar dataset de ejemplo vía API"
+	@echo "  validate-sample  - Validar dataset de ejemplo via API"
 
 # ===========================
 # Entorno virtual
@@ -72,8 +84,12 @@ install: be-install fe-install
 .PHONY: be-install
 be-install:
 	@echo ">> Instalando dependencias backend con PY_BACKEND=$(PY_BACKEND)"
-	cd $(BACKEND_DIR) && $(PY_BACKEND) -m pip install --upgrade pip
-	cd $(BACKEND_DIR) && $(PY_BACKEND) -m pip install -e .
+	cd backend && $(PY_BACKEND) -m pip install --upgrade pip
+	cd backend && $(PY_BACKEND) -m pip install -r requirements.txt
+	cd backend && $(PY_BACKEND) -m pip install -r requirements-dev.txt
+	$(PYTHON) -m pip install --upgrade pip
+	$(PYTHON) -m pip install "spacy>=3.7,<4" "spacy-lookups-data>=1.0.5" emoji>=2.12.1
+	$(PYTHON) -m spacy download es_core_news_sm
 
 .PHONY: fe-install
 fe-install:
@@ -84,17 +100,17 @@ fe-install:
 # Backend: desarrollo y tests
 # ===========================
 
-.PHONY: be-dev
+..PHONY: be-dev
 be-dev:
 	@echo ">> Ejecutando backend en modo desarrollo con PY_BACKEND=$(PY_BACKEND)"
-	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	cd backend && PYTHONPATH="src$(PATHSEP)$$PYTHONPATH" \
 	$(PY_BACKEND) -m uvicorn neurocampus.app.main:app --reload --host 0.0.0.0 --port 8000
 
 .PHONY: be-test
 be-test:
-	@echo ">> Ejecutando tests backend con PY_BACKEND=$(PY_BACKEND)"
-	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PY_BACKEND) -m pytest -q
+	@echo ">> Ejecutando tests backend con PYTHON=$(PYTHON)"
+	@PYTHONPATH="backend/src$(PATHSEP).$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m pytest -q backend
 
 .PHONY: lint
 lint:
@@ -123,21 +139,50 @@ fe-test:
 # Preprocesar un solo CSV usando el pipeline real (cmd_preprocess_one)
 .PHONY: prep-one
 prep-one:
-	@echo "[prep-one] Usando BETO_MODE=simple, ejemplos en examples, salida en data/prep_auto"
-	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocess_one \
-		--mode "simple" \
-		--input-dir "$(EXAMPLES_DIR)" \
-		--output-dir "$(DATA_DIR)/prep_auto"
+	@if [ -z "$(IN)" ] || [ -z "$(OUT)" ]; then \
+		echo "Uso: make prep-one IN=<csv> OUT=<parquet>"; exit 1; \
+	fi
+	@mkdir -p $(dir $(OUT))
+	@echo "[one] Procesando: $(IN) → $(OUT)"
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP).$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_beto \
+		--in "$(IN)" \
+		--out "$(OUT)" \
+		--beto-mode "$(strip $(BETO_MODE))" \
+		--min-tokens "$(strip $(MIN_TOKENS))" \
+		--text-feats "$(strip $(TEXT_FEATS))" \
+		--beto-model "$(strip $(BETO_MODEL))" \
+		--batch-size "$(strip $(BATCH_SIZE))" \
+		--threshold "$(strip $(THRESHOLD))" \
+		--margin "$(strip $(MARGIN))" \
+		--neu-min "$(strip $(NEU_MIN))" \
+		--tfidf-min-df "$(strip $(TFIDF_MIN_DF))" \
+		--tfidf-max-df "$(strip $(TFIDF_MAX_DF))" \
+		$(if $(filter $(KEEP_EMPTY_TEXT),1),--keep-empty-text,) \
+		$(if $(filter-out auto,$(TEXT_COLS)),--text-col "$(strip $(TEXT_COLS))",)
 
 # Preprocesar todos los CSV de examples/ y examples/synthetic/ (si existe)
 .PHONY: prep-all
 prep-all:
-	@echo "[prep-all] Buscando CSV en 'examples' y 'examples/synthetic' (si existe)..."
-	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocess_all \
-		--input-dirs "$(EXAMPLES_DIR)" "$(EXAMPLES_DIR)/synthetic" \
-		--output-dir "$(DATA_DIR)/prep_auto"
+	@mkdir -p "$(OUT_DIR)"
+	@echo "[batch] Buscando CSV en '$(EXAMPLES_DIR)' y '$(EXAMPLES_DIR)/synthetic' (si existe)..."
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP).$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.app.jobs.cmd_preprocesar_batch \
+		--in-dirs "$(EXAMPLES_DIR),$(EXAMPLES_DIR)/synthetic" \
+		--out-dir "$(OUT_DIR)" \
+		--text-cols "$(strip $(TEXT_COLS))" \
+		--beto-mode "$(strip $(BETO_MODE))" \
+		--min-tokens "$(strip $(MIN_TOKENS))" \
+		--keep-empty-text \
+		--tfidf-min-df "$(strip $(TFIDF_MIN_DF))" \
+		--tfidf-max-df "$(strip $(TFIDF_MAX_DF))" \
+		--text-feats "$(strip $(TEXT_FEATS))" \
+		--beto-model "$(strip $(BETO_MODEL))" \
+		--batch-size "$(strip $(BATCH_SIZE))" \
+		--threshold "$(strip $(THRESHOLD))" \
+		--margin "$(strip $(MARGIN))" \
+		--neu-min "$(strip $(NEU_MIN))"
+		
 
 # ===========================
 # RBM/BM manual (bloque de pruebas)
@@ -186,7 +231,7 @@ train-dbm-manual:
 		--batch-size 64
 
 # ===========================
-# Bloque Día 7: limpieza, administración, dev FE/BE, diagnóstico
+# Bloque: Limpieza, administración, dev FE/BE, diagnóstico
 # ===========================
 
 ENV ?= .env

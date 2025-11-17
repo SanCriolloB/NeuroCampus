@@ -1,0 +1,48 @@
+# configs/rbm_search.yaml
+
+dataset:
+  path: data/labeled/evaluaciones_2025_teacher.parquet
+  # Puedes fijar explícitamente el target si lo deseas:
+  target: "sentiment_label_teacher"
+
+evaluation:
+  n_splits: 3
+  shuffle: true
+  stratify: true
+  random_seed: 42
+  metrics: ["accuracy", "f1", "precision", "recall", "mcc"]
+
+search:
+  # Métrica principal para elegir champion
+  metric: "f1"
+  # "max" para maximizar, "min" para minimizar
+  mode: "max"
+
+# Hiperparámetros globales que se propagan a todos los modelos
+globals:
+  batch_size: 128
+  epochs: 10
+  cd_k: 1
+
+models:
+  # RBM General (PyTorch)
+  - name: "rbm_general"
+    param_grid:
+      hidden_units: [64, 128]
+      lr: [0.01, 0.05]
+
+  # RBM Restringida
+  - name: "rbm_restringido"
+    param_grid:
+      hidden_units: [64, 128]
+      lr: [0.01, 0.05]
+
+  # RBM "pura" (implementación manual Día 11)
+  - name: "rbm_pura"
+    param_grid:
+      hidden_units: [64, 128]
+      lr: [0.01, 0.05]
+
+artifacts:
+  root: artifacts/runs
+  champion_dir: artifacts/champions

@@ -59,6 +59,7 @@ help:
 	@echo "  test-manual-bm   - Probar RBM/BM manual"
 	@echo "  train-rbm-manual - Entrenar RBM manual en dataset_ejemplo"
 	@echo "  train-dbm-manual - Entrenar DBM manual en dataset_ejemplo"
+	@echo "  rbm-audit        - Auditoría k-fold de modelos RBM/BM"
 	@echo "  be-test          - Tests backend"
 	@echo "  fe-test          - Tests frontend"
 	@echo "  validate-sample  - Validar dataset de ejemplo via API"
@@ -229,6 +230,16 @@ train-dbm-manual:
 		--cd-k 1 \
 		--epochs 10 \
 		--batch-size 64
+
+# Auditoría k-fold de RBM/BM
+.PHONY: rbm-audit
+rbm-audit:
+	@mkdir -p artifacts/runs
+	@echo "[audit] Ejecutando auditoría k-fold RBM/BM con configs/rbm_audit.yaml"
+	@PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	$(PYTHON) -m neurocampus.models.audit_kfold \
+		--config "configs/rbm_audit.yaml"
+
 
 # ===========================
 # Bloque: Limpieza, administración, dev FE/BE, diagnóstico

@@ -3,17 +3,30 @@
 # ===========================
 
 # -------- Detección robusta de PYTHON --------
+WIN_ROOT    := ./.venv/Scripts/python.exe
+WIN_BACKEND := ../.venv/Scripts/python.exe
+NIX_ROOT    := .venv/bin/python
+NIX_BACKEND := ../.venv/bin/python
+
 ifeq ($(OS),Windows_NT)
-PY_BACKEND := ../.venv/Scripts/python.exe
-PY_ROOT    := ./.venv/Scripts/python.exe
-PATHSEP    := ;
+  # Si existe la venv estilo Windows (Scripts/), úsala
+  ifneq ("$(wildcard $(WIN_ROOT))","")
+    PY_ROOT    := $(WIN_ROOT)
+    PY_BACKEND := $(WIN_BACKEND)
+  else
+    # Fallback: estilo POSIX (bin/) aunque estemos en Windows (MSYS, etc.)
+    PY_ROOT    := $(NIX_ROOT)
+    PY_BACKEND := $(NIX_BACKEND)
+  endif
+  PATHSEP := ;
 else
-PY_BACKEND := ../.venv/bin/python
-PY_ROOT    := .venv/bin/python
-PATHSEP    := :
+  PY_ROOT    := $(NIX_ROOT)
+  PY_BACKEND := $(NIX_BACKEND)
+  PATHSEP    := :
 endif
 
 PYTHON ?= $(PY_ROOT)
+
 
 # ===========================
 # Variables principales
@@ -59,8 +72,8 @@ help:
 	@echo "  test-manual-bm   - Probar RBM/BM manual"
 	@echo "  train-rbm-manual - Entrenar RBM manual en dataset_ejemplo"
 	@echo "  train-dbm-manual - Entrenar DBM manual en dataset_ejemplo"
-	@echo "  rbm-audit        - Auditoría k-fold de modelos RBM/BM"
-	@echo "  rbm-search       - Búsqueda de hiperparámetros RBM/BM"
+	@echo "  rbm-audit        - Auditoria k-fold de modelos RBM/BM"
+	@echo "  rbm-search       - Busqueda de hiperparametros RBM/BM"
 	@echo "  be-test          - Tests backend"
 	@echo "  fe-test          - Tests frontend"
 	@echo "  validate-sample  - Validar dataset de ejemplo via API"
@@ -71,11 +84,12 @@ help:
 
 .PHONY: venv
 venv:
-	@echo ">> Creando entorno virtual en raíz..."
-	python -m venv .venv
-	@echo ">> Creando entorno virtual en backend..."
-	cd $(BACKEND_DIR) && python -m venv .venv
-
+	@echo ">> Para crear el entorno virtual en la raiz y activar, copiar y pegar lo siguiente en la terminal:"
+	@echo "# Para crear el entorno virtual en raiz:"
+	@echo "   python -m venv .venv"
+	@echo "# Para activar en Git Bash (raiz):"
+	@echo "   source .venv/Scripts/activate"
+	
 # ===========================
 # Instalación de dependencias
 # ===========================

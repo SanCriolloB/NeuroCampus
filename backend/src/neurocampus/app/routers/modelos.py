@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel
 from ..schemas.modelos import EntrenarRequest, EntrenarResponse, EstadoResponse
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
 from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...observability.bus_eventos import BUS  # capturamos eventos training.*
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import uuid
 
 # NUEVO: utilidades para selección de datos
@@ -28,6 +29,9 @@ except Exception:
             "El módulo de metodologías no está disponible. "
             "Asegúrate de crear neurocampus/models/strategies/metodologia.py"
         )
+
+# NUEVO: utilidades para inspeccionar runs y campeón desde artifacts/
+from ...utils.runs_io import list_runs, load_run_details, load_current_champion
 
 router = APIRouter()
 
@@ -304,3 +308,73 @@ def estado(job_id: str):
     st = _ESTADOS.get(job_id) or {"job_id": job_id, "status": "unknown", "metrics": {}}
     # OJO: si tu EstadoResponse no define "history", FastAPI filtrará ese campo.
     return EstadoResponse(**st)
+
+
+# ---------------------------------------------------------------------------
+# NUEVO: Endpoints para listar runs y consultar campeón (Flujo 3)
+# ---------------------------------------------------------------------------
+
+class RunSummary(BaseModel):
+    run_id: str
+    model_name: str
+    created_at: str
+    metrics: Dict[str, Any]
+
+
+class RunDetails(BaseModel):
+    run_id: str
+    metrics: Dict[str, Any]
+
+
+class ChampionInfo(BaseModel):
+    model_name: str
+    metrics: Dict[str, Any]
+    path: str
+
+
+@router.get(
+    "/runs",
+    response_model=list[RunSummary],
+    summary="Lista runs de entrenamiento/auditoría de modelos",
+)
+def get_runs(model_name: Optional[str] = None) -> list[RunSummary]:
+    """
+    Devuelve un resumen de los runs encontrados en artifacts/runs.
+    Puede filtrarse por nombre de modelo (ej: model_name=rbm).
+    """
+    runs = list_runs(model_name=model_name)
+    return [RunSummary(**r) for r in runs]
+
+
+@router.get(
+    "/runs/{run_id}",
+    response_model=RunDetails,
+    summary="Detalles completos de un run (incluye histórico si está en metrics.json)",
+)
+def get_run_details(run_id: str) -> RunDetails:
+    """
+    Devuelve los detalles de un run concreto, leyendo metrics.json
+    desde artifacts/runs/<run_id>/.
+    """
+    details = load_run_details(run_id)
+    if not details:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} no encontrado")
+    return RunDetails(**details)
+
+
+@router.get(
+    "/champion",
+    response_model=ChampionInfo,
+    summary="Devuelve info del modelo campeón actual (para dashboard/predicciones)",
+)
+def get_champion(model_name: Optional[str] = None) -> ChampionInfo:
+    """
+    Devuelve el modelo campeón (champion) actual.
+
+    - Si se indica model_name, busca bajo artifacts/champions/<model_name>/metrics.json.
+    - Si no, devuelve el primer campeón encontrado bajo artifacts/champions/*.
+    """
+    champ = load_current_champion(model_name=model_name)
+    if not champ:
+        raise HTTPException(status_code=404, detail="No hay campeón registrado")
+    return ChampionInfo(**champ)

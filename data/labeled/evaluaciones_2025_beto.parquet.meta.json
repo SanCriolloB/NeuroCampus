@@ -1,11 +1,16 @@
 {
   "model": "finiteautomata/beto-sentiment-analysis",
-  "created_at": "2025-10-13T23:11:37Z",
+  "created_at": "2025-11-19T01:13:48Z",
   "n_rows": 938,
-  "accepted_count": 242,
-  "threshold": 0.9,
-  "margin": 0.25,
-  "neu_min": 0.9,
+  "accepted_count": 918,
+  "threshold": 0.75,
+  "margin": 0.15,
+  "neu_min": 0.75,
   "text_col": "comentario",
-  "text_coverage": 0.2942430703624733
+  "text_coverage": 0.26865671641791045,
+  "keep_empty_text": true,
+  "text_feats": "none",
+  "tfidf_min_df": null,
+  "tfidf_max_df": null,
+  "text_feats_out_dir": null
 }

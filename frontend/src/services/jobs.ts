@@ -37,6 +37,10 @@ export interface BetoPreprocJob {
   finished_at?: string | null;
   meta?: BetoPreprocMeta | null;
   error?: string | null;
+
+  // NUEVO (opcionales, no es necesario usarlos en la UI aún)
+  raw_src?: string | null;
+  needs_cargar_dataset?: boolean;
 }
 
 /**

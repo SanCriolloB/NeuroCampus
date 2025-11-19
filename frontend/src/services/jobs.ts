@@ -72,3 +72,28 @@ export function listBetoJobs(limit = 20) {
   const query = new URLSearchParams({ limit: String(limit) }).toString();
   return api.get<BetoPreprocJob[]>(`/jobs/preproc/beto?${query}`).then((r) => r.data);
 }
+
+export interface RbmSearchJob {
+  id: string;
+  status: JobStatus;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  config_path: string;
+  last_run_id?: string | null;
+}
+
+export function launchRbmSearch(configPath?: string) {
+  const body = configPath ? { config: configPath } : {};
+  return api.post<RbmSearchJob>("/jobs/training/rbm-search", body).then((r) => r.data);
+}
+
+export function getRbmSearchJob(jobId: string) {
+  return api.get<RbmSearchJob>(`/jobs/training/rbm-search/${jobId}`).then((r) => r.data);
+}
+
+export function listRbmSearchJobs(limit = 20) {
+  const qs = new URLSearchParams({ limit: String(limit) }).toString();
+  return api.get<RbmSearchJob[]>(`/jobs/training/rbm-search?${qs}`).then((r) => r.data);
+}

@@ -29,3 +29,50 @@ export async function estado(jobId: string) {
   const { data } = await api.get(`/modelos/estado/${jobId}`);
   return data as EstadoResp;
 }
+
+// frontend/src/services/modelos.ts
+import api from "./apiClient";
+
+export interface RunSummary {
+  run_id: string;
+  model_name: string;
+  created_at: string;
+  metrics: {
+    accuracy?: number;
+    f1_macro?: number;
+    f1_weighted?: number;
+    loss?: number;
+    [key: string]: number | undefined;
+  };
+}
+
+export interface RunDetails {
+  run_id: string;
+  metrics: any; // aquí puede venir histórico por época, etc.
+}
+
+export interface ChampionInfo {
+  model_name: string;
+  metrics: any;
+  path: string;
+}
+
+export function listRuns(modelName?: string) {
+  const params = new URLSearchParams();
+  if (modelName) params.set("model_name", modelName);
+  const qs = params.toString();
+  const url = qs ? `/modelos/runs?${qs}` : "/modelos/runs";
+  return api.get<RunSummary[]>(url).then((r) => r.data);
+}
+
+export function getRunDetails(runId: string) {
+  return api.get<RunDetails>(`/modelos/runs/${runId}`).then((r) => r.data);
+}
+
+export function getChampion(modelName?: string) {
+  const params = new URLSearchParams();
+  if (modelName) params.set("model_name", modelName);
+  const qs = params.toString();
+  const url = qs ? `/modelos/champion?${qs}` : "/modelos/champion";
+  return api.get<ChampionInfo>(url).then((r) => r.data);
+}

@@ -345,3 +345,132 @@ def list_beto_jobs(limit: int = 20) -> list[BetoPreprocJob]:
     jobs = _list_jobs()
     jobs = jobs[:limit]
     return [BetoPreprocJob(**j) for j in jobs]
+
+
+class RbmSearchJob(BaseModel):
+    id: str
+    status: JobStatus
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+    config_path: str
+    last_run_id: Optional[str] = None  # id del run principal generado
+
+
+RBM_JOBS_DIR = JOBS_ROOT / "rbm_search"
+RBM_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _rbm_job_path(job_id: str) -> Path:
+    return RBM_JOBS_DIR / f"{job_id}.json"
+
+
+def _save_rbm_job(job: dict) -> None:
+    path = _rbm_job_path(job["id"])
+    RBM_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(job, f, ensure_ascii=False, indent=2)
+
+
+def _load_rbm_job(job_id: str) -> dict:
+    path = _rbm_job_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Job training {job_id} no encontrado")
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _run_rbm_search_job(job_id: str) -> None:
+    """
+    Ejecuta búsqueda de hiperparámetros de RBM.
+    Asume que hparam_search guarda sus resultados en artifacts/runs y
+    eventualmente actualiza champions.
+    """
+    job = _load_rbm_job(job_id)
+    job["status"] = "running"
+    job["started_at"] = _now_iso()
+    _save_rbm_job(job)
+
+    config_path = job["config_path"]
+
+    try:
+        cmd = [
+            sys.executable,
+            "-m",
+            "neurocampus.models.hparam_search",
+            "--config",
+            config_path,
+        ]
+        subprocess.run(cmd, check=True)
+
+        # Si hparam_search deja algún indicador de "last_run_id", podrías leerlo aquí.
+        # Por ahora, lo dejamos en None o podríamos inferir el último run creado leyendo artifacts/runs.
+        job["status"] = "done"
+        job["finished_at"] = _now_iso()
+    except Exception as e:
+        job["status"] = "failed"
+        job["finished_at"] = _now_iso()
+        job["error"] = str(e)
+
+    _save_rbm_job(job)
+
+@router.post(
+    "/training/rbm-search",
+    response_model=RbmSearchJob,
+    summary="Lanza un job de búsqueda de hiperparámetros para RBM",
+)
+def launch_rbm_search(background: BackgroundTasks, config: str | None = None) -> RbmSearchJob:
+    """
+    Si no se pasa config, usa configs/rbm_search.yaml por defecto.
+    """
+    base_dir = BASE_DIR  # ya definido arriba
+    config_path = Path(config) if config else (base_dir / "configs" / "rbm_search.yaml")
+    if not config_path.exists():
+        raise HTTPException(status_code=400, detail=f"No existe config en {config_path}")
+
+    job_id = f"rbm-search-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    job_dict = {
+        "id": job_id,
+        "status": "created",
+        "created_at": _now_iso(),
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+        "config_path": str(config_path),
+        "last_run_id": None,
+    }
+    _save_rbm_job(job_dict)
+
+    background.add_task(_run_rbm_search_job, job_id)
+
+    return RbmSearchJob(**job_dict)
+
+
+@router.get(
+    "/training/rbm-search/{job_id}",
+    response_model=RbmSearchJob,
+    summary="Estado de un job de búsqueda de hiperparámetros RBM",
+)
+def get_rbm_search_job(job_id: str) -> RbmSearchJob:
+    job = _load_rbm_job(job_id)
+    return RbmSearchJob(**job)
+
+
+@router.get(
+    "/training/rbm-search",
+    response_model=list[RbmSearchJob],
+    summary="Lista jobs de búsqueda RBM recientes",
+)
+def list_rbm_search_jobs(limit: int = 20) -> list[RbmSearchJob]:
+    if not RBM_JOBS_DIR.exists():
+        return []
+    jobs: list[dict] = []
+    for p in sorted(RBM_JOBS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                jobs.append(json.load(f))
+        except Exception:
+            continue
+    jobs = jobs[:limit]
+    return [RbmSearchJob(**j) for j in jobs]

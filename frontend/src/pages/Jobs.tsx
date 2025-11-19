@@ -56,22 +56,31 @@ export default function Jobs() {
       .catch(() => setRecentJobs([]));
   }, []);
 
-  // --- Polling del job actual mientras esté en running/created ---
+// Polling del job actual mientras esté en ejecución
   useEffect(() => {
     if (!currentJob) return;
     if (currentJob.status === "done" || currentJob.status === "failed") return;
 
-    const interval = setInterval(() => {
-      getBetoJob(currentJob.id)
-        .then((job) => setCurrentJob(job))
-        .catch(() => {
-          // si no se puede leer, paramos el polling
-          clearInterval(interval);
-        });
+    const interval = setInterval(async () => {
+      try {
+        // 1) Actualizamos el job actual
+        const job = await getBetoJob(currentJob.id);
+        setCurrentJob(job);
+
+        // 2) Si el job terminó, refrescamos también la lista de jobs recientes
+        if (job.status === "done" || job.status === "failed") {
+          const jobs = await listBetoJobs();
+          setRecentJobs(jobs);
+        }
+      } catch (err) {
+        // ⚠️ Importante: NO paramos el polling por un error puntual
+        // Sólo lo dejamos registrado en consola por si hace falta depurar.
+        console.error("Error al refrescar estado del job BETO:", err);
+      }
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [currentJob]);
+  }, [currentJob?.id, currentJob?.status]);
 
   const handleLaunch = async (e: React.FormEvent) => {
     e.preventDefault();

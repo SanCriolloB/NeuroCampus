@@ -145,6 +145,7 @@ export default function UploadDropzone({
             type="file"
             accept={accept}
             multiple={false}
+            aria-label="archivo"
             className="hidden"
             style={{ display: "none" }}  // ← fuerza que no se vea aunque falle Tailwind
             onChange={onInputChange}

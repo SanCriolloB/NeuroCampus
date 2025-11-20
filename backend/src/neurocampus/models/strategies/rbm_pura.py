@@ -19,19 +19,44 @@ class _MinMax:
     max_: Optional[np.ndarray] = None
 
     def fit(self, X: np.ndarray):
-        self.min_ = np.nanmin(X, axis=0).astype(np.float32)
-        self.max_ = np.nanmax(X, axis=0).astype(np.float32)
+        # Asegurar tipo y tratar inf/-inf
+        X = np.asarray(X, dtype=np.float32, order="C")
+        X_clean = np.where(np.isfinite(X), X, np.nan)
+
+        # Columnas completamente NaN
+        all_nan = np.isnan(X_clean).all(axis=0)
+        X_stats = X_clean.copy()
+        if all_nan.any():
+            # columnas sin datos → las ponemos a 0 temporalmente
+            X_stats[:, all_nan] = 0.0
+
+        self.min_ = np.nanmin(X_stats, axis=0).astype(np.float32)
+        self.max_ = np.nanmax(X_stats, axis=0).astype(np.float32)
+
+        # Columnas sin info real → rango [0,1]
+        if all_nan.any():
+            self.min_[all_nan] = 0.0
+            self.max_[all_nan] = 1.0
+
         # evitar división por cero
-        self.max_ = np.where((self.max_ - self.min_) < 1e-9, self.min_ + 1.0, self.max_)
+        self.max_ = np.where((self.max_ - self.min_) < 1e-9,
+                             self.min_ + 1.0,
+                             self.max_)
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        if self.min_ is None:
+        if self.min_ is None or self.max_ is None:
             raise RuntimeError("Scaler no entrenado.")
-        X = X.astype(np.float32, copy=False)
-        X = np.where(np.isnan(X), self.min_[None, :], X)
+
+        X = np.asarray(X, dtype=np.float32, order="C")
+        # Tratar NaN/inf usando la min_ como fallback
+        X = np.where(np.isfinite(X), X, self.min_[None, :])
+
         X = (X - self.min_) / (self.max_ - self.min_)
-        return np.clip(X, 0.0, 1.0)
+        X = np.clip(X, 0.0, 1.0)
+        # Airbag extra
+        X = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
+        return X
 
 # --------------------------
 # Núcleo RBM bipartita (W, b_v, b_h)
@@ -51,13 +76,19 @@ class _RBMCore(nn.Module):
 
     def sample_h(self, v: Tensor) -> Tuple[Tensor, Tensor]:
         p_h = self._sigmoid(v @ self.W + self.b_h)
+        # Airbag: limpiar NaN/inf y forzar [0,1]
+        p_h = torch.nan_to_num(p_h, nan=0.5, posinf=1.0, neginf=0.0)
+        p_h = torch.clamp(p_h, 0.0, 1.0)
         h = torch.bernoulli(p_h)
         return p_h, h
 
     def sample_v(self, h: Tensor) -> Tuple[Tensor, Tensor]:
         p_v = self._sigmoid(h @ self.W.t() + self.b_v)
+        p_v = torch.nan_to_num(p_v, nan=0.5, posinf=1.0, neginf=0.0)
+        p_v = torch.clamp(p_v, 0.0, 1.0)
         v = torch.bernoulli(p_v)
         return p_v, v
+
 
     @torch.no_grad()
     def cd_step(self, v0: Tensor) -> Dict[str, float]:

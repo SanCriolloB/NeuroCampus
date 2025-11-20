@@ -98,12 +98,22 @@ def _pick_target_column(df: pd.DataFrame, explicit: Optional[str]) -> str:
     )
 
 def _to_numpy(df: pd.DataFrame, target_col: str) -> Tuple[np.ndarray, np.ndarray, Optional[Dict[str, int]]]:
-    X = (
+    # 1) Seleccionar solo columnas numéricas (como antes)
+    feat_df = (
         df.drop(columns=[target_col])
         .select_dtypes(include=[np.number])
         .astype(np.float32)
-        .values
     )
+
+    # 2) Eliminar columnas completamente vacías / no finitas (todo NaN, inf, -inf)
+    if feat_df.shape[1] > 0:
+        values = feat_df.values
+        # columna válida si tiene al menos un valor finito
+        mask_valid = np.isfinite(values).any(axis=0)
+        feat_df = feat_df.loc[:, mask_valid]
+
+    X = feat_df.values
+
     y_raw = df[target_col].values
     if pd.api.types.is_numeric_dtype(df[target_col].dtype):
         y = df[target_col].astype(int).values
@@ -113,6 +123,7 @@ def _to_numpy(df: pd.DataFrame, target_col: str) -> Tuple[np.ndarray, np.ndarray
         y = le.fit_transform(y_raw)
         mapping = {str(cls): int(i) for i, cls in enumerate(le.classes_)}
     return X, y, mapping
+
 
 def _coerce_pred_labels(yhat: np.ndarray, mapping: Optional[Dict[str, int]], y_true: np.ndarray) -> Tuple[np.ndarray, Optional[Dict[str, int]]]:
     if np.issubdtype(getattr(yhat, "dtype", None), np.number):

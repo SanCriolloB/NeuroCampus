@@ -1,9 +1,9 @@
 # configs/rbm_search.yaml
 
 dataset:
-  path: data/labeled/evaluaciones_2025_teacher.parquet
+  path: data/labeled/evaluaciones_2025_beto.parquet
   # Puedes fijar explícitamente el target si lo deseas:
-  target: "sentiment_label_teacher"
+  # target: "sentiment_label_teacher"
 
 evaluation:
   n_splits: 3

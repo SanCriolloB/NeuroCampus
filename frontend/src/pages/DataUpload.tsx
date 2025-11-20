@@ -246,6 +246,7 @@ export default function DataUpload() {
           <label className="block">
             <span className="text-sm">Periodo (dataset_id)</span>
             <input
+              aria-label="dataset id"
               className="w-full border rounded-xl p-2"
               value={periodo}
               onChange={(e) => setPeriodo(e.target.value)}

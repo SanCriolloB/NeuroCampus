@@ -1,0 +1,10 @@
+{
+  "id": "rbm-search-1763594113-359025",
+  "status": "failed",
+  "created_at": "2025-11-19T23:15:13Z",
+  "started_at": "2025-11-19T23:15:13Z",
+  "finished_at": "2025-11-19T23:15:18Z",
+  "error": "Command '['C:\\\\Users\\\\santi\\\\OneDrive\\\\Documents\\\\Universidad\\\\Pasantia\\\\NeuroCampus\\\\.venv\\\\Scripts\\\\python.exe', '-m', 'neurocampus.models.hparam_search', '--config', 'C:\\\\Users\\\\santi\\\\OneDrive\\\\Documents\\\\Universidad\\\\Pasantia\\\\NeuroCampus\\\\configs\\\\rbm_search.yaml']' returned non-zero exit status 1.",
+  "config_path": "C:\\Users\\santi\\OneDrive\\Documents\\Universidad\\Pasantia\\NeuroCampus\\configs\\rbm_search.yaml",
+  "last_run_id": null
+}

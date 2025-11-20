@@ -1,6 +1,6 @@
 {
   "model": "finiteautomata/beto-sentiment-analysis",
-  "created_at": "2025-11-19T01:13:48Z",
+  "created_at": "2025-11-19T23:06:30Z",
   "n_rows": 938,
   "accepted_count": 918,
   "threshold": 0.75,

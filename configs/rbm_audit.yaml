@@ -2,7 +2,7 @@
 
 dataset:
   # Elegimos un dataset con etiqueta "teacher" para evitar dudas de target:
-  path: data/labeled/evaluaciones_2025_teacher.parquet
+  path: data/labeled/evaluaciones_2025_beto.parquet
   # Si deseas fijar el target explícitamente, descomenta:
   # target: "sentiment_label_teacher"
 

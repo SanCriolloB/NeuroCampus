@@ -76,22 +76,71 @@ class _Vectorizer:
     mode: str = "minmax"
 
     def fit(self, X: np.ndarray, mode: str = "minmax") -> "_Vectorizer":
+        """
+        Ajuste robusto: soporta columnas completamente NaN/inf
+        sin propagar NaNs al RBM.
+        """
+        if X is None or X.size == 0:
+            raise ValueError("Vectorizer.fit recibió una matriz vacía.")
+
         self.mode = mode
-        self.mean_ = np.nanmean(X, axis=0)
+
+        # Aseguramos float32 y tratamos inf/-inf como NaN
+        X = X.astype(np.float32, copy=False)
+        X_clean = np.where(np.isfinite(X), X, np.nan)
+
+        # Detectar columnas completamente NaN
+        all_nan = np.isnan(X_clean).all(axis=0)
+
+        # Para calcular estadísticos, reemplazamos esas columnas por 0 temporalmente
+        X_stats = X_clean.copy()
+        if all_nan.any():
+            X_stats[:, all_nan] = 0.0
+
+        # Estadísticos básicos sin disparar NaNs
+        self.mean_ = np.nanmean(X_stats, axis=0)
+
         if self.mode == "scale_0_5":
-            self.min_ = np.zeros(X.shape[1], dtype=np.float32)
-            self.max_ = np.ones(X.shape[1], dtype=np.float32) * 5.0
+            self.min_ = np.zeros(X_stats.shape[1], dtype=np.float32)
+            self.max_ = np.ones(X_stats.shape[1], dtype=np.float32) * 5.0
         else:
-            self.min_ = np.nanmin(X, axis=0)
-            self.max_ = np.nanmax(X, axis=0)
-        # evitar divisiones por ~0
-        self.max_ = np.where((self.max_ - self.min_) < 1e-9, self.min_ + 1.0, self.max_)
+            self.min_ = np.nanmin(X_stats, axis=0)
+            self.max_ = np.nanmax(X_stats, axis=0)
+
+        # Columnas sin información real → rango neutro [0,1], media 0
+        if all_nan.any():
+            self.mean_[all_nan] = 0.0
+            self.min_[all_nan] = 0.0
+            self.max_[all_nan] = 1.0
+
+        # Evitar divisiones por casi 0
+        denom = self.max_ - self.min_
+        denom_too_small = denom < 1e-9
+        if np.any(denom_too_small):
+            self.max_[denom_too_small] = self.min_[denom_too_small] + 1.0
+
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        Xc = np.where(np.isnan(X), self.mean_, X)
-        Xs = (Xc - self.min_) / (self.max_ - self.min_)
+        """
+        Normaliza a [0,1] y elimina cualquier NaN/inf residual.
+        """
+        if self.mean_ is None or self.min_ is None or self.max_ is None:
+            raise RuntimeError("Vectorizer no está ajustado (llama a fit primero).")
+
+        X = X.astype(np.float32, copy=False)
+
+        # Reemplazar NaN/inf por la media de la columna
+        X_clean = np.where(np.isfinite(X), X, self.mean_)
+
+        Xs = (X_clean - self.min_) / (self.max_ - self.min_)
+
+        # Forzar a [0,1]
         Xs = np.clip(Xs, 0.0, 1.0)
+
+        # Por seguridad, eliminar cualquier residuo no finito
+        Xs = np.nan_to_num(Xs, nan=0.0, posinf=1.0, neginf=0.0)
+
         return Xs.astype(np.float32, copy=False)
 
     def to_dict(self) -> Dict:
@@ -112,6 +161,7 @@ class _Vectorizer:
         obj.min_  = np.array(d["min"],  dtype=np.float32) if d.get("min")  is not None else None
         obj.max_  = np.array(d["max"],  dtype=np.float32) if d.get("max")  is not None else None
         return obj
+
 
 
 # ============================

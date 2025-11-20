@@ -102,48 +102,66 @@ class _Vectorizer:
 
     def fit(self, X: np.ndarray, mode: str = "minmax") -> "_Vectorizer":
         self.mode = mode
+
+        # Aseguramos float32
+        X = X.astype(np.float32, copy=False)
+
+        # Estadísticos básicos permitiendo NaNs
         self.mean_ = np.nanmean(X, axis=0).astype(np.float32)
+
         if self.mode == "scale_0_5":
             self.min_ = np.zeros(X.shape[1], dtype=np.float32)
             self.max_ = np.ones(X.shape[1], dtype=np.float32) * 5.0
         else:
             self.min_ = np.nanmin(X, axis=0).astype(np.float32)
             self.max_ = np.nanmax(X, axis=0).astype(np.float32)
-        self.max_ = np.where((self.max_ - self.min_) < 1e-9, self.min_ + 1.0, self.max_)
+
+        # Columnas problemáticas: mean/min/max no finitos (todo NaN, inf, -inf)
+        bad = (
+            ~np.isfinite(self.mean_) |
+            ~np.isfinite(self.min_) |
+            ~np.isfinite(self.max_)
+        )
+        if np.any(bad):
+            # Las tratamos como features sin información: siempre 0
+            self.mean_[bad] = 0.0
+            self.min_[bad] = 0.0
+            self.max_[bad] = 1.0
+
+        # Evitar rango casi 0 para no dividir por 0
+        self.max_ = np.where(
+            (self.max_ - self.min_) < 1e-9,
+            self.min_ + 1.0,
+            self.max_
+        )
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        if self.mean_ is None:
+        if self.mean_ is None or self.min_ is None or self.max_ is None:
             raise RuntimeError("Vectorizer no entrenado")
         if X.shape[1] != len(self.mean_):
             raise ValueError(f"Dimensión {X.shape[1]} != {len(self.mean_)} usada en fit()")
+
         X = X.astype(np.float32, copy=False)
-        X = np.where(np.isnan(X), self.mean_[None, :], X)
+
+        # Reemplazar inf/-inf por NaN para tratarlos igual
+        X = np.where(np.isfinite(X), X, np.nan)
+
+        # Imputar NaNs con la media de la columna
+        Xc = np.where(np.isnan(X), self.mean_[None, :], X)
+
+        # Escalado
         if self.mode == "scale_0_5":
-            X = X / 5.0
+            Xs = Xc / 5.0
         else:
-            X = (X - self.min_[None, :]) / (self.max_[None, :] - self.min_[None, :])
-        return np.clip(X, 0.0, 1.0)
+            Xs = (Xc - self.min_[None, :]) / (self.max_[None, :] - self.min_[None, :])
 
-    def fit_transform(self, X: np.ndarray, mode: str = "minmax") -> np.ndarray:
-        return self.fit(X, mode=mode).transform(X)
+        # Asegurar [0,1] y sanear NaNs/inf residuales
+        Xs = np.clip(Xs, 0.0, 1.0)
+        Xs = np.nan_to_num(Xs, nan=0.0, posinf=1.0, neginf=0.0)
 
-    def to_dict(self) -> Dict:
-        return {
-            "mean_": None if self.mean_ is None else self.mean_.tolist(),
-            "min_":  None if self.min_  is None else self.min_.tolist(),
-            "max_":  None if self.max_  is None else self.max_.tolist(),
-            "mode": self.mode,
-        }
+        return Xs.astype(np.float32, copy=False)
 
-    @classmethod
-    def from_dict(cls, d: Dict) -> "_Vectorizer":
-        v = cls()
-        v.mean_ = None if d["mean_"] is None else np.array(d["mean_"], dtype=np.float32)
-        v.min_  = None if d["min_"]  is None else np.array(d["min_"],  dtype=np.float32)
-        v.max_  = None if d["max_"]  is None else np.array(d["max_"],  dtype=np.float32)
-        v.mode  = d.get("mode", "minmax")
-        return v
 
 
 # -------------
@@ -485,14 +503,22 @@ class RBMRestringida:
                     Xs = np.clip((X_np - mn) / (mx - mn), 0, 1).astype(np.float32)
                 self.X = torch.from_numpy(Xs).to(self.device)
             else:
+                # X viene como np.ndarray desde run_kfold_audit
                 X_np = np.asarray(X, dtype=np.float32)
+
+                # limpiar NaN / inf antes de cualquier cosa
+                X_np = np.nan_to_num(X_np, nan=0.0, posinf=1.0, neginf=0.0)
+
                 if self.vec.mean_ is not None and X_np.shape[1] == len(self.vec.mean_):
                     try:
                         Xs = self.vec.transform(X_np)
                     except Exception:
+                        # Fallback robusto: ya no hay NaNs gracias a nan_to_num
                         Xs = np.clip(X_np, 0.0, 1.0)
                 else:
+                    # Primera vez: todavía no hay vectorizador entrenado
                     Xs = np.clip(X_np, 0.0, 1.0)
+
                 self.X = torch.from_numpy(Xs).to(self.device)
 
         if y is not None:

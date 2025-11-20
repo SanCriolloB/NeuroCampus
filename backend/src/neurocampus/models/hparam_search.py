@@ -96,14 +96,25 @@ def main():
     metric_name: str = search_cfg.get("metric", "f1")
     mode: str = search_cfg.get("mode", "max")
 
-    # Directorios de artefactos
+        # Directorios de artefactos
     root = cfg["artifacts"]["root"]
     run_dir = prepare_run_dir(root, prefix="rbm_search")
     save_config_snapshot(run_dir, args.config)
 
-    champion_dir = cfg["artifacts"].get("champion_dir", os.path.join(root, "champions"))
-    os.makedirs(champion_dir, exist_ok=True)
-    champion_path = os.path.join(champion_dir, "rbm_champion.json")
+    # Raíz de campeones (debe coincidir con utils/runs_io.CHAMPIONS_DIR)
+    champions_root = cfg["artifacts"].get("champion_dir", os.path.join(root, "champions"))
+    os.makedirs(champions_root, exist_ok=True)
+
+    # Subcarpeta para la familia RBM (es lo que el FE consulta como model_name=rbm)
+    champion_model_name = "rbm"
+    champion_model_dir = os.path.join(champions_root, champion_model_name)
+    os.makedirs(champion_model_dir, exist_ok=True)
+
+    # Archivo histórico (como estaba antes, opcional)
+    champion_path = os.path.join(champions_root, "rbm_champion.json")
+    # Archivo que /modelos/champion espera:
+    champion_metrics_path = os.path.join(champion_model_dir, "metrics.json")
+
 
     all_runs: List[Dict[str, Any]] = []
     best: Optional[Dict[str, Any]] = None
@@ -174,12 +185,45 @@ def main():
 
     out = write_metrics(run_dir, results)
     print(f"[SEARCH] Resultados de búsqueda escritos en: {out}")
+
     if best is not None:
+        # 1) Guardar el registro completo del champion (como venía)
         with open(champion_path, "w", encoding="utf-8") as f:
             json.dump(best, f, ensure_ascii=False, indent=2)
         print(f"[SEARCH] Modelo champion guardado en: {champion_path}")
+
+        # 2) Construir metrics.json para /modelos/champion
+        metrics_res = best.get("metrics", {}) or {}
+        summary = metrics_res.get("summary", {}) or {}
+
+        champ_metrics = {}
+
+        # Pasar de summary["accuracy"]["mean"] → accuracy, etc.
+        for m_name, info in summary.items():
+            if isinstance(info, dict) and "mean" in info:
+                val = float(info["mean"])
+            else:
+                continue
+
+            if m_name == "f1":
+                # El FE espera f1_macro
+                champ_metrics["f1_macro"] = val
+            champ_metrics[m_name] = val
+
+        # Info adicional útil
+        champ_metrics["model"] = best.get("model")
+        champ_metrics["params"] = best.get("params", {})
+        champ_metrics["score_metric"] = best.get("score_metric")
+        champ_metrics["score"] = best.get("score")
+        if isinstance(metrics_res.get("target"), str):
+            champ_metrics["target"] = metrics_res["target"]
+
+        with open(champion_metrics_path, "w", encoding="utf-8") as f:
+            json.dump(champ_metrics, f, ensure_ascii=False, indent=2)
+        print(f"[SEARCH] Champion metrics guardadas en: {champion_metrics_path}")
     else:
         print("[SEARCH] No se pudo determinar un modelo champion (sin métrica válida).")
+
 
 
 if __name__ == "__main__":

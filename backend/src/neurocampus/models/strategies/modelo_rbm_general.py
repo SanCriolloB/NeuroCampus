@@ -612,13 +612,39 @@ class RBMGeneral:
         X_np = None; y_np = None
         if len(args) >= 1 and isinstance(args[0], (_pd.DataFrame, _np.ndarray)):
             Xarg = args[0]
+
             if isinstance(Xarg, _pd.DataFrame):
-                self.feat_cols_ = list(Xarg.columns)
-                X_np = Xarg.to_numpy(dtype=_np.float32)
+                # ------------------------------------------------------------------
+                # Caso: fit recibe un DataFrame (modo A)
+                #
+                # En algunos usos (tests, scripts antiguos) se pasa un DataFrame
+                # que incluye tanto las columnas de características numéricas
+                # (calif_1..calif_10, etc.) como la etiqueta de salida
+                # `sentiment_label_teacher` (string).
+                #
+                # Para evitar errores del tipo "could not convert string to float",
+                # seleccionamos únicamente las columnas numéricas para alimentar
+                # al núcleo RBM, manteniendo compatibilidad con:
+                #   - Pipelines modernos (que ya pasan X numérico + y aparte).
+                #   - Tests que envían el DF completo con la columna target.
+                # ------------------------------------------------------------------
+                self.X_raw = Xarg  # útil para depuración/documentación
+
+                Xnum = Xarg.select_dtypes(include=[_np.number])
+                if Xnum.shape[1] == 0:
+                    raise ValueError(
+                        "RBMGeneral.fit recibió un DataFrame sin columnas numéricas; "
+                        "verifique que las columnas calif_* existan y sean numéricas."
+                    )
+
+                self.feat_cols_ = list(Xnum.columns)
+                X_np = Xnum.to_numpy(dtype=_np.float32)
             else:
+                # Caso: ya pasan directamente una matriz/array numérica
                 X_np = _np.asarray(Xarg, dtype=_np.float32)
                 if not self.feat_cols_:
                     self.feat_cols_ = [f"f{i}" for i in range(X_np.shape[1])]
+
             if len(args) >= 2 and args[1] is not None:
                 y_np = _np.asarray(args[1], dtype=_np.int64)
         else:

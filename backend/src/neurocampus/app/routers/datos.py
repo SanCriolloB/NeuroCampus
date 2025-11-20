@@ -1,18 +1,44 @@
 # backend/src/neurocampus/app/routers/datos.py
 """
-Router del contexto 'datos'.
+Router del contexto **datos**.
 
-Incluye:
-- GET  /datos/esquema   → expone el esquema de la plantilla (lee JSON si existe o usa fallback).
-- POST /datos/validar   → valida un archivo (csv/xlsx/parquet) con el wrapper unificado y devuelve 'sample'.
-- POST /datos/upload    → ingesta real del archivo (a parquet por defecto) en datasets/{periodo}.parquet,
-                          con control de sobrescritura.
+Responsabilidades principales
+-----------------------------
+- GET  /datos/ping
+    → Ping sencillo para monitoreo del contexto.
 
-Notas:
-- Gating de formato (400) para extensiones no soportadas (.txt, etc.).
-- Respuesta de /validar mantiene compat: añade `dataset_id` y `sample` (primeras filas).
-- /upload escribe en <repo_root>/datasets/. Si ya existe y overwrite=False → 409.
-- Si no hay motor parquet disponible, hace fallback a CSV (mismo nombre con .csv) y lo indica en stored_as.
+- GET  /datos/esquema
+    → Expone el esquema esperado de la plantilla de evaluaciones.
+      Lee `schemas/plantilla_dataset.schema.json` en la raíz del repo si existe;
+      si no, usa un esquema mínimo de fallback.
+
+- POST /datos/validar
+    → Valida un archivo (csv/xlsx/parquet) usando el *wrapper* unificado
+      (`datos_facade.validar_archivo`) y devuelve un reporte estructurado
+      junto con un `sample` de las primeras filas.
+
+- POST /datos/upload
+    → Ingesta real del archivo en `datasets/{periodo}.parquet` (o `.csv`
+      como fallback), con control de sobrescritura y metadatos mínimos.
+
+- GET  /datos/resumen
+    → Devuelve KPIs básicos del dataset (filas, columnas, periodos, docentes,
+      asignaturas, etc.) más un resumen por columna para la pestaña **Datos**
+      del frontend.
+
+- GET  /datos/sentimientos
+    → Devuelve la distribución de sentimientos (global, por docente y por
+      asignatura) leída desde los datasets etiquetados por BETO/teacher.
+      Esta información alimenta las gráficas de la pestaña **Datos**.
+
+Notas de diseño
+---------------
+- Este router es deliberadamente delgado: delega la lógica de lectura y
+  construcción de respuestas a un módulo de dominio (`neurocampus.data.datos_dashboard`)
+  para facilitar su testeo y posterior documentación.
+- La estructura de respuestas está tipada mediante los esquemas Pydantic
+  definidos en `app/schemas/datos.py`, pensando en la futura documentación
+  automática (OpenAPI, Sphinx, etc.).
 """
 
 from __future__ import annotations
@@ -23,34 +49,64 @@ import io
 import os
 
 import pandas as pd
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Query
 
-# Esquemas de respuesta del dominio
+# Esquemas de respuesta del dominio de datos
 from ..schemas.datos import (
     DatosUploadResponse,
     EsquemaCol,
     EsquemaResponse,
+    DatasetResumenResponse,
+    DatasetSentimientosResponse,
 )
 
 # Facade que conecta con el wrapper unificado de validación
 from ...data.facades.datos_facade import validar_archivo
 
+# Helpers de dominio para el "dashboard" de la pestaña Datos
+from ...data.datos_dashboard import (
+    load_processed_dataset,
+    build_dataset_resumen,
+    load_labeled_dataset,
+    build_sentimientos_resumen,
+)
+
 router = APIRouter(tags=["datos"])
 
 
 # ---------------------------------------------------------------------------
-# Utilidades
+# Utilidades internas
 # ---------------------------------------------------------------------------
 
+
 def _repo_root_from_here() -> Path:
-    """Detecta la raíz del repo subiendo niveles desde este archivo."""
+    """
+    Detecta la raíz del repo subiendo niveles desde este archivo.
+
+    El layout esperado es:
+        <repo_root>/
+          backend/
+            src/
+              neurocampus/
+                app/
+                  routers/
+                    datos.py  ← este archivo
+
+    Desde `routers/` hay que subir 5 niveles para llegar a la raíz.
+    """
     here = Path(__file__).resolve()
     # [0]=routers, [1]=app, [2]=neurocampus, [3]=src, [4]=backend, [5]=repo_root
     return here.parents[5]
 
 
 def _to_bool(x) -> bool:
-    """Convierte valores sueltos de formularios a bool."""
+    """
+    Convierte valores provenientes de formularios HTML a bool.
+
+    Acepta:
+    - True/False directos.
+    - Cadenas tipo "true", "1", "yes", "on", "t", "y" (case-insensitive).
+    """
     if isinstance(x, bool):
         return x
     if x is None:
@@ -62,8 +118,10 @@ def _to_bool(x) -> bool:
 # Ping
 # ---------------------------------------------------------------------------
 
+
 @router.get("/ping")
 def ping() -> dict:
+    """Pequeño endpoint de salud para el contexto `datos`."""
     return {"datos": "pong"}
 
 
@@ -71,6 +129,7 @@ def ping() -> dict:
 # Esquema de plantilla
 # ---------------------------------------------------------------------------
 
+# Esquema de respaldo usado cuando no existe el JSON en /schemas.
 _FALLBACK_SCHEMA: Dict[str, Any] = {
     "version": "v0.3.0",
     "columns": [
@@ -91,11 +150,19 @@ _FALLBACK_SCHEMA: Dict[str, Any] = {
     ],
 }
 
+
 @router.get("/esquema", response_model=EsquemaResponse)
 def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
     """
-    Lee schemas/plantilla_dataset.schema.json en la raíz del repo si existe;
-    si no, devuelve un esquema mínimo de fallback.
+    Devuelve el esquema esperado de la plantilla de evaluaciones.
+
+    - Si existe el archivo JSON `schemas/plantilla_dataset.schema.json` en la
+      raíz del repo, se parsea y se traduce a una lista de `EsquemaCol`.
+    - Si hay cualquier error leyendo ese archivo, se utiliza `_FALLBACK_SCHEMA`.
+
+    El parámetro `version` está reservado para futuras extensiones (por ahora
+    se ignora y se devuelve siempre la versión detectada en el JSON o la
+    versión por defecto del fallback).
     """
     import json
 
@@ -138,7 +205,7 @@ def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
 
             return EsquemaResponse(version=str(data.get("version", "v0.3.0")), columns=columns)
         except Exception:
-            # Cualquier error leyendo el JSON → usar fallback
+            # Cualquier error leyendo el JSON → usar fallback sin romper el flujo.
             pass
 
     return EsquemaResponse(
@@ -151,10 +218,19 @@ def get_esquema(version: Optional[str] = None) -> EsquemaResponse:
 # Validación — wrapper unificado + compat con tests (sample) + gating de formato
 # ---------------------------------------------------------------------------
 
+
 def _first_rows_sample(raw: bytes, name: str, forced_fmt: Optional[str]) -> List[Dict[str, Any]]:
     """
-    Lee mínimamente el archivo solo para construir 'sample' (primeras 5 filas),
-    sin interferir con la validación del facade/wrapper.
+    Construye un `sample` con las primeras filas del archivo subido.
+
+    Esta función es independiente del *facade* de validación y solo
+    lee mínimamente el archivo para devolver las primeras 5 filas en
+    formato JSON (lista de dicts). Esto permite:
+    - Mostrar una vista previa en el frontend.
+    - Mantener compatibilidad con tests y herramientas ya escritas.
+
+    Si el formato no se reconoce o hay cualquier error, se devuelve
+    una lista vacía.
     """
     fmt = (forced_fmt or "").strip().lower()
     lname = (name or "").lower()
@@ -172,20 +248,31 @@ def _first_rows_sample(raw: bytes, name: str, forced_fmt: Optional[str]) -> List
         if isinstance(df, pd.DataFrame) and not df.empty:
             return df.head(5).to_dict(orient="records")
     except Exception:
+        # El sample es auxiliar; si falla no bloqueamos la validación.
         pass
     return []
 
 
 @router.post("/validar")
 async def validar_datos(
-    file: UploadFile = File(..., description="CSV/XLSX/Parquet"),
+    file: UploadFile = File(..., description="CSV/XLSX/Parquet con evaluaciones"),
     dataset_id: str = Form(..., description="Identificador lógico del dataset (p. ej. 'docentes')"),
-    fmt: Optional[str] = Form(None, description="Forzar lector: 'csv' | 'xlsx' | 'parquet' (opcional)"),
+    fmt: Optional[str] = Form(
+        None,
+        description="Forzar lector: 'csv' | 'xlsx' | 'parquet' (opcional; normalmente se infiere por extensión)",
+    ),
 ) -> Dict[str, Any]:
     """
     Valida un archivo de datos contra el validador unificado.
-    - Gatea formato para responder 400 si no es csv/xlsx/parquet.
-    - Enriquecer respuesta con `dataset_id` y `sample` (compat tests/herramientas).
+
+    Flujo:
+    - Gatea el formato (extensión/`fmt`) para responder 400 si no es csv/xlsx/parquet.
+    - Construye un `sample` con las primeras filas (para UI y tests).
+    - Invoca el `validar_archivo` del *facade* (wrapper unificado).
+    - Enriquecer la respuesta del wrapper con `dataset_id` y `sample`.
+
+    Importante:
+    - No persiste el archivo en disco; para eso está `/datos/upload`.
     """
     try:
         raw = await file.read()
@@ -199,10 +286,10 @@ async def validar_datos(
         # 1) Gating de formato para retornar 400 en no soportados
         allowed = {"csv", "xlsx", "parquet"}
         ext_ok = (
-            (forced in allowed) or
-            lower.endswith(".csv") or
-            lower.endswith(".xlsx") or
-            lower.endswith(".parquet")
+            (forced in allowed)
+            or lower.endswith(".csv")
+            or lower.endswith(".xlsx")
+            or lower.endswith(".parquet")
         )
         if not ext_ok:
             raise HTTPException(
@@ -233,7 +320,8 @@ async def validar_datos(
     except UnicodeDecodeError:
         raise HTTPException(
             status_code=400,
-            detail="No se pudo leer el CSV con UTF-8. Intente especificar 'fmt' o convertir la codificación.",
+            detail="No se pudo leer el CSV con UTF-8. "
+            "Intente especificar 'fmt' o convertir la codificación.",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al validar: {e}")
@@ -243,18 +331,26 @@ async def validar_datos(
 # Ingesta (upload) real a datasets/{periodo}.parquet con control de overwrite
 # ---------------------------------------------------------------------------
 
+
 @router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=DatosUploadResponse)
 async def upload_dataset(
-    file: UploadFile = File(..., description="CSV/XLSX/Parquet"),
+    file: UploadFile = File(..., description="Archivo CSV/XLSX/Parquet ya validado"),
     periodo: str = Form(..., description="Identificador de periodo (p. ej. '2024-2')"),
-    dataset_id: str = Form(..., description="Compat alias (se ignora; usamos 'periodo')"),
-    overwrite: bool = Form(False, description="Sobrescribir si existe"),
+    dataset_id: str = Form(
+        ..., description="Alias por compatibilidad; actualmente se ignora y se usa 'periodo' como dataset_id"
+    ),
+    overwrite: bool = Form(False, description="Sobrescribir el dataset si ya existe en disco"),
 ) -> DatosUploadResponse:
     """
-    Ingesta real del dataset:
-    - Lee CSV/XLSX/Parquet y lo escribe en <repo_root>/datasets/{periodo}.parquet (por defecto).
-    - Si el fichero ya existe y overwrite=False → 409.
-    - Si falta motor parquet (pyarrow/fastparquet), cae a CSV y lo informa en stored_as.
+    Ingesta real del dataset.
+
+    - Lee CSV/XLSX/Parquet y lo escribe en `<repo_root>/datasets/{periodo}.parquet` (por defecto).
+    - Si el fichero ya existe y `overwrite=False` → 409 Conflict.
+    - Si falta motor parquet (pyarrow/fastparquet), cae a CSV (`{periodo}.csv`)
+      y lo informa en `stored_as`.
+
+    Este endpoint se invoca normalmente después de una validación exitosa
+    con `/datos/validar`.
     """
     if not periodo:
         raise HTTPException(status_code=400, detail="periodo es requerido")
@@ -278,17 +374,17 @@ async def upload_dataset(
         if not _to_bool(overwrite):
             raise HTTPException(
                 status_code=409,
-                detail=f"El dataset '{periodo}' ya existe. Activa 'overwrite' para reemplazarlo."
+                detail=f"El dataset '{periodo}' ya existe. Activa 'overwrite' para reemplazarlo.",
             )
 
-    # Leer el archivo en memoria y a DataFrame (que el facade ya usa)
+    # Leer el archivo en memoria y a DataFrame (usando el mismo adapter que el facade)
     try:
         raw = await file.read()
         if not raw:
             raise HTTPException(status_code=400, detail="Archivo vacío o no leído.")
 
-        # Valernos del mismo lector que usa el facade (si lo prefieres)
         from ...data.adapters.formato_adapter import read_file
+
         df = read_file(io.BytesIO(raw), file.filename or "upload", explicit=None)
 
         if not isinstance(df, pd.DataFrame) or df.empty:
@@ -307,7 +403,7 @@ async def upload_dataset(
         try:
             df.to_parquet(parquet_path, index=False)  # requiere pyarrow o fastparquet
             stored_uri = f"localfs://neurocampus/datasets/{periodo}.parquet"
-        except (ImportError, ValueError, RuntimeError) as _e:
+        except (ImportError, ValueError, RuntimeError):
             # Fallback sin romper el flujo: persistimos como CSV
             df.to_csv(csv_fallback_path, index=False)
             stored_uri = f"localfs://neurocampus/datasets/{periodo}.csv"
@@ -323,3 +419,105 @@ async def upload_dataset(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al subir dataset: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Resumen de dataset para la pestaña "Datos" (/datos/resumen)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/resumen",
+    response_model=DatasetResumenResponse,
+    summary="Devuelve KPIs generales del dataset y un resumen de columnas.",
+)
+def get_dataset_resumen(
+    dataset_id: str = Query(
+        ...,
+        alias="dataset",
+        description="Identificador lógico del dataset (por ejemplo, 'evaluaciones_2025')",
+    ),
+) -> DatasetResumenResponse:
+    """
+    Devuelve un resumen general del dataset para la UI de la pestaña **Datos**.
+
+    Fuente de datos:
+    - Intenta leer el dataset "procesado" usando los helpers de
+      `neurocampus.data.datos_dashboard`, típicamente desde:
+        - `data/processed/{dataset_id}.parquet`
+        - o `datasets/{dataset_id}.parquet`, según configuración.
+
+    Contenido de la respuesta:
+    - `n_rows`, `n_cols`
+    - lista de `periodos` detectados (si existe la columna `periodo`)
+    - número de docentes y asignaturas (si existen columnas compatibles)
+    - lista de `columns` con nombre, tipo lógico y muestra de valores
+    """
+    try:
+        df = load_processed_dataset(dataset_id)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No se encontró dataset procesado para '{dataset_id}'",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al leer dataset '{dataset_id}': {e}",
+        )
+
+    return build_dataset_resumen(df, dataset_id)
+
+
+# ---------------------------------------------------------------------------
+# Resumen de sentimientos BETO (/datos/sentimientos)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/sentimientos",
+    response_model=DatasetSentimientosResponse,
+    summary="Devuelve distribución de sentimientos global y por docente/asignatura.",
+)
+def get_dataset_sentimientos(
+    dataset_id: str = Query(
+        ...,
+        alias="dataset",
+        description="Identificador lógico del dataset (mismo que se usó para BETO)",
+    ),
+) -> DatasetSentimientosResponse:
+    """
+    Devuelve la distribución de sentimientos sobre los comentarios del dataset.
+
+    Fuente de datos:
+    - Lee el dataset etiquetado (`data/labeled/{dataset_id}_beto.parquet`
+      o `{dataset_id}_teacher.parquet`) usando los helpers de dominio.
+
+    Contenido de la respuesta:
+    - `total_comentarios` considerados (filas con comentario no vacío).
+    - `global_counts`: distribución global de sentimientos (neg/neu/pos).
+    - `por_docente`: lista de grupos con conteos por sentimiento.
+    - `por_asignatura`: idem pero agrupado por asignatura.
+
+    Esta respuesta está pensada para alimentar tres tipos de visualizaciones:
+    - Barra/pastel global (Positivo/Neutro/Negativo).
+    - Barras apiladas por docente.
+    - Barras apiladas por asignatura.
+    """
+    try:
+        df = load_labeled_dataset(dataset_id)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No se encontró dataset etiquetado (BETO/teacher) para '{dataset_id}'",
+        )
+    except KeyError as e:
+        # Falta la columna de sentimiento esperada
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al leer dataset etiquetado '{dataset_id}': {e}",
+        )
+
+    return build_sentimientos_resumen(df, dataset_id)

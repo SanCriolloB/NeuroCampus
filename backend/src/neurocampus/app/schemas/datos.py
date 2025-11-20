@@ -20,7 +20,9 @@ NO forman parte del dataset de entrada. Se calcularán en una etapa posterior
 (Día 6) y por tanto NO aparecen como columnas requeridas en el esquema.
 """
 
+from __future__ import annotations
 from typing import List, Optional, Tuple, Literal
+import datetime
 from pydantic import BaseModel, Field
 
 
@@ -142,4 +144,95 @@ class DatosValidarResponse(BaseModel):
     issues: List[ValidIssue] = Field(
         default_factory=list,
         description="Listado de hallazgos (errores/advertencias)"
+    )
+
+# ---------------------------------------------------------------------------
+# Resumen de dataset y análisis de sentimientos (para pestaña "Datos")
+# ---------------------------------------------------------------------------
+
+class ColumnaResumen(BaseModel):
+    """
+    Resumen de una columna del dataset para mostrar en la UI (tabla de columnas).
+    """
+    name: str = Field(..., description="Nombre de la columna")
+    dtype: str = Field(..., description="Tipo lógico detectado (dtype normalizado)")
+    non_nulls: int = Field(..., ge=0, description="Número de filas no nulas")
+    sample_values: List[str] = Field(
+        default_factory=list,
+        description="Pequeña muestra de valores distintos para ayudar al usuario"
+    )
+
+
+class DatasetResumenResponse(BaseModel):
+    """
+    Respuesta de GET /datos/resumen.
+    Provee KPIs generales del dataset y un resumen por columna.
+    """
+    dataset_id: str = Field(..., description="Identificador lógico del dataset (periodo, etc.)")
+    n_rows: int = Field(..., ge=0, description="Cantidad de filas")
+    n_cols: int = Field(..., ge=0, description="Cantidad de columnas")
+
+    periodos: List[str] = Field(
+        default_factory=list,
+        description="Valores únicos de la columna 'periodo', si existe"
+    )
+    fecha_min: Optional[datetime.date] = Field(
+        default=None, description="Fecha mínima detectada (si hay columna de fecha)"
+    )
+    fecha_max: Optional[datetime.date] = Field(
+        default=None, description="Fecha máxima detectada (si hay columna de fecha)"
+    )
+    n_docentes: Optional[int] = Field(
+        default=None, ge=0, description="Cantidad de docentes distintos (si hay columna compatible)"
+    )
+    n_asignaturas: Optional[int] = Field(
+        default=None, ge=0, description="Cantidad de asignaturas distintas (si hay columna compatible)"
+    )
+
+    columns: List[ColumnaResumen] = Field(
+        default_factory=list,
+        description="Resumen de columnas (para tabla de la UI)"
+    )
+
+
+class SentimentBreakdown(BaseModel):
+    """
+    Conteo de comentarios por sentimiento.
+    Las etiquetas son las usadas internamente en BETO/teacher: neg | neu | pos.
+    """
+    label: Literal["neg", "neu", "pos"] = Field(..., description="Etiqueta de sentimiento")
+    count: int = Field(..., ge=0, description="Cantidad de comentarios")
+    proportion: float = Field(..., ge=0.0, le=1.0, description="Proporción sobre el total [0,1]")
+
+
+class SentimentByGroup(BaseModel):
+    """
+    Distribución de sentimientos por grupo (docente o asignatura).
+    """
+    group: str = Field(..., description="Nombre del docente/asignatura")
+    counts: List[SentimentBreakdown] = Field(
+        default_factory=list,
+        description="Conteos de sentimientos en este grupo"
+    )
+
+
+class DatasetSentimientosResponse(BaseModel):
+    """
+    Respuesta de GET /datos/sentimientos.
+    Diseñada para alimentar las gráficas de la pestaña Datos.
+    """
+    dataset_id: str = Field(..., description="Dataset base sobre el que se corrió BETO")
+    total_comentarios: int = Field(..., ge=0, description="Total de filas con comentario no vacío")
+
+    global_counts: List[SentimentBreakdown] = Field(
+        default_factory=list,
+        description="Distribución global de sentimientos (para gráfico principal)"
+    )
+    por_docente: List[SentimentByGroup] = Field(
+        default_factory=list,
+        description="Distribución de sentimientos por docente"
+    )
+    por_asignatura: List[SentimentByGroup] = Field(
+        default_factory=list,
+        description="Distribución de sentimientos por asignatura"
     )

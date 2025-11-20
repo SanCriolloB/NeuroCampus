@@ -20,7 +20,9 @@ NO forman parte del dataset de entrada. Se calcularán en una etapa posterior
 (Día 6) y por tanto NO aparecen como columnas requeridas en el esquema.
 """
 
+from __future__ import annotations
 from typing import List, Optional, Tuple, Literal
+import datetime
 from pydantic import BaseModel, Field
 
 

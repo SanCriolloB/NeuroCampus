@@ -126,7 +126,8 @@ be-dev:
 be-test:
 	@echo ">> Ejecutando tests backend con PYTHON=$(PYTHON)"
 	@PYTHONPATH="backend/src$(PATHSEP).$(PATHSEP)$$PYTHONPATH" \
-	$(PYTHON) -m pytest -q backend
+	$(PYTHON) -m pytest -q tests
+
 
 .PHONY: lint
 lint:

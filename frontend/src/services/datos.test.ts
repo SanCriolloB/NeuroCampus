@@ -4,8 +4,7 @@
 //  - upload: subida de dataset con FormData.
 //  - validar: validación sin guardar.
 //  - resumen: resumen estadístico de un dataset.
-//  - sentimientos: análisis de sentimientos (BETO) asociado a un dataset.
-//
+//  - sentimientos: análisis de sentimientos (BETO).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
@@ -19,27 +18,11 @@ import {
   type DatasetSentimientos,
 } from "./datos";
 
-// Mocks compartidos para apiClient (default export y named export `api`)
-const postMock = vi.fn();
-const getMock = vi.fn();
-
-// Mock del módulo apiClient para interceptar llamadas HTTP que hace datos.ts
-vi.mock("./apiClient", () => ({
-  __esModule: true,
-  default: {
-    post: postMock,
-    get: getMock,
-  },
-  api: {
-    post: postMock,
-    get: getMock,
-  },
-}));
-
 describe("services/datos", () => {
   beforeEach(() => {
-    postMock.mockReset();
-    getMock.mockReset();
+    // Sobrescribimos fetch con un mock limpio en cada test
+    // @ts-ignore
+    global.fetch = vi.fn();
   });
 
   it("upload envía FormData con periodo, dataset_id y overwrite", async () => {
@@ -50,8 +33,14 @@ describe("services/datos", () => {
       message: "ingesta-ok",
     };
 
-    // api.post devolverá { data: mockJson }
-    postMock.mockResolvedValue({ data: mockJson });
+    // @ts-ignore
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: { get: () => "application/json" },
+      json: async () => mockJson,
+    });
 
     const file = new File(["a,b\n1,2"], "sample.csv", { type: "text/csv" });
     const resp = await upload(file, "2020-1", true);
@@ -59,19 +48,18 @@ describe("services/datos", () => {
     expect(resp.ok).toBe(true);
     expect(resp.dataset_id).toBe("2020-1");
 
-    // Verificar llamada a apiClient
-    expect(postMock).toHaveBeenCalledTimes(1);
-    const [path, body] = postMock.mock.calls[0];
+    const call = (global.fetch as any).mock.calls[0];
+    const url = call[0] as string;
+    const init = call[1] as RequestInit;
 
-    expect(path).toBe("/datos/upload");
-    expect(body).toBeInstanceOf(FormData);
+    expect(url).toContain("/datos/upload");
+    expect(init.body).toBeInstanceOf(FormData);
 
-    const fd = body as FormData;
-    // campos que construye datos.upload()
-    expect(fd.get("periodo")).toBe("2020-1");
-    expect(fd.get("dataset_id")).toBe("2020-1");
-    expect(fd.get("overwrite")).toBe("true");
-    expect(fd.get("file")).toBeInstanceOf(File);
+    const body = init.body as FormData;
+    expect(body.get("periodo")).toBe("2020-1");
+    expect(body.get("dataset_id")).toBe("2020-1");
+    expect(body.get("overwrite")).toBe("true");
+    expect(body.get("file")).toBeInstanceOf(File);
   });
 
   it("validar envía FormData con dataset_id y file", async () => {
@@ -81,7 +69,14 @@ describe("services/datos", () => {
       sample: [{ a: 1 }],
     };
 
-    postMock.mockResolvedValue({ data: mockJson });
+    // @ts-ignore
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "application/json" },
+      json: async () => mockJson,
+    });
 
     const file = new File(["a\n1"], "s.csv", { type: "text/csv" });
     const resp = await validar(file, "docentes");
@@ -89,15 +84,16 @@ describe("services/datos", () => {
     expect(resp.ok).toBe(true);
     expect(Array.isArray(resp.sample)).toBe(true);
 
-    expect(postMock).toHaveBeenCalledTimes(1);
-    const [path, body] = postMock.mock.calls[0];
+    const call = (global.fetch as any).mock.calls[0];
+    const url = call[0] as string;
+    const init = call[1] as RequestInit;
 
-    expect(path).toBe("/datos/validar");
-    expect(body).toBeInstanceOf(FormData);
+    expect(url).toContain("/datos/validar");
+    expect(init.body).toBeInstanceOf(FormData);
 
-    const fd = body as FormData;
-    expect(fd.get("dataset_id")).toBe("docentes");
-    expect(fd.get("file")).toBeInstanceOf(File);
+    const body = init.body as FormData;
+    expect(body.get("dataset_id")).toBe("docentes");
+    expect(body.get("file")).toBeInstanceOf(File);
   });
 
   it("resumen llama a /datos/resumen con dataset y devuelve DatasetResumen", async () => {
@@ -120,15 +116,21 @@ describe("services/datos", () => {
       ],
     };
 
-    getMock.mockResolvedValue({ data: mockJson });
+    // @ts-ignore
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "application/json" },
+      json: async () => mockJson,
+    });
 
     const resp = await resumen({ dataset: "2024-2" });
 
-    expect(getMock).toHaveBeenCalledTimes(1);
-    const [path] = getMock.mock.calls[0];
+    const call = (global.fetch as any).mock.calls[0];
+    const url = call[0] as string;
 
-    // datos.ts construye la URL con query param: /datos/resumen?dataset=...
-    expect(path).toBe("/datos/resumen?dataset=2024-2");
+    expect(url).toContain("/datos/resumen?dataset=2024-2");
     expect(resp).toEqual(mockJson);
   });
 
@@ -163,14 +165,21 @@ describe("services/datos", () => {
       ],
     };
 
-    getMock.mockResolvedValue({ data: mockJson });
+    // @ts-ignore
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "application/json" },
+      json: async () => mockJson,
+    });
 
     const resp = await sentimientos({ dataset: "2024-2" });
 
-    expect(getMock).toHaveBeenCalledTimes(1);
-    const [path] = getMock.mock.calls[0];
+    const call = (global.fetch as any).mock.calls[0];
+    const url = call[0] as string;
 
-    expect(path).toBe("/datos/sentimientos?dataset=2024-2");
+    expect(url).toContain("/datos/sentimientos?dataset=2024-2");
     expect(resp).toEqual(mockJson);
   });
 });

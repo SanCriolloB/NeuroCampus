@@ -1,11 +1,11 @@
 // frontend/src/pages/DataUpload.tsx
 //
 // Pestaña «Datos» del frontend NeuroCampus.
-// Integra tres responsabilidades principales:
+// Responsabilidades principales:
 //
 //  - Conectar el formulario con los servicios de backend
 //    (esquema, validación, subida, resumen y sentimientos/BETO).
-//  - Presentar la ingesta y el resumen en un layout de dos columnas.
+//  - Presentar ingesta y resumen en un layout de dos columnas.
 //  - Mostrar el análisis de sentimientos (BETO) en formato gráfico.
 //
 
@@ -199,13 +199,13 @@ export default function DataUpload() {
   }, []);
 
   /* ------------------------------------------------------------------------
-   * Datos derivados para gráficas de sentimientos (Paso 4)
+   * Datos derivados para gráficas de sentimientos (robustos a mocks incompletos)
    * ------------------------------------------------------------------------ */
 
   const globalChartData = useMemo(
     () =>
-      sentimientos
-        ? sentimientos.global_counts.map((it) => ({
+      Array.isArray(sentimientos?.global_counts)
+        ? sentimientos!.global_counts.map((it) => ({
             label:
               it.label === "pos"
                 ? "Positivo"
@@ -219,27 +219,25 @@ export default function DataUpload() {
     [sentimientos]
   );
 
-  const docentesChartData = useMemo(
-    () =>
-      sentimientos
-        ? sentimientos.por_docente
-            .map((g) => {
-              const find = (lab: "neg" | "neu" | "pos") =>
-                g.counts.find((c) => c.label === lab)?.count ?? 0;
-              const neg = find("neg");
-              const neu = find("neu");
-              const pos = find("pos");
-              const total = neg + neu + pos;
-              return { group: g.group, neg, neu, pos, total };
-            })
-            .sort((a, b) => b.total - a.total)
-            .slice(0, 10)
-        : [],
-    [sentimientos]
-  );
+  const docentesChartData = useMemo(() => {
+    if (!Array.isArray(sentimientos?.por_docente)) return [];
+    return sentimientos!.por_docente
+      .map((g) => {
+        const counts = Array.isArray(g.counts) ? g.counts : [];
+        const find = (lab: "neg" | "neu" | "pos") =>
+          counts.find((c) => c.label === lab)?.count ?? 0;
+        const neg = find("neg");
+        const neu = find("neu");
+        const pos = find("pos");
+        const total = neg + neu + pos;
+        return { group: g.group, neg, neu, pos, total };
+      })
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+  }, [sentimientos]);
 
   /* ------------------------------------------------------------------------
-   * Handlers de backend (Paso 2)
+   * Handlers de backend (ingesta, resumen, BETO)
    * ------------------------------------------------------------------------ */
 
   /**
@@ -285,7 +283,6 @@ export default function DataUpload() {
 
   /**
    * Lanza el job de análisis de sentimientos BETO para el dataset indicado.
-   * El estado del job se muestra de forma resumida en el panel de BETO.
    */
   async function runBeto(datasetId: string) {
     const trimmed = datasetId.trim();
@@ -429,7 +426,7 @@ export default function DataUpload() {
         </p>
       </header>
 
-      {/* Paso 3: Layout 2 columnas (izquierda: ingesta/validación, derecha: resumen/BETO) */}
+      {/* Layout 2 columnas (izquierda: ingesta/validación, derecha: resumen/BETO) */}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
         {/* Columna izquierda: formulario de ingesta + validación */}
         <div className="space-y-4">
@@ -583,7 +580,7 @@ export default function DataUpload() {
           ) : null}
         </div>
 
-        {/* Columna derecha: resumen del dataset + análisis de sentimientos (Paso 3 y 4) */}
+        {/* Columna derecha: resumen del dataset + análisis de sentimientos */}
         <div className="space-y-4">
           {/* Resumen del dataset */}
           <section className="space-y-3 rounded-2xl bg-white shadow p-4">
@@ -662,7 +659,7 @@ export default function DataUpload() {
                       </tr>
                     </thead>
                     <tbody>
-                      {resumen.columns.map((col) => (
+                      {(resumen.columns ?? []).map((col) => (
                         <tr key={col.name} className="border-t">
                           <td className="px-3 py-1 font-mono text-[11px]">
                             {col.name}
@@ -688,7 +685,7 @@ export default function DataUpload() {
             )}
           </section>
 
-          {/* Paso 4: Panel de análisis de sentimientos (BETO) */}
+          {/* Panel de análisis de sentimientos (BETO) */}
           <section className="space-y-3 rounded-2xl bg-white shadow p-4">
             <div className="flex items-center justify-between gap-2">
               <div>

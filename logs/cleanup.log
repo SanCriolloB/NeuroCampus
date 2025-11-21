@@ -251,3 +251,8 @@ timestamp,action,path,size,age_days,reason
 2025-11-20T19:59:33Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\runs\rbm_audit_20251120_145923\metrics.json,7223,0.00,age+surplus
 2025-11-20T19:59:33Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\modelZ\run_0\dummy.bin,128,0.00,age+surplus
 2025-11-20T20:06:55Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\modelZ\run_0\dummy.bin,128,0.00,age+surplus
+2025-11-21T03:28:28Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20251120_150656\head.pt,1997,0.31,age+surplus
+2025-11-21T03:28:28Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20251120_150656\job_meta.json,227,0.31,age+surplus
+2025-11-21T03:28:28Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20251120_150656\rbm.pt,2429,0.31,age+surplus
+2025-11-21T03:28:28Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20251120_150656\vectorizer.json,525,0.31,age+surplus
+2025-11-21T03:28:28Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\modelZ\run_0\dummy.bin,128,0.00,age+surplus

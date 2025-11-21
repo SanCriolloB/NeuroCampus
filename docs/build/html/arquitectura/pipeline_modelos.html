@@ -1,0 +1,437 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pipeline de modelos (BM, RBM, DBM) &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Teoría de modelos" href="../teoria/index.html" />
+    <link rel="prev" title="Arquitectura del frontend" href="frontend.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Arquitectura de NeuroCampus</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="vision_general.html">Visión general de la arquitectura</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">Arquitectura del backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="frontend.html">Arquitectura del frontend</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Pipeline de modelos (BM, RBM, DBM)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#vision-general-del-pipeline">Visión general del pipeline</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#ingesta-y-validacion">1. Ingesta y validación</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#preprocesamiento-y-enriquecimiento-incluyendo-beto">2. Preprocesamiento y enriquecimiento (incluyendo BETO)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#beto-analisis-de-sentimientos">BETO (análisis de sentimientos)</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#entrenamiento-de-modelos-bm-rbm-dbm">3. Entrenamiento de modelos BM/RBM/DBM</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#modelos-manuales">3.1 Modelos manuales</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#estrategias-de-entrenamiento">3.2 Estrategias de entrenamiento</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#orquestacion-por-jobs">3.3 Orquestación por jobs</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#evaluacion-y-seleccion-del-modelo-campeon">4. Evaluación y selección del modelo campeón</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#prediccion-y-scoring">5. Predicción y scoring</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#integracion-con-predicciones-y-dashboard">6. Integración con Predicciones y Dashboard</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Arquitectura de NeuroCampus</a></li>
+      <li class="breadcrumb-item active">Pipeline de modelos (BM, RBM, DBM)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/arquitectura/pipeline_modelos.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="pipeline-de-modelos-bm-rbm-dbm">
+<h1>Pipeline de modelos (BM, RBM, DBM)<a class="headerlink" href="#pipeline-de-modelos-bm-rbm-dbm" title="Link to this heading"></a></h1>
+<p>El pipeline de modelos de NeuroCampus describe el camino completo desde que un
+dataset es cargado hasta que se entrena un modelo campeón y se usa para
+predicciones y dashboard.</p>
+<hr class="docutils" />
+<section id="vision-general-del-pipeline">
+<h2>Visión general del pipeline<a class="headerlink" href="#vision-general-del-pipeline" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Ingesta y validación de datos</strong> (pestaña Datos / router <code class="docutils literal notranslate"><span class="pre">datos</span></code>).</p></li>
+<li><p><strong>Preprocesamiento y enriquecimiento</strong> (incluyendo BETO).</p></li>
+<li><p><strong>Entrenamiento de modelos BM/RBM/DBM</strong>.</p></li>
+<li><p><strong>Evaluación y selección del modelo campeón</strong>.</p></li>
+<li><p><strong>Predicción y scoring para docentes/asignaturas</strong>.</p></li>
+<li><p><strong>Exposición de resultados en Predicciones y Dashboard</strong>.</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="ingesta-y-validacion">
+<h2>1. Ingesta y validación<a class="headerlink" href="#ingesta-y-validacion" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Iniciada desde la pestaña <strong>Datos</strong>:</p>
+<ul>
+<li><p>Botones:</p>
+<ul>
+<li><p>“Validar sin guardar”</p></li>
+<li><p>“Cargar y procesar”</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Endpoints:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/datos/validar</span></code>:</p>
+<ul>
+<li><p>Recibe el archivo (CSV/XLSX/Parquet).</p></li>
+<li><p>Usa <code class="docutils literal notranslate"><span class="pre">neurocampus.data.validation_wrapper.run_validations</span></code> para validar
+el contenido.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/datos/upload</span></code>:</p>
+<ul>
+<li><p>Persiste el dataset preprocesado en la estructura de <code class="docutils literal notranslate"><span class="pre">data/</span></code>.</p></li>
+<li><p>Actualiza el resumen del dataset (<code class="docutils literal notranslate"><span class="pre">datos_dashboard.build_dataset_resumen</span></code>).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>El resultado de esta etapa es un dataset consistente y listo para usar en
+modelos.</p>
+</section>
+<hr class="docutils" />
+<section id="preprocesamiento-y-enriquecimiento-incluyendo-beto">
+<h2>2. Preprocesamiento y enriquecimiento (incluyendo BETO)<a class="headerlink" href="#preprocesamiento-y-enriquecimiento-incluyendo-beto" title="Link to this heading"></a></h2>
+<p>Alcance típico:</p>
+<ul class="simple">
+<li><p>Limpieza de columnas.</p></li>
+<li><p>Codificación de variables categóricas.</p></li>
+<li><p>Normalización o escalado (según el modelo).</p></li>
+<li><p>Procesamiento del texto de comentarios mediante BETO.</p></li>
+</ul>
+<section id="beto-analisis-de-sentimientos">
+<h3>BETO (análisis de sentimientos)<a class="headerlink" href="#beto-analisis-de-sentimientos" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Job principal: <code class="docutils literal notranslate"><span class="pre">neurocampus/app/jobs/cmd_preprocesar_beto.py</span></code>.</p></li>
+<li><p>Responsabilidades:</p>
+<ul>
+<li><p>Leer el dataset etiquetado con comentarios.</p></li>
+<li><p>Pasar los textos por el modelo BETO (offline, CPU/GPU) para:</p>
+<ul>
+<li><p>obtener scores de polaridad (pos/neu/neg),</p></li>
+<li><p>generar labels o características adicionales.</p></li>
+</ul>
+</li>
+<li><p>Guardar un dataset enriquecido (ej. <code class="docutils literal notranslate"><span class="pre">*_beto.parquet</span></code>).</p></li>
+</ul>
+</li>
+<li><p>Integración con la API:</p>
+<ul>
+<li><p>Router <code class="docutils literal notranslate"><span class="pre">jobs.py</span></code> expone endpoints para lanzar y consultar el job de BETO.</p></li>
+<li><p>Router <code class="docutils literal notranslate"><span class="pre">datos.py</span></code> expone:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">/datos/sentimientos</span></code> con agregados para:</p>
+<ul>
+<li><p>distribución global,</p></li>
+<li><p>distribución por docente,</p></li>
+<li><p>métricas de cobertura de texto.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>La pestaña <strong>Datos</strong> utiliza estos resultados para renderizar las gráficas de
+sentimientos.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="entrenamiento-de-modelos-bm-rbm-dbm">
+<h2>3. Entrenamiento de modelos BM/RBM/DBM<a class="headerlink" href="#entrenamiento-de-modelos-bm-rbm-dbm" title="Link to this heading"></a></h2>
+<p>Una vez el dataset está preprocesado, el entrenamiento se puede lanzar desde:</p>
+<ul class="simple">
+<li><p>Pestaña <strong>Modelos</strong> (interacción UI).</p></li>
+<li><p>CLI / Makefile (para pipelines automatizados).</p></li>
+</ul>
+<section id="modelos-manuales">
+<h3>3.1 Modelos manuales<a class="headerlink" href="#modelos-manuales" title="Link to this heading"></a></h3>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/models/</span></code>.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">bm_manual.py</span></code>:</p>
+<ul>
+<li><p>Implementación de Máquinas de Boltzmann completas.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rbm_manual.py</span></code>:</p>
+<ul>
+<li><p>Implementación de RBM con codificación manual (sin dependencias externas
+de redes neuronales).</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dbm_manual.py</span></code>:</p>
+<ul>
+<li><p>Implementación de DBM manual, construida a partir de la lógica de RBM.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="estrategias-de-entrenamiento">
+<h3>3.2 Estrategias de entrenamiento<a class="headerlink" href="#estrategias-de-entrenamiento" title="Link to this heading"></a></h3>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/models/strategies/</span></code>.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">bm_manual_strategy.py</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rbm_manual_strategy.py</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dbm_manual_strategy.py</span></code></p></li>
+<li><p>Otros archivos relacionados (por ejemplo, <code class="docutils literal notranslate"><span class="pre">modelo_rbm_general</span></code>,
+<code class="docutils literal notranslate"><span class="pre">modelo_rbm_restringida</span></code>, <code class="docutils literal notranslate"><span class="pre">rbm_pura</span></code>, etc.).</p></li>
+</ul>
+<p>Estas estrategias definen:</p>
+<ul class="simple">
+<li><p>Cómo se inicializa el modelo.</p></li>
+<li><p>Cómo se ejecuta el ciclo de entrenamiento:</p>
+<ul>
+<li><p>epochs,</p></li>
+<li><p>tamaño de batch,</p></li>
+<li><p>tasa de aprendizaje.</p></li>
+</ul>
+</li>
+<li><p>Qué métricas se calculan (loss, accuracy, etc.).</p></li>
+<li><p>Cómo se guarda el artefacto del modelo.</p></li>
+</ul>
+</section>
+<section id="orquestacion-por-jobs">
+<h3>3.3 Orquestación por jobs<a class="headerlink" href="#orquestacion-por-jobs" title="Link to this heading"></a></h3>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/app/jobs/</span></code>.</p>
+<p>Comandos relevantes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_train_rbm_manual.py</span></code>:</p>
+<ul>
+<li><p>Entrena uno o varios modelos RBM manuales sobre un dataset preprocesado.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_train_dbm_manual.py</span></code>:</p>
+<ul>
+<li><p>Entrena modelos DBM manuales.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_eval_confusion.py</span></code>:</p>
+<ul>
+<li><p>Genera matrices de confusión y métricas de evaluación.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_autoretrain.py</span></code>:</p>
+<ul>
+<li><p>Puede lanzar reentrenamientos periódicos según nuevas evaluaciones.</p></li>
+</ul>
+</li>
+</ul>
+<p>Estos comandos se invocan desde:</p>
+<ul class="simple">
+<li><p>CLI (por ejemplo, vía Makefile).</p></li>
+<li><p>Endpoints expuestos en el router <code class="docutils literal notranslate"><span class="pre">modelos</span></code> o <code class="docutils literal notranslate"><span class="pre">jobs</span></code>.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="evaluacion-y-seleccion-del-modelo-campeon">
+<h2>4. Evaluación y selección del modelo campeón<a class="headerlink" href="#evaluacion-y-seleccion-del-modelo-campeon" title="Link to this heading"></a></h2>
+<p>La evaluación se basa en:</p>
+<ul class="simple">
+<li><p>Métricas calculadas en:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/audit_kfold.py</span></code> (validación cruzada),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/hparam_search.py</span></code> (búsqueda de hiperparámetros).</p></li>
+</ul>
+</li>
+<li><p>Resultados almacenados:</p>
+<ul>
+<li><p>Rutas de artefactos,</p></li>
+<li><p>ficheros de métricas (JSON/CSV),</p></li>
+<li><p>logs de entrenamiento.</p></li>
+</ul>
+</li>
+</ul>
+<p>La <strong>lógica de selección del modelo campeón</strong> puede incluir:</p>
+<ul class="simple">
+<li><p>Regla básica:</p>
+<ul>
+<li><p>modelo con mejor F1 o accuracy en el conjunto de validación.</p></li>
+</ul>
+</li>
+<li><p>Criterios adicionales:</p>
+<ul>
+<li><p>estabilidad entre folds (en <code class="docutils literal notranslate"><span class="pre">audit_kfold</span></code>),</p></li>
+<li><p>tiempo de entrenamiento (preferir modelos más ligeros si el rendimiento es similar).</p></li>
+</ul>
+</li>
+</ul>
+<p>El modelo seleccionado se registra a través de:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">models/registry.py</span></code>:</p>
+<ul>
+<li><p>Permite resolver un “modelo activo” por dataset o contexto.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="prediccion-y-scoring">
+<h2>5. Predicción y scoring<a class="headerlink" href="#prediccion-y-scoring" title="Link to this heading"></a></h2>
+<p>La inferencia se realiza:</p>
+<ul class="simple">
+<li><p>Desde el router <code class="docutils literal notranslate"><span class="pre">prediccion.py</span></code>:</p>
+<ul>
+<li><p>Para casos individuales (pestaña <strong>Predicciones</strong>, ingreso manual).</p></li>
+<li><p>Para predicciones por lote (fichero de entrada con varios casos).</p></li>
+</ul>
+</li>
+<li><p>Utilizando:</p>
+<ul>
+<li><p>El modelo campeón cargado desde los artefactos,</p></li>
+<li><p>el mismo pipeline de preprocesamiento aplicado al dataset de entrenamiento.</p></li>
+</ul>
+</li>
+</ul>
+<p>La salida típica:</p>
+<ul class="simple">
+<li><p>Probabilidad de alto/bajo rendimiento.</p></li>
+<li><p>Intervalos de confianza (si están implementados).</p></li>
+<li><p>Variables derivadas (por ejemplo, scores de sentimiento agregados).</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="integracion-con-predicciones-y-dashboard">
+<h2>6. Integración con Predicciones y Dashboard<a class="headerlink" href="#integracion-con-predicciones-y-dashboard" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>La pestaña <strong>Predicciones</strong>:</p>
+<ul>
+<li><p>Consume los endpoints de <code class="docutils literal notranslate"><span class="pre">prediccion.py</span></code> y muestra:</p>
+<ul>
+<li><p>probabilidad,</p></li>
+<li><p>radar de indicadores,</p></li>
+<li><p>barras comparativas,</p></li>
+<li><p>proyecciones temporales para el caso o lote analizado.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>La pestaña <strong>Dashboard</strong>:</p>
+<ul>
+<li><p>Consume datos agregados generados a partir de:</p>
+<ul>
+<li><p>predicciones,</p></li>
+<li><p>métricas del modelo,</p></li>
+<li><p>histórico de evaluaciones reales.</p></li>
+</ul>
+</li>
+<li><p>Muestra:</p>
+<ul>
+<li><p>KPIs globales,</p></li>
+<li><p>históricos por docente/asignatura,</p></li>
+<li><p>ranking de docentes,</p></li>
+<li><p>distribuciones de riesgo,</p></li>
+<li><p>comparaciones real vs predicho.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<hr class="docutils" />
+<p>Este pipeline de modelos asegura que:</p>
+<ul class="simple">
+<li><p>Los datos pasan por un proceso controlado de validación y preprocesamiento.</p></li>
+<li><p>El entrenamiento de BM/RBM/DBM se realiza de forma reproducible.</p></li>
+<li><p>La selección del modelo campeón está basada en métricas cuantitativas.</p></li>
+<li><p>Las predicciones se integran de forma coherente con las vistas de usuario
+(Predicciones y Dashboard) para la toma de decisiones.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="frontend.html" class="btn btn-neutral float-left" title="Arquitectura del frontend" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="../teoria/index.html" class="btn btn-neutral float-right" title="Teoría de modelos" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

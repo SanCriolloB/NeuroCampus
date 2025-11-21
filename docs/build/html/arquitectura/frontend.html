@@ -1,0 +1,389 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arquitectura del frontend &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Pipeline de modelos (BM, RBM, DBM)" href="pipeline_modelos.html" />
+    <link rel="prev" title="Arquitectura del backend" href="backend.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Arquitectura de NeuroCampus</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="vision_general.html">Visión general de la arquitectura</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">Arquitectura del backend</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Arquitectura del frontend</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#estructura-de-directorios">Estructura de directorios</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#layout-principal-y-navegacion">1. Layout principal y navegación</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#paginas-principales">Páginas principales</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#componentes-reutilizables">Componentes reutilizables</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#servicios-de-acceso-a-la-api">Servicios de acceso a la API</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#estilos-y-graficos">Estilos y gráficos</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline_modelos.html">Pipeline de modelos (BM, RBM, DBM)</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Arquitectura de NeuroCampus</a></li>
+      <li class="breadcrumb-item active">Arquitectura del frontend</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/arquitectura/frontend.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="arquitectura-del-frontend">
+<h1>Arquitectura del frontend<a class="headerlink" href="#arquitectura-del-frontend" title="Link to this heading"></a></h1>
+<p>El frontend de NeuroCampus está desarrollado con <strong>React + TypeScript</strong> y se
+construye con <strong>Vite</strong>. Está organizado en páginas, componentes reutilizables,
+servicios de acceso a la API y un layout común.</p>
+<hr class="docutils" />
+<section id="estructura-de-directorios">
+<h2>Estructura de directorios<a class="headerlink" href="#estructura-de-directorios" title="Link to this heading"></a></h2>
+<p>Ubicación base del frontend:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>frontend/
+  index.html
+  package.json
+  vite.config.ts
+  src/
+    App.tsx
+    layout/
+    pages/
+    components/
+    services/
+    routes/
+    styles/
+</pre></div>
+</div>
+<section id="layout-principal-y-navegacion">
+<h3>1. Layout principal y navegación<a class="headerlink" href="#layout-principal-y-navegacion" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">src/layout/MainLayout.tsx</span></code>:</p>
+<ul>
+<li><p>Define el layout de la aplicación:</p>
+<ul>
+<li><p>Sidebar a la izquierda (<code class="docutils literal notranslate"><span class="pre">Sidebar.tsx</span></code>).</p></li>
+<li><p>Barra superior (<code class="docutils literal notranslate"><span class="pre">Topbar.tsx</span></code>).</p></li>
+<li><p>Área principal de contenido (<code class="docutils literal notranslate"><span class="pre">&lt;Outlet</span> <span class="pre">/&gt;</span></code>).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">src/layout/Sidebar.tsx</span></code>:</p>
+<ul>
+<li><p>Contiene el menú de navegación:</p>
+<ul>
+<li><p>Inicio,</p></li>
+<li><p>Dashboard,</p></li>
+<li><p>Prediction,</p></li>
+<li><p>Models,</p></li>
+<li><p>Jobs,</p></li>
+<li><p>Datos.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">src/routes/Router.tsx</span></code>:</p>
+<ul>
+<li><p>Define las rutas de React Router:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">/</span></code> → <code class="docutils literal notranslate"><span class="pre">Home</span></code> / <code class="docutils literal notranslate"><span class="pre">App</span></code> (según configuración),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/dashboard</span></code> → <code class="docutils literal notranslate"><span class="pre">Dashboard.tsx</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/models</span></code> → <code class="docutils literal notranslate"><span class="pre">Models.tsx</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/prediction</span></code> → <code class="docutils literal notranslate"><span class="pre">Prediction.tsx</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/jobs</span></code> → <code class="docutils literal notranslate"><span class="pre">Jobs.tsx</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/datos</span></code> → <code class="docutils literal notranslate"><span class="pre">DataUpload.tsx</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/datos/diagnostico</span></code> → <code class="docutils literal notranslate"><span class="pre">DatosDiagnostico.tsx</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>La aplicación se renderiza dentro de <code class="docutils literal notranslate"><span class="pre">MainLayout</span></code>, que aporta una experiencia
+consistente en todas las pestañas.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="paginas-principales">
+<h2>Páginas principales<a class="headerlink" href="#paginas-principales" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">src/pages/DataUpload.tsx</span></code>:</p>
+<ul>
+<li><p>Implementa la pestaña <strong>Datos</strong>:</p>
+<ul>
+<li><p>Carga y validación de datasets.</p></li>
+<li><p>Resumen estructural del dataset.</p></li>
+<li><p>Lanzamiento y visualización de BETO (análisis de sentimientos).</p></li>
+<li><p>Vista previa de filas.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">src/pages/Models.tsx</span></code>:</p>
+<ul>
+<li><p>Implementa la pestaña <strong>Modelos</strong>:</p>
+<ul>
+<li><p>Configuración y lanzamiento de entrenamientos.</p></li>
+<li><p>Comparación de métricas entre BM, RBM, DBM, etc.</p></li>
+<li><p>Visualización de curvas de pérdida/accuracy y matrices de confusión.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">src/pages/Prediction.tsx</span></code>:</p>
+<ul>
+<li><p>Implementa la pestaña <strong>Predicciones</strong>:</p>
+<ul>
+<li><p>Ingreso manual de nuevas evaluaciones.</p></li>
+<li><p>Predicción por lote.</p></li>
+<li><p>Visualización de probabilidades, radar de indicadores, barras comparativas y proyecciones temporales.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">src/pages/Dashboard.tsx</span></code>:</p>
+<ul>
+<li><p>Implementa la pestaña <strong>Dashboard</strong>:</p>
+<ul>
+<li><p>Filtros por periodo, programa, docente, asignatura.</p></li>
+<li><p>KPIs globales.</p></li>
+<li><p>Gráficos de histórico, ranking de docentes, riesgo y real vs predicho.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">src/pages/AdminCleanup.tsx</span></code>:</p>
+<ul>
+<li><p>Interfaz de administración para limpiar artefactos y datasets temporales.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">src/pages/Jobs.tsx</span></code>:</p>
+<ul>
+<li><p>Muestra y gestiona jobs en ejecución/históricos (por ejemplo, jobs de BETO
+o entrenamientos).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="componentes-reutilizables">
+<h2>Componentes reutilizables<a class="headerlink" href="#componentes-reutilizables" title="Link to this heading"></a></h2>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">src/components/</span></code>.</p>
+<p>Ejemplos:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">UploadDropzone.tsx</span></code>:</p>
+<ul>
+<li><p>Zona de arrastre/selección de archivos.</p></li>
+<li><p>Usado en pestaña Datos y, potencialmente, en Predicciones por lote.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ResultsTable.tsx</span></code>:</p>
+<ul>
+<li><p>Tabla genérica para mostrar resultados o muestras de datos.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MetricCard.tsx</span></code>:</p>
+<ul>
+<li><p>Tarjetas de KPI que se utilizan principalmente en el Dashboard.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ValidationReport.tsx</span></code>:</p>
+<ul>
+<li><p>Muestra informes de validación de datasets (errores, advertencias, etc.).</p></li>
+</ul>
+</li>
+</ul>
+<p>Estos componentes encapsulan lógica de presentación y evitan duplicación de
+código entre páginas.</p>
+</section>
+<hr class="docutils" />
+<section id="servicios-de-acceso-a-la-api">
+<h2>Servicios de acceso a la API<a class="headerlink" href="#servicios-de-acceso-a-la-api" title="Link to this heading"></a></h2>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">src/services/</span></code>.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">apiClient.ts</span></code>:</p>
+<ul>
+<li><p>Cliente base sobre <code class="docutils literal notranslate"><span class="pre">fetch</span></code> o <code class="docutils literal notranslate"><span class="pre">axios</span></code> para acceder a la API del backend.</p></li>
+<li><p>Maneja la URL base y algunas opciones comunes.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">api.ts</span></code>:</p>
+<ul>
+<li><p>Utilidades generales sobre el cliente base (por ejemplo, helpers para
+instanciar el cliente según entorno).</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">datos.ts</span></code>:</p>
+<ul>
+<li><p>Funciones para consumir la API de datos:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">esquema()</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">validar()</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">upload()</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">resumen()</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sentimientos()</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">jobs.ts</span></code>:</p>
+<ul>
+<li><p>Funciones para lanzar y consultar jobs:</p>
+<ul>
+<li><p>incluyendo el preprocesamiento BETO (<code class="docutils literal notranslate"><span class="pre">/jobs/preproc/beto/run</span></code>, etc.).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">modelos.ts</span></code>:</p>
+<ul>
+<li><p>Funciones para interactuar con endpoints de entrenamiento y consulta de
+modelos.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">prediccion.ts</span></code>:</p>
+<ul>
+<li><p>Funciones para generar predicciones manuales o por lote desde el frontend.</p></li>
+</ul>
+</li>
+</ul>
+<p>Esta estructura mantiene una separación clara entre:</p>
+<ul class="simple">
+<li><p><strong>Lógica de presentación</strong> (páginas y componentes) y</p></li>
+<li><p><strong>Lógica de comunicación con la API</strong> (servicios).</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="estilos-y-graficos">
+<h2>Estilos y gráficos<a class="headerlink" href="#estilos-y-graficos" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Estilos globales en <code class="docutils literal notranslate"><span class="pre">src/styles/index.css</span></code>:</p>
+<ul>
+<li><p>Define tipografía, colores base, disposición general.</p></li>
+</ul>
+</li>
+<li><p>Gráficos:</p>
+<ul>
+<li><p>Principalmente con <strong>Recharts</strong>:</p>
+<ul>
+<li><p>Gráficos de barras,</p></li>
+<li><p>líneas,</p></li>
+<li><p>radar,</p></li>
+<li><p>gráficos apilados, etc.</p></li>
+</ul>
+</li>
+<li><p>Usados en:</p>
+<ul>
+<li><p>Pestaña Datos (sentimientos),</p></li>
+<li><p>Modelos (curvas de entrenamiento, matrices de confusión),</p></li>
+<li><p>Dashboard (históricos, rankings, distribuciones de riesgo).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<hr class="docutils" />
+<p>Esta arquitectura del frontend permite:</p>
+<ul class="simple">
+<li><p>Crecer en número de páginas y componentes sin perder orden.</p></li>
+<li><p>Probar cada pieza de forma aislada (tests en <code class="docutils literal notranslate"><span class="pre">src/pages/__tests__</span></code> y
+<code class="docutils literal notranslate"><span class="pre">src/services/*.test.ts</span></code>).</p></li>
+<li><p>Reutilizar componentes visuales y servicios API en todas las pestañas.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="backend.html" class="btn btn-neutral float-left" title="Arquitectura del backend" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="pipeline_modelos.html" class="btn btn-neutral float-right" title="Pipeline de modelos (BM, RBM, DBM)" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

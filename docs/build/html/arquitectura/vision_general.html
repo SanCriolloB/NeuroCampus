@@ -1,0 +1,267 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visión general de la arquitectura &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Arquitectura del backend" href="backend.html" />
+    <link rel="prev" title="Arquitectura de NeuroCampus" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Arquitectura de NeuroCampus</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Visión general de la arquitectura</a></li>
+<li class="toctree-l2"><a class="reference internal" href="backend.html">Arquitectura del backend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="frontend.html">Arquitectura del frontend</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pipeline_modelos.html">Pipeline de modelos (BM, RBM, DBM)</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Arquitectura de NeuroCampus</a></li>
+      <li class="breadcrumb-item active">Visión general de la arquitectura</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/arquitectura/vision_general.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="vision-general-de-la-arquitectura">
+<h1>Visión general de la arquitectura<a class="headerlink" href="#vision-general-de-la-arquitectura" title="Link to this heading"></a></h1>
+<p>NeuroCampus está organizado en varias capas bien separadas:</p>
+<ul class="simple">
+<li><p><strong>Frontend</strong> (React + TypeScript, Vite):</p>
+<ul>
+<li><p>Ubicación: <code class="docutils literal notranslate"><span class="pre">frontend/</span></code>.</p></li>
+<li><p>Páginas principales:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">DataUpload.tsx</span></code> (pestaña Datos),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Models.tsx</span></code> (pestaña Modelos),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Prediction.tsx</span></code> (pestaña Predicciones),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Dashboard.tsx</span></code> (pestaña Dashboard),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">AdminCleanup.tsx</span></code>, <code class="docutils literal notranslate"><span class="pre">Jobs.tsx</span></code>, etc.</p></li>
+</ul>
+</li>
+<li><p>Navegación con React Router:</p>
+<ul>
+<li><p>Definida en <code class="docutils literal notranslate"><span class="pre">src/routes/Router.tsx</span></code>.</p></li>
+<li><p>Layout principal en <code class="docutils literal notranslate"><span class="pre">src/layout/MainLayout.tsx</span></code> con <code class="docutils literal notranslate"><span class="pre">Sidebar</span></code> y <code class="docutils literal notranslate"><span class="pre">Topbar</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Backend API</strong> (FastAPI + Python):</p>
+<ul>
+<li><p>Ubicación: <code class="docutils literal notranslate"><span class="pre">backend/src/neurocampus/</span></code>.</p></li>
+<li><p>Punto de entrada de la API:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/main.py</span></code>.</p></li>
+</ul>
+</li>
+<li><p>Routers:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/routers/datos.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/routers/modelos.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/routers/prediccion.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/routers/jobs.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/routers/admin_cleanup.py</span></code>.</p></li>
+</ul>
+</li>
+<li><p>Esquemas Pydantic:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/schemas/datos.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/schemas/modelos.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/schemas/prediccion.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/schemas/jobs.py</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Capa de datos</strong>:</p>
+<ul>
+<li><p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/data/</span></code>.</p></li>
+<li><p>Componentes principales:</p>
+<ul>
+<li><p>Adaptadores (<code class="docutils literal notranslate"><span class="pre">data/adapters/*.py</span></code>) para trabajar con DataFrames y rutas
+de almacenamiento.</p></li>
+<li><p>Cadena de validación y preprocesamiento (<code class="docutils literal notranslate"><span class="pre">data/chain/*.py</span></code>).</p></li>
+<li><p>Facade de datos (<code class="docutils literal notranslate"><span class="pre">data/facades/datos_facade.py</span></code>).</p></li>
+<li><p>Utilidades para el dashboard de la pestaña Datos
+(<code class="docutils literal notranslate"><span class="pre">data/datos_dashboard.py</span></code>).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Capa de modelos</strong> (BM, RBM, DBM):</p>
+<ul>
+<li><p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/models/</span></code>.</p></li>
+<li><p>Modelos base y manuales:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">bm_manual.py</span></code>, <code class="docutils literal notranslate"><span class="pre">rbm_manual.py</span></code>, <code class="docutils literal notranslate"><span class="pre">dbm_manual.py</span></code>.</p></li>
+</ul>
+</li>
+<li><p>Estrategias de entrenamiento:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/strategies/bm_manual_strategy.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/strategies/rbm_manual_strategy.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/strategies/dbm_manual_strategy.py</span></code>,</p></li>
+<li><p>otros modelos relacionados (<code class="docutils literal notranslate"><span class="pre">modelo_rbm_general</span></code>, <code class="docutils literal notranslate"><span class="pre">modelo_rbm_restringida</span></code>, etc.).</p></li>
+</ul>
+</li>
+<li><p>Registros y facades:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/registry.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/facades/modelos_facade.py</span></code>.</p></li>
+</ul>
+</li>
+<li><p>Utilidades:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/audit_kfold.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/hparam_search.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">models/utils_boltzmann.py</span></code>,</p></li>
+<li><p>plantillas de entrenamiento (<code class="docutils literal notranslate"><span class="pre">models/templates/plantilla_entrenamiento.py</span></code>).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Orquestación de jobs</strong>:</p>
+<ul>
+<li><p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/app/jobs/</span></code>.</p></li>
+<li><p>Comandos para CLI / backend batch:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_preprocesar_beto.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_preprocesar_batch.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_cargar_dataset.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_train_rbm_manual.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_train_dbm_manual.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_eval_confusion.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_score_docente.py</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cmd_autoretrain.py</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Observabilidad y logging</strong>:</p>
+<ul>
+<li><p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/observability/</span></code>.</p></li>
+<li><p>Middleware de correlación (<code class="docutils literal notranslate"><span class="pre">middleware_correlation.py</span></code>),
+filtros de logging (<code class="docutils literal notranslate"><span class="pre">logging_filters.py</span></code>),
+bus de eventos (<code class="docutils literal notranslate"><span class="pre">bus_eventos.py</span></code>) y destinos de logging (<code class="docutils literal notranslate"><span class="pre">destinos/log_handler.py</span></code>).</p></li>
+<li><p>Configuración de logging:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus/app/logging_config.py</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Makefile y scripts</strong>:</p>
+<ul>
+<li><p>En la raíz (<code class="docutils literal notranslate"><span class="pre">Makefile</span></code>) se definen comandos para:</p>
+<ul>
+<li><p>ejecutar tests,</p></li>
+<li><p>arrancar backend y frontend,</p></li>
+<li><p>lanzar pipelines de preparación y entrenamiento.</p></li>
+</ul>
+</li>
+<li><p>Scripts adicionales en <code class="docutils literal notranslate"><span class="pre">backend/scripts/</span></code> para experimentos y utilidades.</p></li>
+</ul>
+</li>
+</ul>
+<p>Esta organización permite:</p>
+<ul class="simple">
+<li><p>Mantener la API limpia y desacoplada de la lógica de modelos.</p></li>
+<li><p>Reutilizar la capa de datos y modelos desde jobs batch o desde los endpoints.</p></li>
+<li><p>Escalar el frontend sin mezclar lógica de negocio con componentes de UI.</p></li>
+</ul>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="index.html" class="btn btn-neutral float-left" title="Arquitectura de NeuroCampus" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="backend.html" class="btn btn-neutral float-right" title="Arquitectura del backend" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

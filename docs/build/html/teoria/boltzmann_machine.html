@@ -1,0 +1,261 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Máquinas de Boltzmann (BM) &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Máquinas de Boltzmann (BM)" href="restricted_bm.html" />
+    <link rel="prev" title="Teoría de modelos" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Teoría de modelos</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Máquinas de Boltzmann (BM)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#introduccion">Introducción</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#estructura-del-modelo">Estructura del modelo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#energia-y-distribucion-de-probabilidad">Energía y distribución de probabilidad</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#aprendizaje">Aprendizaje</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#muestreo-gibbs-y-mezclado">Muestreo Gibbs y mezclado</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#ventajas-y-limitaciones">Ventajas y limitaciones</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#ventajas">Ventajas</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#limitaciones">Limitaciones</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#uso-conceptual-en-neurocampus">Uso conceptual en NeuroCampus</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="restricted_bm.html">Máquinas de Boltzmann (BM)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="implementacion_neurocampus.html">Implementación de modelos de Boltzmann en NeuroCampus</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Teoría de modelos</a></li>
+      <li class="breadcrumb-item active">Máquinas de Boltzmann (BM)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/teoria/boltzmann_machine.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="maquinas-de-boltzmann-bm">
+<h1>Máquinas de Boltzmann (BM)<a class="headerlink" href="#maquinas-de-boltzmann-bm" title="Link to this heading"></a></h1>
+<section id="introduccion">
+<h2>Introducción<a class="headerlink" href="#introduccion" title="Link to this heading"></a></h2>
+<p>Las <strong>Máquinas de Boltzmann</strong> (BM) son modelos de energía probabilísticos que
+definen una distribución sobre un conjunto de variables binarias (o continuas)
+usando una función de energía. Se inspiran en sistemas físicos, donde los
+estados más probables son aquellos con menor energía.</p>
+<p>En NeuroCampus se usan como parte de la familia de modelos para capturar
+relaciones complejas entre características derivadas de las evaluaciones
+docentes (respuestas numéricas, indicadores agregados, características de
+texto, etc.).</p>
+</section>
+<hr class="docutils" />
+<section id="estructura-del-modelo">
+<h2>Estructura del modelo<a class="headerlink" href="#estructura-del-modelo" title="Link to this heading"></a></h2>
+<p>Una BM estándar está compuesta por:</p>
+<ul class="simple">
+<li><p>Un conjunto de <strong>unidades visibles</strong> (v), que representan los datos de
+entrada.</p></li>
+<li><p>Un conjunto de <strong>unidades ocultas</strong> (h), que capturan dependencias
+latentes.</p></li>
+<li><p>Pesos simétricos (W) entre unidades (pueden existir conexiones visibles–
+visibles, ocultas–ocultas y visibles–ocultas).</p></li>
+<li><p>Sesgos (b) para unidades visibles y (c) para unidades ocultas.</p></li>
+</ul>
+<p>No hay una restricción bipartita estricta como en las RBM: pueden existir
+conexiones arbitrarias entre nodos.</p>
+</section>
+<hr class="docutils" />
+<section id="energia-y-distribucion-de-probabilidad">
+<h2>Energía y distribución de probabilidad<a class="headerlink" href="#energia-y-distribucion-de-probabilidad" title="Link to this heading"></a></h2>
+<p>La energía de un estado ((v, h)) se define típicamente como:</p>
+<p>[
+E(v, h) = - v^T W h - b^T v - c^T h + \text{(términos adicionales si hay enlaces vis–vis u oc–oc)}
+]</p>
+<p>La probabilidad conjunta sobre todos los estados se define como:</p>
+<p>[
+P(v, h) = \frac{1}{Z} \exp\big(-E(v, h)\big),
+]</p>
+<p>donde (Z) es la <strong>función de partición</strong>:</p>
+<p>[
+Z = \sum_{v, h} \exp\big(-E(v, h)\big).
+]</p>
+<p>La probabilidad marginal sobre las visibles es:</p>
+<p>[
+P(v) = \sum_h P(v, h).
+]</p>
+<p>En la práctica, calcular (Z) y las expectativas exactas suele ser
+inviable para modelos medianos o grandes, por lo que se recurre a métodos de
+aproximación.</p>
+</section>
+<hr class="docutils" />
+<section id="aprendizaje">
+<h2>Aprendizaje<a class="headerlink" href="#aprendizaje" title="Link to this heading"></a></h2>
+<p>El objetivo del aprendizaje es ajustar (W, b, c) para maximizar la
+probabilidad de los datos observados, es decir, maximizar la verosimilitud o
+equivalentemente minimizar la energía media de los estados asociados a los
+datos.</p>
+<p>Las actualizaciones de parámetros involucran dos tipos de expectativas:</p>
+<ul class="simple">
+<li><p><strong>Fase positiva</strong>: expectativas bajo la distribución condicionada por los
+datos reales.</p></li>
+<li><p><strong>Fase negativa</strong>: expectativas bajo la distribución del modelo (muestreo
+libre).</p></li>
+</ul>
+<p>De forma esquemática, para los pesos:</p>
+<p>[
+\Delta W \propto \langle v h^T \rangle_{\text{datos}} -
+\langle v h^T \rangle_{\text{modelo}}.
+]</p>
+<p>Como las expectativas de la fase negativa requieren muestrear de la
+distribución del modelo, se suelen utilizar <strong>métodos de Monte Carlo</strong> como
+Gibbs sampling, a menudo con cadenas largas y medidas de equilibrio.</p>
+</section>
+<hr class="docutils" />
+<section id="muestreo-gibbs-y-mezclado">
+<h2>Muestreo Gibbs y mezclado<a class="headerlink" href="#muestreo-gibbs-y-mezclado" title="Link to this heading"></a></h2>
+<p>En una BM general, el paso de Gibbs no es tan simple como en la RBM, porque las
+unidades visibles (o las ocultas) no son condicionalmente independientes entre
+sí. Esto implica que el muestreo puede requerir actualizar grupos de unidades
+o realizar barridos más complejos.</p>
+<p>Esto se traduce en:</p>
+<ul class="simple">
+<li><p>Costes computacionales más altos.</p></li>
+<li><p>Mayor dificultad para garantizar un buen mezclado de la cadena de Markov.</p></li>
+</ul>
+<p>Por eso, en muchos sistemas prácticos se prefiere usar variantes restringidas
+(RBM) o arquitecturas con estructura más controlada.</p>
+</section>
+<hr class="docutils" />
+<section id="ventajas-y-limitaciones">
+<h2>Ventajas y limitaciones<a class="headerlink" href="#ventajas-y-limitaciones" title="Link to this heading"></a></h2>
+<section id="ventajas">
+<h3>Ventajas<a class="headerlink" href="#ventajas" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Modelo muy flexible: permite conexiones densas entre nodos.</p></li>
+<li><p>Capaz de representar distribuciones complejas y multimodales.</p></li>
+<li><p>Base conceptual para modelos más avanzados (RBM, DBM, etc.).</p></li>
+</ul>
+</section>
+<section id="limitaciones">
+<h3>Limitaciones<a class="headerlink" href="#limitaciones" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Entrenamiento costoso:</p>
+<ul>
+<li><p>Cálculo aproximado de gradientes.</p></li>
+<li><p>Muestreo lento.</p></li>
+</ul>
+</li>
+<li><p>Difícil de escalar para datasets grandes sin técnicas adicionales.</p></li>
+<li><p>Menos estable y más difícil de depurar que arquitecturas restringidas.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="uso-conceptual-en-neurocampus">
+<h2>Uso conceptual en NeuroCampus<a class="headerlink" href="#uso-conceptual-en-neurocampus" title="Link to this heading"></a></h2>
+<p>En NeuroCampus, la BM se entiende como la versión más general del modelo de
+energía sobre las variables de evaluación docente. Sirve principalmente para:</p>
+<ul class="simple">
+<li><p>Explorar arquitecturas más flexibles.</p></li>
+<li><p>Comparar su comportamiento con modelos restringidos (RBM) y profundos (DBM).</p></li>
+<li><p>Entender el impacto de permitir conexiones adicionales entre variables.</p></li>
+</ul>
+<p>La implementación concreta se encuentra en el módulo
+<code class="docutils literal notranslate"><span class="pre">neurocampus.models.bm_manual</span></code>, donde se adapta esta teoría a código Python y
+se integra con las estrategias de entrenamiento y evaluación.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="index.html" class="btn btn-neutral float-left" title="Teoría de modelos" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="restricted_bm.html" class="btn btn-neutral float-right" title="Máquinas de Boltzmann (BM)" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

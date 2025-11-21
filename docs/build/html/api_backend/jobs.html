@@ -1,0 +1,359 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Endpoints de jobs &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Endpoints de administración" href="admin.html" />
+    <link rel="prev" title="Endpoints de datos" href="datos.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API del backend</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="datos.html">Endpoints de datos</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Endpoints de jobs</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#resumen-de-endpoints-principales">Resumen de endpoints principales</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#post-jobs-preproc-beto-run"><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/jobs/preproc/beto/run</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#descripcion">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#entrada">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#comportamiento-esperado">Comportamiento esperado</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#respuesta">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#get-jobs-preproc-beto-status"><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/jobs/preproc/beto/status</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id1">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id2">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id3">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#get-jobs-job-id"><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/jobs/{job_id}</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id4">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id5">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id6">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#get-jobs"><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/jobs</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id7">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id8">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id9">Respuesta</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="admin.html">Endpoints de administración</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">API del backend</a></li>
+      <li class="breadcrumb-item active">Endpoints de jobs</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api_backend/jobs.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="endpoints-de-jobs">
+<h1>Endpoints de jobs<a class="headerlink" href="#endpoints-de-jobs" title="Link to this heading"></a></h1>
+<p>La API de <strong>jobs</strong> gestiona procesos que pueden tomar más tiempo que una
+petición HTTP típica, como:</p>
+<ul class="simple">
+<li><p>Preprocesamiento de textos con BETO.</p></li>
+<li><p>Entrenamiento de modelos (RBM/BM/DBM y variantes).</p></li>
+<li><p>Auditorías, evaluaciones y otros procesos batch.</p></li>
+</ul>
+<p>Todos los endpoints aquí descritos cuelgan del prefijo base:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">/jobs</span></code></p></li>
+</ul>
+<hr class="docutils" />
+<section id="resumen-de-endpoints-principales">
+<h2>Resumen de endpoints principales<a class="headerlink" href="#resumen-de-endpoints-principales" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Método</p></th>
+<th class="head"><p>Ruta</p></th>
+<th class="head"><p>Descripción</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>POST</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/jobs/preproc/beto/run</span></code></p></td>
+<td><p>Lanza un job de preprocesamiento BETO</p></td>
+</tr>
+<tr class="row-odd"><td><p>GET</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/jobs/preproc/beto/status</span></code></p></td>
+<td><p>Consulta el estado agregado de jobs BETO recientes</p></td>
+</tr>
+<tr class="row-even"><td><p>GET</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/jobs/{job_id}</span></code></p></td>
+<td><p>Consulta el estado de un job específico</p></td>
+</tr>
+<tr class="row-odd"><td><p>GET</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/jobs</span></code></p></td>
+<td><p>Lista jobs con filtros opcionales (tipo, estado…)</p></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<div><p><strong>Nota</strong>: los nombres exactos de rutas pueden variar ligeramente según la
+implementación interna. Esta sección describe el objetivo funcional de la
+API de jobs.</p>
+</div></blockquote>
+</section>
+<hr class="docutils" />
+<section id="post-jobs-preproc-beto-run">
+<h2><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/jobs/preproc/beto/run</span></code><a class="headerlink" href="#post-jobs-preproc-beto-run" title="Link to this heading"></a></h2>
+<section id="descripcion">
+<h3>Descripción<a class="headerlink" href="#descripcion" title="Link to this heading"></a></h3>
+<p>Lanza un job de <strong>preprocesamiento con BETO</strong> sobre un dataset concreto.
+Se utiliza desde la pestaña <strong>Datos</strong> cuando se marca la opción de ejecutar
+BETO, o al usar el botón explícito para análisis de sentimientos.</p>
+</section>
+<section id="entrada">
+<h3>Entrada<a class="headerlink" href="#entrada" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Cuerpo JSON típico:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: identificador del dataset sobre el que se quiere ejecutar
+BETO.</p></li>
+<li><p>Parámetros adicionales opcionales:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">text_col</span></code>: nombre de la columna de texto (por defecto <code class="docutils literal notranslate"><span class="pre">comentario</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">keep_empty_text</span></code>: bandera para conservar filas sin texto.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">text_feats</span></code>, <code class="docutils literal notranslate"><span class="pre">tfidf_min_df</span></code>, <code class="docutils literal notranslate"><span class="pre">tfidf_max_df</span></code>, etc., si están soportados.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="comportamiento-esperado">
+<h3>Comportamiento esperado<a class="headerlink" href="#comportamiento-esperado" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>El backend crea un job de tipo “preprocesamiento BETO”:</p>
+<ul>
+<li><p>Coloca el trabajo en la cola (si existe un sistema de colas),</p></li>
+<li><p>o lo ejecuta de forma asíncrona/secuencial según la configuración.</p></li>
+</ul>
+</li>
+<li><p>Registra un <code class="docutils literal notranslate"><span class="pre">job_id</span></code> para poder consultar su progreso.</p></li>
+</ul>
+</section>
+<section id="respuesta">
+<h3>Respuesta<a class="headerlink" href="#respuesta" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> o <code class="docutils literal notranslate"><span class="pre">202</span> <span class="pre">Accepted</span></code> (según el diseño del backend).</p></li>
+<li><p>Cuerpo JSON típico:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>: identificador único del job.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code>: estado inicial (por ejemplo, <code class="docutils literal notranslate"><span class="pre">created</span></code> o <code class="docutils literal notranslate"><span class="pre">running</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: dataset objetivo.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="get-jobs-preproc-beto-status">
+<h2><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/jobs/preproc/beto/status</span></code><a class="headerlink" href="#get-jobs-preproc-beto-status" title="Link to this heading"></a></h2>
+<section id="id1">
+<h3>Descripción<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<p>Devuelve una vista resumida del estado de los jobs de BETO recientes, útil para
+mostrar información rápida en la pestaña <strong>Datos</strong> (por ejemplo, cuándo se
+ejecutó BETO por última vez y sobre qué dataset).</p>
+</section>
+<section id="id2">
+<h3>Entrada<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Parámetros de query opcionales:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: filtrar por dataset.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">limit</span></code>: número máximo de registros.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id3">
+<h3>Respuesta<a class="headerlink" href="#id3" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code>.</p></li>
+<li><p>Cuerpo JSON típico:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">jobs</span></code>: lista de jobs con campos como:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> (<code class="docutils literal notranslate"><span class="pre">created</span></code>, <code class="docutils literal notranslate"><span class="pre">running</span></code>, <code class="docutils literal notranslate"><span class="pre">completed</span></code>, <code class="docutils literal notranslate"><span class="pre">failed</span></code>, etc.),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">started_at</span></code>, <code class="docutils literal notranslate"><span class="pre">finished_at</span></code>,</p></li>
+<li><p>información de salida (ruta de archivos generados, métricas, etc.).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="get-jobs-job-id">
+<h2><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/jobs/{job_id}</span></code><a class="headerlink" href="#get-jobs-job-id" title="Link to this heading"></a></h2>
+<section id="id4">
+<h3>Descripción<a class="headerlink" href="#id4" title="Link to this heading"></a></h3>
+<p>Devuelve el estado detallado de un job concreto, identificado por <code class="docutils literal notranslate"><span class="pre">job_id</span></code>.
+Es útil cuando el frontend necesita:</p>
+<ul class="simple">
+<li><p>Mostrar una barra de progreso o estado detallado.</p></li>
+<li><p>Diagnosticar un fallo en un job específico.</p></li>
+</ul>
+</section>
+<section id="id5">
+<h3>Entrada<a class="headerlink" href="#id5" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code> en la ruta.</p></li>
+</ul>
+</section>
+<section id="id6">
+<h3>Respuesta<a class="headerlink" href="#id6" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> si el job existe.</p></li>
+<li><p>Cuerpo JSON típico:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">type</span></code> (por ejemplo, <code class="docutils literal notranslate"><span class="pre">preproc_beto</span></code>, <code class="docutils literal notranslate"><span class="pre">train_rbm</span></code>, etc.).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">created_at</span></code>, <code class="docutils literal notranslate"><span class="pre">started_at</span></code>, <code class="docutils literal notranslate"><span class="pre">finished_at</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">progress</span></code> (si está disponible).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">result</span></code> o <code class="docutils literal notranslate"><span class="pre">output</span></code> (por ejemplo, rutas a artefactos, métricas, etc.).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">error</span></code> (si el job falló).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="get-jobs">
+<h2><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/jobs</span></code><a class="headerlink" href="#get-jobs" title="Link to this heading"></a></h2>
+<section id="id7">
+<h3>Descripción<a class="headerlink" href="#id7" title="Link to this heading"></a></h3>
+<p>Lista los jobs existentes, filtrando opcionalmente por tipo, estado u otros
+criterios. Es la base para ofrecer vistas tipo “monitor de jobs” en la pestaña
+<strong>Jobs</strong> del frontend.</p>
+</section>
+<section id="id8">
+<h3>Entrada<a class="headerlink" href="#id8" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Parámetros de query opcionales:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">type</span></code>: tipo de job (<code class="docutils literal notranslate"><span class="pre">preproc_beto</span></code>, <code class="docutils literal notranslate"><span class="pre">train_rbm</span></code>, etc.).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code>: estado (<code class="docutils literal notranslate"><span class="pre">running</span></code>, <code class="docutils literal notranslate"><span class="pre">completed</span></code>, <code class="docutils literal notranslate"><span class="pre">failed</span></code>, etc.).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: filtrar por dataset asociado.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">limit</span></code>, <code class="docutils literal notranslate"><span class="pre">offset</span></code> o parámetros de paginación.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id9">
+<h3>Respuesta<a class="headerlink" href="#id9" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code>.</p></li>
+<li><p>Cuerpo JSON típico:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">items</span></code>: lista de jobs con campos resumidos (id, tipo, estado, fechas).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">total</span></code>: total de jobs que cumplen el filtro (si se implementa paginación).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="datos.html" class="btn btn-neutral float-left" title="Endpoints de datos" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="admin.html" class="btn btn-neutral float-right" title="Endpoints de administración" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

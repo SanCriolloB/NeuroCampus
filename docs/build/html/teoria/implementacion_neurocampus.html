@@ -1,0 +1,404 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Implementación de modelos de Boltzmann en NeuroCampus &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="API del backend" href="../api_backend/index.html" />
+    <link rel="prev" title="Máquinas de Boltzmann (BM)" href="restricted_bm.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Teoría de modelos</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="boltzmann_machine.html">Máquinas de Boltzmann (BM)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="restricted_bm.html">Máquinas de Boltzmann (BM)</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Implementación de modelos de Boltzmann en NeuroCampus</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#mapeo-conceptual-modulos-de-codigo">Mapeo conceptual → módulos de código</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#bm-maquinas-de-boltzmann">1. BM (Máquinas de Boltzmann)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#rbm-restricted-boltzmann-machines">2. RBM (Restricted Boltzmann Machines)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#dbm-deep-boltzmann-machines">3. DBM (Deep Boltzmann Machines)</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#estrategias-facades-y-registro-de-modelos">Estrategias, facades y registro de modelos</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#estrategias-de-entrenamiento-strategies">1. Estrategias de entrenamiento (<code class="docutils literal notranslate"><span class="pre">strategies/</span></code>)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#registro-de-modelos-registry-py">2. Registro de modelos (<code class="docutils literal notranslate"><span class="pre">registry.py</span></code>)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#facade-de-modelos-facades-modelos-facade-py">3. Facade de modelos (<code class="docutils literal notranslate"><span class="pre">facades/modelos_facade.py</span></code>)</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#integracion-con-la-api-y-la-interfaz-de-usuario">Integración con la API y la interfaz de usuario</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#pestana-modelos">1. Pestaña Modelos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#pestana-predicciones">2. Pestaña Predicciones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#pestana-dashboard">3. Pestaña Dashboard</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#resumen">Resumen</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Teoría de modelos</a></li>
+      <li class="breadcrumb-item active">Implementación de modelos de Boltzmann en NeuroCampus</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/teoria/implementacion_neurocampus.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="implementacion-de-modelos-de-boltzmann-en-neurocampus">
+<h1>Implementación de modelos de Boltzmann en NeuroCampus<a class="headerlink" href="#implementacion-de-modelos-de-boltzmann-en-neurocampus" title="Link to this heading"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link to this heading"></a></h2>
+<p>Esta sección conecta los conceptos teóricos de Máquinas de Boltzmann (BM),
+Restricted Boltzmann Machines (RBM) y Deep Boltzmann Machines (DBM) con los
+módulos concretos del proyecto NeuroCampus.</p>
+<p>El propósito es que cualquier desarrollador pueda:</p>
+<ul class="simple">
+<li><p>Ubicar rápidamente dónde se implementa cada concepto teórico.</p></li>
+<li><p>Entender cómo se orquesta el entrenamiento, evaluación y el uso de los
+modelos en la aplicación (pestañas Modelos, Predicciones y Dashboard).</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="mapeo-conceptual-modulos-de-codigo">
+<h2>Mapeo conceptual → módulos de código<a class="headerlink" href="#mapeo-conceptual-modulos-de-codigo" title="Link to this heading"></a></h2>
+<section id="bm-maquinas-de-boltzmann">
+<h3>1. BM (Máquinas de Boltzmann)<a class="headerlink" href="#bm-maquinas-de-boltzmann" title="Link to this heading"></a></h3>
+<p><strong>Teoría</strong></p>
+<ul class="simple">
+<li><p>Modelo de energía con conexiones generales entre unidades visibles y
+ocultas.</p></li>
+<li><p>Probabilidad definida a partir de la energía y la función de partición.</p></li>
+<li><p>Entrenamiento mediante aproximaciones al gradiente (muestreo Monte Carlo,
+Gibbs, etc.).</p></li>
+</ul>
+<p><strong>Implementación en NeuroCampus</strong></p>
+<ul class="simple">
+<li><p>Módulo principal:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.bm_manual</span></code></p></li>
+</ul>
+</li>
+<li><p>Responsabilidades:</p>
+<ul>
+<li><p>Definir la estructura de la BM (número de visibles/ocultas, pesos, sesgos).</p></li>
+<li><p>Implementar la función de energía y las probabilidades condicionales
+necesarias.</p></li>
+<li><p>Proveer métodos de entrenamiento y actualización de parámetros.</p></li>
+</ul>
+</li>
+</ul>
+<p>La BM manual se integra en el ecosistema de modelos a través del registro de
+modelos y las estrategias de entrenamiento, permitiendo compararla con RBM y
+DBM desde la pestaña <strong>Modelos</strong>.</p>
+</section>
+<hr class="docutils" />
+<section id="rbm-restricted-boltzmann-machines">
+<h3>2. RBM (Restricted Boltzmann Machines)<a class="headerlink" href="#rbm-restricted-boltzmann-machines" title="Link to this heading"></a></h3>
+<p><strong>Teoría</strong></p>
+<ul class="simple">
+<li><p>Estructura bipartita: visibles–ocultas sin conexiones internas.</p></li>
+<li><p>Condicionales factorizadas que facilitan el muestreo:</p>
+<ul>
+<li><p>(P(h \mid v)) y (P(v \mid h)).</p></li>
+</ul>
+</li>
+<li><p>Entrenamiento mediante Contrastive Divergence (CD-k) y variantes.</p></li>
+</ul>
+<p><strong>Implementación en NeuroCampus</strong></p>
+<ul class="simple">
+<li><p>Módulo principal:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.rbm_manual</span></code></p></li>
+</ul>
+</li>
+<li><p>Estrategias y variantes:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.strategies.rbm_manual_strategy</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.strategies.rbm_pura</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.strategies.modelo_rbm_general</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.strategies.modelo_rbm_restringida</span></code></p></li>
+</ul>
+</li>
+<li><p>Jobs de entrenamiento:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.app.jobs.cmd_train_rbm_manual</span></code></p></li>
+<li><p>Otros comandos auxiliares para auditoría y búsqueda de hiperparámetros.</p></li>
+</ul>
+</li>
+<li><p>Auditoría y búsqueda de hiperparámetros:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.audit_kfold</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.hparam_search</span></code></p></li>
+</ul>
+</li>
+</ul>
+<p>Estas piezas trabajan juntas para:</p>
+<ul class="simple">
+<li><p>Entrenar RBM bajo distintos escenarios y configuraciones.</p></li>
+<li><p>Evaluar su desempeño usando validación cruzada y métricas estándar.</p></li>
+<li><p>Seleccionar configuraciones adecuadas que luego se integran como modelos
+candidatos en la pestaña <strong>Modelos</strong>.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="dbm-deep-boltzmann-machines">
+<h3>3. DBM (Deep Boltzmann Machines)<a class="headerlink" href="#dbm-deep-boltzmann-machines" title="Link to this heading"></a></h3>
+<p><strong>Teoría</strong></p>
+<ul class="simple">
+<li><p>Extensión de RBM/BM a múltiples capas ocultas.</p></li>
+<li><p>Interacciones entre capas adyacentes.</p></li>
+<li><p>Entrenamiento combinado de todas las capas, a menudo precedido de
+pre-entrenamiento por capas (RBM apiladas).</p></li>
+</ul>
+<p><strong>Implementación en NeuroCampus</strong></p>
+<ul class="simple">
+<li><p>Módulo principal:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.dbm_manual</span></code></p></li>
+</ul>
+</li>
+<li><p>Estrategias:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.models.strategies.dbm_manual_strategy</span></code></p></li>
+</ul>
+</li>
+<li><p>Jobs relacionados:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">neurocampus.app.jobs.cmd_train_dbm_manual</span></code> (nombre aproximado, según
+nomenclatura de jobs de entrenamiento).</p></li>
+</ul>
+</li>
+</ul>
+<p>En la práctica, la DBM se construye a partir de bloques RBM y comparte
+infraestructura con otros modelos (registro, auditoría, etc.). Esto permite:</p>
+<ul class="simple">
+<li><p>Reutilizar código de RBM manual para configurar las capas.</p></li>
+<li><p>Integrar la DBM en los mismos pipelines de entrenamiento y evaluación.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="estrategias-facades-y-registro-de-modelos">
+<h2>Estrategias, facades y registro de modelos<a class="headerlink" href="#estrategias-facades-y-registro-de-modelos" title="Link to this heading"></a></h2>
+<p>Para que los modelos de Boltzmann se integren de forma coherente con la API y
+el frontend, NeuroCampus define varias capas adicionales.</p>
+<section id="estrategias-de-entrenamiento-strategies">
+<h3>1. Estrategias de entrenamiento (<code class="docutils literal notranslate"><span class="pre">strategies/</span></code>)<a class="headerlink" href="#estrategias-de-entrenamiento-strategies" title="Link to this heading"></a></h3>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/models/strategies/</span></code>.</p>
+<p>Responsabilidades:</p>
+<ul class="simple">
+<li><p>Encapsular la lógica de entrenamiento de cada modelo:</p>
+<ul>
+<li><p>configuración de hiperparámetros,</p></li>
+<li><p>ciclos de epochs,</p></li>
+<li><p>cálculo de métricas (loss, accuracy, etc.).</p></li>
+</ul>
+</li>
+<li><p>Permitir que la capa de aplicación (routers, jobs) invoque entrenamientos
+de forma homogénea.</p></li>
+</ul>
+<p>Ejemplos:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">bm_manual_strategy.py</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rbm_manual_strategy.py</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dbm_manual_strategy.py</span></code></p></li>
+<li><p>Variantes específicas para distintos experimentos de RBM.</p></li>
+</ul>
+</section>
+<section id="registro-de-modelos-registry-py">
+<h3>2. Registro de modelos (<code class="docutils literal notranslate"><span class="pre">registry.py</span></code>)<a class="headerlink" href="#registro-de-modelos-registry-py" title="Link to this heading"></a></h3>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/models/registry.py</span></code>.</p>
+<p>Responsabilidades:</p>
+<ul class="simple">
+<li><p>Mantener un registro de los modelos disponibles (BM, RBM, DBM, etc.).</p></li>
+<li><p>Resolver qué modelo se debe usar para un determinado contexto (por ejemplo,
+tipo de dataset o configuración de experimento).</p></li>
+<li><p>Facilitar la carga y el guardado de artefactos (pesos, configuraciones,
+métricas).</p></li>
+</ul>
+</section>
+<section id="facade-de-modelos-facades-modelos-facade-py">
+<h3>3. Facade de modelos (<code class="docutils literal notranslate"><span class="pre">facades/modelos_facade.py</span></code>)<a class="headerlink" href="#facade-de-modelos-facades-modelos-facade-py" title="Link to this heading"></a></h3>
+<p>Ubicación: <code class="docutils literal notranslate"><span class="pre">neurocampus/models/facades/modelos_facade.py</span></code>.</p>
+<p>Responsabilidades:</p>
+<ul class="simple">
+<li><p>Proveer una interfaz de alto nivel para:</p>
+<ul>
+<li><p>lanzar entrenamientos,</p></li>
+<li><p>recuperar métricas,</p></li>
+<li><p>seleccionar el modelo campeón,</p></li>
+<li><p>preparar modelos para predicción.</p></li>
+</ul>
+</li>
+<li><p>Ocultar detalles internos de:</p>
+<ul>
+<li><p>cómo se instancian las clases de modelo,</p></li>
+<li><p>cómo se gestionan archivos de artefactos,</p></li>
+<li><p>cómo se integran resultados con otras capas del sistema.</p></li>
+</ul>
+</li>
+</ul>
+<p>Esta fachada es la que idealmente usan los routers de <code class="docutils literal notranslate"><span class="pre">modelos</span></code> y <code class="docutils literal notranslate"><span class="pre">prediccion</span></code>
+para interactuar con los diferentes modelos.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="integracion-con-la-api-y-la-interfaz-de-usuario">
+<h2>Integración con la API y la interfaz de usuario<a class="headerlink" href="#integracion-con-la-api-y-la-interfaz-de-usuario" title="Link to this heading"></a></h2>
+<section id="pestana-modelos">
+<h3>1. Pestaña Modelos<a class="headerlink" href="#pestana-modelos" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Usa endpoints de <code class="docutils literal notranslate"><span class="pre">neurocampus/app/routers/modelos.py</span></code> que delegan en:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">modelos_facade</span></code>,</p></li>
+<li><p>estrategias y registro de modelos.</p></li>
+</ul>
+</li>
+<li><p>Permite lanzar entrenamientos de BM, RBM, DBM y variantes, y obtener:</p>
+<ul>
+<li><p>métricas,</p></li>
+<li><p>curvas de entrenamiento,</p></li>
+<li><p>matrices de confusión.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="pestana-predicciones">
+<h3>2. Pestaña Predicciones<a class="headerlink" href="#pestana-predicciones" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Usa endpoints de <code class="docutils literal notranslate"><span class="pre">neurocampus/app/routers/prediccion.py</span></code> para aplicar el
+<strong>modelo campeón</strong> a nuevos datos.</p></li>
+<li><p>Internamente:</p>
+<ul>
+<li><p>recupera el modelo seleccionado a través del registro/facade,</p></li>
+<li><p>aplica el mismo preprocesamiento que se usó en entrenamiento,</p></li>
+<li><p>calcula probabilidades y clases finales.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="pestana-dashboard">
+<h3>3. Pestaña Dashboard<a class="headerlink" href="#pestana-dashboard" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Se nutre de métricas y predicciones agregadas generadas por los modelos
+de Boltzmann (y otros modelos que se integren en el futuro).</p></li>
+<li><p>Permite observar el impacto de las decisiones de modelado:</p>
+<ul>
+<li><p>mejor o peor calibración del modelo,</p></li>
+<li><p>distribución de riesgo,</p></li>
+<li><p>evolución del desempeño modelado en el tiempo.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="resumen">
+<h2>Resumen<a class="headerlink" href="#resumen" title="Link to this heading"></a></h2>
+<p>En NeuroCampus, la teoría de BM, RBM y DBM se concreta en:</p>
+<ul class="simple">
+<li><p>Módulos <code class="docutils literal notranslate"><span class="pre">bm_manual</span></code>, <code class="docutils literal notranslate"><span class="pre">rbm_manual</span></code>, <code class="docutils literal notranslate"><span class="pre">dbm_manual</span></code> para la implementación base.</p></li>
+<li><p>Estrategias de entrenamiento en <code class="docutils literal notranslate"><span class="pre">models/strategies/</span></code>.</p></li>
+<li><p>Auditorías y búsqueda de hiperparámetros (<code class="docutils literal notranslate"><span class="pre">audit_kfold</span></code>, <code class="docutils literal notranslate"><span class="pre">hparam_search</span></code>).</p></li>
+<li><p>Registro y facades (<code class="docutils literal notranslate"><span class="pre">registry</span></code>, <code class="docutils literal notranslate"><span class="pre">modelos_facade</span></code>).</p></li>
+<li><p>Integración con la API a través de routers de <code class="docutils literal notranslate"><span class="pre">modelos</span></code>, <code class="docutils literal notranslate"><span class="pre">prediccion</span></code> y
+<code class="docutils literal notranslate"><span class="pre">jobs</span></code>.</p></li>
+</ul>
+<p>Esta organización permite evolucionar la familia de modelos de Boltzmann sin
+romper la interfaz hacia el frontend ni los flujos de la aplicación.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="restricted_bm.html" class="btn btn-neutral float-left" title="Máquinas de Boltzmann (BM)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="../api_backend/index.html" class="btn btn-neutral float-right" title="API del backend" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

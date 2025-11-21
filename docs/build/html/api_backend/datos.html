@@ -1,0 +1,472 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Endpoints de datos &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Endpoints de jobs" href="jobs.html" />
+    <link rel="prev" title="API del backend" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">API del backend</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Endpoints de datos</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#resumen-de-endpoints-principales">Resumen de endpoints principales</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#get-datos-ping"><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/ping</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#descripcion">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#respuesta">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#get-datos-esquema"><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/esquema</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id1">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#entrada">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id2">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#post-datos-validar"><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/datos/validar</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id3">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id4">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#comportamiento-esperado">Comportamiento esperado</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id5">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#post-datos-upload"><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/datos/upload</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id6">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id7">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id8">Comportamiento esperado</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id9">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#get-datos-resumen"><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/resumen</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id10">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id11">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id12">Respuesta</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#get-datos-sentimientos"><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/sentimientos</span></code></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id13">Descripción</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id14">Entrada</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id15">Respuesta</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="jobs.html">Endpoints de jobs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="admin.html">Endpoints de administración</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">API del backend</a></li>
+      <li class="breadcrumb-item active">Endpoints de datos</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/api_backend/datos.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="endpoints-de-datos">
+<h1>Endpoints de datos<a class="headerlink" href="#endpoints-de-datos" title="Link to this heading"></a></h1>
+<p>La API de datos agrupa los endpoints relacionados con la <strong>ingesta</strong>,
+<strong>validación</strong>, <strong>preprocesamiento</strong> y <strong>resumen</strong> de los datasets usados por
+NeuroCampus.</p>
+<p>Todos los endpoints aquí descritos cuelgan del prefijo base:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">/datos</span></code></p></li>
+</ul>
+<hr class="docutils" />
+<section id="resumen-de-endpoints-principales">
+<h2>Resumen de endpoints principales<a class="headerlink" href="#resumen-de-endpoints-principales" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Método</p></th>
+<th class="head"><p>Ruta</p></th>
+<th class="head"><p>Descripción</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>GET</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/datos/ping</span></code></p></td>
+<td><p>Verificación rápida de salud del módulo de datos.</p></td>
+</tr>
+<tr class="row-odd"><td><p>GET</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/datos/esquema</span></code></p></td>
+<td><p>Devuelve el esquema esperado de columnas para los datasets</p></td>
+</tr>
+<tr class="row-even"><td><p>POST</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/datos/validar</span></code></p></td>
+<td><p>Valida un archivo sin persistirlo en el sistema</p></td>
+</tr>
+<tr class="row-odd"><td><p>POST</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/datos/upload</span></code></p></td>
+<td><p>Sube y registra un nuevo dataset</p></td>
+</tr>
+<tr class="row-even"><td><p>GET</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/datos/resumen</span></code></p></td>
+<td><p>Devuelve el resumen estructural del dataset activo</p></td>
+</tr>
+<tr class="row-odd"><td><p>GET</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/datos/sentimientos</span></code></p></td>
+<td><p>Devuelve agregados de análisis de sentimientos (BETO)</p></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<div><p><strong>Nota</strong>: los nombres concretos de los parámetros pueden variar según la
+implementación, pero esta sección resume la intención funcional de cada ruta.</p>
+</div></blockquote>
+</section>
+<hr class="docutils" />
+<section id="get-datos-ping">
+<h2><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/ping</span></code><a class="headerlink" href="#get-datos-ping" title="Link to this heading"></a></h2>
+<section id="descripcion">
+<h3>Descripción<a class="headerlink" href="#descripcion" title="Link to this heading"></a></h3>
+<p>Endpoint de comprobación rápida del módulo de datos. Útil para:</p>
+<ul class="simple">
+<li><p>Verificar la conectividad entre frontend y backend.</p></li>
+<li><p>Checks básicos en tests automáticos o sistemas de monitorización.</p></li>
+</ul>
+</section>
+<section id="respuesta">
+<h3>Respuesta<a class="headerlink" href="#respuesta" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> con un pequeño JSON indicando estado (por ejemplo,
+<code class="docutils literal notranslate"><span class="pre">{</span> <span class="pre">&quot;status&quot;:</span> <span class="pre">&quot;ok&quot;</span> <span class="pre">}</span></code>).</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="get-datos-esquema">
+<h2><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/esquema</span></code><a class="headerlink" href="#get-datos-esquema" title="Link to this heading"></a></h2>
+<section id="id1">
+<h3>Descripción<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<p>Devuelve el <strong>esquema esperado de columnas</strong> para los datasets de evaluaciones
+docentes. Esta información se utiliza:</p>
+<ul class="simple">
+<li><p>En la pestaña <strong>Datos</strong> para mostrar la plantilla de columnas.</p></li>
+<li><p>Como referencia al preparar archivos para carga o predicción por lote.</p></li>
+</ul>
+</section>
+<section id="entrada">
+<h3>Entrada<a class="headerlink" href="#entrada" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Parámetros típicos (opcional):</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">tipo</span></code> o <code class="docutils literal notranslate"><span class="pre">dataset_id</span></code> para seleccionar una variante de esquema, si aplica.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id2">
+<h3>Respuesta<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code>.</p></li>
+<li><p>Cuerpo JSON con campos similares a:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">version</span></code>: versión del esquema.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">columns</span></code>: lista de columnas esperadas con información como:</p>
+<ul>
+<li><p>nombre interno,</p></li>
+<li><p>tipo de dato,</p></li>
+<li><p>si es requerida u opcional,</p></li>
+<li><p>descripción.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>Ejemplo simplificado:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.3.0&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;columns&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;docente&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;string&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;required&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;asignatura&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;string&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;required&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;p1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;number&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;required&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
+<span class="w">    </span><span class="s2">&quot;...&quot;</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="post-datos-validar">
+<h2><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/datos/validar</span></code><a class="headerlink" href="#post-datos-validar" title="Link to this heading"></a></h2>
+<section id="id3">
+<h3>Descripción<a class="headerlink" href="#id3" title="Link to this heading"></a></h3>
+<p>Valida un archivo de datos <strong>sin persistirlo</strong> en el sistema. Se utiliza para:</p>
+<ul class="simple">
+<li><p>Comprobar que el archivo cumple con el esquema esperado.</p></li>
+<li><p>Obtener una vista previa de filas y posibles errores antes de cargarlo.</p></li>
+</ul>
+</section>
+<section id="id4">
+<h3>Entrada<a class="headerlink" href="#id4" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">multipart/form-data</span></code> con campos típicos:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">file</span></code>: archivo a validar (<code class="docutils literal notranslate"><span class="pre">.csv</span></code>, <code class="docutils literal notranslate"><span class="pre">.xlsx</span></code>, <code class="docutils literal notranslate"><span class="pre">.xls</span></code>, <code class="docutils literal notranslate"><span class="pre">.parquet</span></code>, etc.).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code> (opcional): identificador que se planea asignar al dataset.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="comportamiento-esperado">
+<h3>Comportamiento esperado<a class="headerlink" href="#comportamiento-esperado" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>El backend:</p>
+<ul>
+<li><p>Lee el archivo con un adaptador de formato.</p></li>
+<li><p>Aplica la cadena de validación definida en <code class="docutils literal notranslate"><span class="pre">neurocampus.data</span></code> / <code class="docutils literal notranslate"><span class="pre">validation</span></code>.</p></li>
+<li><p>Devuelve un informe de validación y, opcionalmente, una muestra de filas.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id5">
+<h3>Respuesta<a class="headerlink" href="#id5" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> si el archivo es legible (aunque tenga errores de validación).</p></li>
+<li><p>Cuerpo JSON típico:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">ok</span></code>: <code class="docutils literal notranslate"><span class="pre">true</span></code> / <code class="docutils literal notranslate"><span class="pre">false</span></code> según el resultado de validación.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">errors</span></code>: lista de errores.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">warnings</span></code>: lista de advertencias.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sample</span></code>: muestra de filas (por ejemplo, primeras 5–10).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: identificador sugerido o inferido (si aplica).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="post-datos-upload">
+<h2><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/datos/upload</span></code><a class="headerlink" href="#post-datos-upload" title="Link to this heading"></a></h2>
+<section id="id6">
+<h3>Descripción<a class="headerlink" href="#id6" title="Link to this heading"></a></h3>
+<p>Carga y registra un nuevo dataset en el sistema. Este endpoint suele engancharse
+a la acción <strong>«Cargar y procesar»</strong> de la pestaña <strong>Datos</strong>.</p>
+</section>
+<section id="id7">
+<h3>Entrada<a class="headerlink" href="#id7" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">multipart/form-data</span></code> con campos típicos:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">file</span></code>: archivo con las evaluaciones docentes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: identificador del dataset (por ejemplo, <code class="docutils literal notranslate"><span class="pre">2024-2</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">overwrite</span></code>: booleano que indica si se debe sobrescribir un dataset ya
+existente con el mismo <code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>.</p></li>
+<li><p>Flags adicionales (según implementación):</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">run_preproc</span></code>: aplicar preprocesamiento al cargar.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">run_beto</span></code>: lanzar job de análisis de sentimientos tras el preprocesamiento.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id8">
+<h3>Comportamiento esperado<a class="headerlink" href="#id8" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>El backend:</p>
+<ul>
+<li><p>Valida el archivo.</p></li>
+<li><p>Lo transforma al formato interno estándar.</p></li>
+<li><p>Lo guarda en la ubicación configurada (<code class="docutils literal notranslate"><span class="pre">data/</span></code>).</p></li>
+<li><p>Genera y persiste un <strong>resumen de dataset</strong>.</p></li>
+<li><p>Si se indica, lanza el job de BETO.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id9">
+<h3>Respuesta<a class="headerlink" href="#id9" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>En caso de éxito, código <code class="docutils literal notranslate"><span class="pre">201</span> <span class="pre">Created</span></code> o <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code>.</p></li>
+<li><p>Cuerpo JSON típico:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">ok</span></code>: <code class="docutils literal notranslate"><span class="pre">true</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: identificador efectivamente registrado.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rows_ingested</span></code>: número de filas ingestadas.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">stored_as</span></code>: ruta o URI donde quedó almacenado el dataset.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">preproc_job_id</span></code>: id del job de preprocesamiento, si aplica.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">beto_job_id</span></code>: id del job BETO lanzado, si aplica.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="get-datos-resumen">
+<h2><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/resumen</span></code><a class="headerlink" href="#get-datos-resumen" title="Link to this heading"></a></h2>
+<section id="id10">
+<h3>Descripción<a class="headerlink" href="#id10" title="Link to this heading"></a></h3>
+<p>Devuelve un resumen estructural del dataset activo o del <code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>
+especificado. Es la base de la sección <strong>«Resumen del dataset»</strong> en la pestaña
+<strong>Datos</strong>.</p>
+</section>
+<section id="id11">
+<h3>Entrada<a class="headerlink" href="#id11" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Parámetros de query típicos:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code> (opcional): si no se indica, puede usarse un dataset por
+defecto o el último cargado.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id12">
+<h3>Respuesta<a class="headerlink" href="#id12" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> en caso de éxito.</p></li>
+<li><p>Cuerpo JSON con información como:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">n_rows</span></code>, <code class="docutils literal notranslate"><span class="pre">n_columns</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">columns</span></code>: lista de columnas con tipos y estadísticas básicas.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">docentes_count</span></code>, <code class="docutils literal notranslate"><span class="pre">asignaturas_count</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">periodos</span></code>: listado o rango de periodos detectados.</p></li>
+<li><p>Otros agregados de interés para el dashboard de datos.</p></li>
+</ul>
+</li>
+</ul>
+<p>Esta información se utiliza para poblar las tarjetas, tablas y gráficos del
+<strong>resumen de dataset</strong>.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="get-datos-sentimientos">
+<h2><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/datos/sentimientos</span></code><a class="headerlink" href="#get-datos-sentimientos" title="Link to this heading"></a></h2>
+<section id="id13">
+<h3>Descripción<a class="headerlink" href="#id13" title="Link to this heading"></a></h3>
+<p>Devuelve agregados de <strong>análisis de sentimientos</strong> derivados del preprocesamiento
+con BETO. Se usa tanto en la pestaña <strong>Datos</strong> como, potencialmente, en otras
+vistas analíticas.</p>
+</section>
+<section id="id14">
+<h3>Entrada<a class="headerlink" href="#id14" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Parámetros de query típicos:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>: dataset sobre el que se quiere consultar.</p></li>
+<li><p>Otros filtros opcionales (por ejemplo, <code class="docutils literal notranslate"><span class="pre">docente</span></code>, <code class="docutils literal notranslate"><span class="pre">asignatura</span></code>), según la
+implementación.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id15">
+<h3>Respuesta<a class="headerlink" href="#id15" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Código <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> en caso de éxito.</p></li>
+<li><p>Cuerpo JSON con campos típicos:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">global_counts</span></code>: lista de objetos resumen global (pos/neu/neg), con recuentos
+y proporciones.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">top_docentes</span></code>: agregados por docente ordenados según alguna métrica.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">coverage</span></code> y otros indicadores auxiliares (porcentaje de filas con texto,
+tasa de éxito del modelo, etc.).</p></li>
+</ul>
+</li>
+</ul>
+<p>Estos datos alimentan:</p>
+<ul class="simple">
+<li><p>Gráfico de barras global (positivo / neutro / negativo).</p></li>
+<li><p>Tablas y gráficos por docente/asignatura.</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="index.html" class="btn btn-neutral float-left" title="API del backend" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="jobs.html" class="btn btn-neutral float-right" title="Endpoints de jobs" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

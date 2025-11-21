@@ -3,10 +3,9 @@
 // Pestaña «Datos» del frontend NeuroCampus.
 // Responsabilidades principales:
 //
-//  - Conectar el formulario con los servicios de backend
-//    (esquema, validación, subida, resumen y sentimientos/BETO).
-//  - Presentar ingesta y resumen en un layout de dos columnas.
-//  - Mostrar el análisis de sentimientos (BETO) en formato gráfico.
+//  - Ingesta de nuevos datasets (carga y validación básica).
+//  - Resumen estructural del dataset cargado.
+//  - Análisis de sentimientos con BETO y visualizaciones asociadas.
 //
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -95,6 +94,11 @@ function preflightChecks(file: File | null): { ok: boolean; message?: string } {
   return { ok: true };
 }
 
+/**
+ * Pequeño helper para usar esperas en el polling de BETO.
+ */
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /* ==========================================================================
  * 2. Tipos locales y helpers de esquema (plantilla)
  * ========================================================================== */
@@ -147,6 +151,8 @@ export default function DataUpload() {
   const [file, setFile] = useState<File | null>(null);
   const [periodo, setPeriodo] = useState<string>("2024-2"); // dataset_id / periodo
   const [overwrite, setOverwrite] = useState<boolean>(false);
+  const [applyPreproc, setApplyPreproc] = useState<boolean>(true);
+  const [runSentiment, setRunSentiment] = useState<boolean>(true);
 
   // --- Estado: respuestas de subida ---
   const [fetching, setFetching] = useState<boolean>(true);
@@ -170,8 +176,8 @@ export default function DataUpload() {
   const [betoJob, setBetoJob] = useState<BetoPreprocJob | null>(null);
   const [betoLaunching, setBetoLaunching] = useState<boolean>(false);
 
-  // Controla si se lanza BETO automáticamente tras la carga
-  const [autoLaunchBeto, setAutoLaunchBeto] = useState<boolean>(true);
+  // --- Estado: plantilla de columnas visible/oculta ---
+  const [showSchemaDetails, setShowSchemaDetails] = useState<boolean>(false);
 
   /* ------------------------------------------------------------------------
    * Efectos
@@ -190,7 +196,7 @@ export default function DataUpload() {
         setError(
           e?.response?.data?.detail ||
             e?.message ||
-            "No se pudo obtener el esquema."
+            "No se pudo obtener el esquema de columnas."
         );
       } finally {
         setFetching(false);
@@ -198,8 +204,67 @@ export default function DataUpload() {
     })();
   }, []);
 
+  // Polling simple de sentimientos tras lanzar un job de BETO (paso 5.2).
+  // En lugar de consultar el estado del job, intentamos recuperar los
+  // sentimientos varias veces hasta que estén disponibles.
+  useEffect(() => {
+    if (!betoJob?.id) return;
+    let cancelled = false;
+
+    async function pollSentimientos() {
+      // Si el backend devuelve inicialmente "created", en el frontend lo
+      // marcamos como "running" mientras esperamos los resultados.
+      setBetoJob((prev) =>
+        prev ? { ...prev, status: prev.status === "created" ? "running" : prev.status } : prev
+      );
+
+      setLoadingSent(true);
+      setSentError(null);
+
+      try {
+        const dataset = periodo.trim();
+        // Intentos limitados para evitar bucles infinitos
+        for (let attempt = 0; attempt < 10 && !cancelled; attempt++) {
+          try {
+            const sent = await getSentimientos({ dataset });
+            if (cancelled) return;
+            setSentimientos(sent);
+            setBetoJob((prev) =>
+              prev ? { ...prev, status: "finished" as any } : prev
+            );
+            return;
+          } catch (err) {
+            // Si aún no está listo, esperamos un poco y volvemos a intentar
+            await sleep(3000);
+          }
+        }
+
+        if (!cancelled) {
+          setSentError(
+            "No se pudo obtener el análisis de sentimientos tras ejecutar BETO."
+          );
+          setBetoJob((prev) =>
+            prev ? { ...prev, status: "failed" as any } : prev
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingSent(false);
+        }
+      }
+    }
+
+    void pollSentimientos();
+
+    return () => {
+      cancelled = true;
+    };
+    // Solo relanzar el polling cuando el id del job cambie
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [betoJob?.id]);
+
   /* ------------------------------------------------------------------------
-   * Datos derivados para gráficas de sentimientos (robustos a mocks incompletos)
+   * Datos derivados para gráficas de sentimientos
    * ------------------------------------------------------------------------ */
 
   const globalChartData = useMemo(
@@ -241,18 +306,13 @@ export default function DataUpload() {
    * ------------------------------------------------------------------------ */
 
   /**
-   * Carga el resumen y el análisis de sentimientos para un dataset.
-   * Se llama:
-   *  - después de una carga exitosa,
-   *  - desde el botón «Actualizar» en el panel derecho.
+   * Carga el resumen para un dataset concreto.
+   * Se usa después de la ingesta y desde el botón «Actualizar».
    */
-  async function fetchResumenYSentimientos(datasetId: string) {
+  async function fetchResumen(datasetId: string) {
     const trimmed = datasetId.trim();
     if (!trimmed) return;
 
-    setSentError(null);
-
-    // Resumen del dataset
     setLoadingResumen(true);
     try {
       const res = await getResumen({ dataset: trimmed });
@@ -262,11 +322,17 @@ export default function DataUpload() {
     } finally {
       setLoadingResumen(false);
     }
+  }
 
-    // Sentimientos (BETO)
+  /**
+   * Carga tanto resumen como sentimientos en un solo paso.
+   */
+  async function fetchResumenYSentimientos(datasetId: string) {
+    await fetchResumen(datasetId);
     setLoadingSent(true);
+    setSentError(null);
     try {
-      const sent = await getSentimientos({ dataset: trimmed });
+      const sent = await getSentimientos({ dataset: datasetId.trim() });
       setSentimientos(sent);
     } catch (e: any) {
       console.error("Error obteniendo sentimientos:", e);
@@ -295,6 +361,7 @@ export default function DataUpload() {
     try {
       const job = await launchBetoPreproc({ dataset: trimmed });
       setBetoJob(job);
+      // El polling de sentimientos se dispara en el useEffect que observa betoJob.id
     } catch (e: any) {
       console.error("Error lanzando BETO:", e);
       setSentError(
@@ -310,8 +377,8 @@ export default function DataUpload() {
   /**
    * Maneja la subida de dataset (ingesta).
    * Si la subida es correcta:
-   *  - refresca el panel derecho (resumen + sentimientos),
-   *  - lanza BETO si está activado autoLaunchBeto.
+   *  - refresca el resumen si applyPreproc está activo,
+   *  - lanza BETO si runSentiment está activo.
    */
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -334,11 +401,13 @@ export default function DataUpload() {
       const r = await uploadDatos(file as File, trimmed, overwrite);
       setResult(r);
 
-      // Actualizar panel derecho con el dataset recién cargado
-      void fetchResumenYSentimientos(trimmed);
+      // Resumen automático tras la carga (según flag de preprocesamiento)
+      if (applyPreproc) {
+        void fetchResumen(trimmed);
+      }
 
-      // Lanzar BETO automáticamente si está activado
-      if (autoLaunchBeto) {
+      // Lanzar BETO desde la propia carga si así se indica
+      if (runSentiment) {
         void runBeto(trimmed);
       }
     } catch (e: any) {
@@ -415,22 +484,24 @@ export default function DataUpload() {
     <div className="p-6 space-y-6">
       {/* Encabezado general */}
       <header className="space-y-1">
-        <h1 className="text-2xl font-bold">Datos — Ingesta y análisis</h1>
-        <p className="text-sm opacity-80">
-          Esquema versión <strong>{version || "…"}</strong>{" "}
-          <span className="opacity-60">(GET /datos/esquema)</span>
-        </p>
-        <p className="text-xs opacity-60">
-          Ruta: Datos / Ingesta y análisis · Límite de archivo en cliente:{" "}
-          <b>{MAX_UPLOAD_MB} MB</b>
+        <h1 className="text-2xl font-bold">
+          Datos <span className="opacity-60">/ Ingesta y análisis</span>
+        </h1>
+        <p className="text-xs opacity-70">
+          Esquema de datos{" "}
+          <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]">
+            v{version || "…"}
+          </span>
         </p>
       </header>
 
-      {/* Layout 2 columnas (izquierda: ingesta/validación, derecha: resumen/BETO) */}
+      {/* Layout principal: dos columnas como en el mock */}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
-        {/* Columna izquierda: formulario de ingesta + validación */}
+        {/* COLUMNA IZQUIERDA: Ingreso de dataset */}
         <div className="space-y-4">
-          <form onSubmit={onSubmit} className="space-y-4">
+          <section className="space-y-4 rounded-2xl bg-white/5 p-4 shadow">
+            <h2 className="text-lg font-semibold">Ingreso de dataset</h2>
+
             <UploadDropzone
               onFileSelected={setFile}
               accept=".csv,.xlsx,.xls,.parquet"
@@ -444,48 +515,70 @@ export default function DataUpload() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <label className="block">
                 <span className="text-sm">Periodo (dataset_id)</span>
                 <input
                   aria-label="dataset id"
-                  className="w-full border rounded-xl p-2"
+                  className="w-full border rounded-xl p-2 bg-transparent"
                   value={periodo}
                   onChange={(e) => setPeriodo(e.target.value)}
                   placeholder="2024-2"
                 />
               </label>
 
-              <label className="flex items-center gap-2">
+              <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={overwrite}
                   onChange={(e) => setOverwrite(e.target.checked)}
                 />
-                <span className="text-sm">Sobrescribir si existe</span>
+                <span>Sobrescribir si el dataset ya existe</span>
+              </label>
+            </div>
+
+            <div className="space-y-2 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={applyPreproc}
+                  onChange={(e) => setApplyPreproc(e.target.checked)}
+                />
+                <span>Aplicar preprocesamiento y actualizar resumen</span>
               </label>
 
-              <div className="flex gap-2 justify-start md:justify-end">
-                <button
-                  className="px-4 py-2 rounded-xl shadow"
-                  disabled={submitting}
-                  type="submit"
-                >
-                  {submitting ? "Subiendo…" : "Subir dataset"}
-                </button>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={runSentiment}
+                  onChange={(e) => setRunSentiment(e.target.checked)}
+                />
+                <span>Ejecutar análisis de sentimientos con BETO</span>
+              </label>
+            </div>
 
+            <div className="flex flex-wrap gap-2 justify-between items-center">
+              <button
+                className="px-4 py-2 rounded-xl shadow bg-blue-600 text-white disabled:opacity-60"
+                disabled={submitting}
+                type="button"
+                onClick={onSubmit}
+              >
+                {submitting ? "Procesando…" : "Cargar y procesar"}
+              </button>
+
+              <div className="flex gap-2">
                 <button
                   type="button"
-                  className="px-4 py-2 rounded-xl border"
+                  className="px-3 py-2 rounded-xl border text-xs"
                   disabled={valLoading || !file}
                   onClick={onValidate}
                 >
                   {valLoading ? "Validando…" : "Validar sin guardar"}
                 </button>
-
                 <button
                   type="button"
-                  className="px-4 py-2 rounded-xl border"
+                  className="px-3 py-2 rounded-xl border text-xs"
                   onClick={onClear}
                 >
                   Limpiar
@@ -493,26 +586,15 @@ export default function DataUpload() {
               </div>
             </div>
 
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={autoLaunchBeto}
-                onChange={(e) => setAutoLaunchBeto(e.target.checked)}
-              />
-              <span>Lanzar análisis de sentimientos (BETO) tras la carga</span>
-            </label>
-          </form>
+            {/* Mensajes de estado de ingesta */}
+            {error && (
+              <div className="mt-2 p-3 rounded-xl bg-red-100 text-red-800 text-sm">
+                {error}
+              </div>
+            )}
 
-          {/* Mensajes de error y resultado de ingesta */}
-          {error && (
-            <div className="p-3 rounded-xl bg-red-100 text-red-800">{error}</div>
-          )}
-
-          {result && (
-            <div className="p-4 rounded-xl border space-y-2">
-              <h2 className="font-semibold">Resultado de carga</h2>
-
-              <div className="text-sm space-y-1">
+            {result && (
+              <div className="mt-2 p-3 rounded-xl border text-sm space-y-1">
                 <div>
                   <strong>dataset_id:</strong> {result.dataset_id ?? periodo}
                 </div>
@@ -524,71 +606,48 @@ export default function DataUpload() {
                   <strong>stored_as:</strong>{" "}
                   <span className="mono">{result.stored_as ?? "—"}</span>
                 </div>
-
                 {typeof (result as any)?.message === "string" && (
-                  <div
-                    className="mono"
-                    style={{ color: (result as any)?.ok ? "#00c48c" : "#fca5a5" }}
-                  >
-                    message: {(result as any).message}
+                  <div className="mono">
+                    {((result as any)?.ok ?? false)
+                      ? "Ingesta realizada correctamente."
+                      : (result as any).message}
                   </div>
                 )}
-
-                {Array.isArray((result as any)?.warnings) &&
-                  (result as any).warnings.length > 0 && (
-                    <div className="text-amber-400 mono">
-                      warnings: {(result as any).warnings.join(", ")}
-                    </div>
-                  )}
               </div>
+            )}
 
-              {(() => {
-                const ok = (result as any)?.ok ?? false;
-                const ing = Number((result as any).rows_ingested ?? 0);
-                if (ing > 0 || ok === true) {
-                  return (
-                    <div className="mt-2 text-sm text-green-500">
-                      Ingesta realizada correctamente. Ya puedes continuar con el flujo.
-                    </div>
-                  );
-                }
-                return (
-                  <div className="mt-2 text-sm text-yellow-400">
-                    Ingesta no confirmada. Revisa el mensaje del backend o usa
-                    «Validar sin guardar».
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-
-          {/* Resultado de validación sin guardar */}
-          {valError && (
-            <div className="p-3 rounded-xl bg-red-50 text-red-700">{valError}</div>
-          )}
+            {/* Resultado de validación sin guardar */}
+            {valError && (
+              <div className="mt-2 p-3 rounded-xl bg-red-50 text-red-700 text-sm">
+                {valError}
+              </div>
+            )}
+          </section>
 
           {validRes?.sample?.length ? (
-            <div className="p-4 rounded-xl border space-y-2">
-              <h2 className="font-semibold">Muestra del archivo validado</h2>
+            <section className="p-4 rounded-2xl bg-white/5 shadow space-y-2">
+              <h3 className="font-semibold text-sm">
+                Muestra del archivo validado
+              </h3>
               <ResultsTable
                 columns={Object.keys(validRes.sample[0])
                   .slice(0, 8)
                   .map((k) => ({ key: k, header: k }))}
                 rows={validRes.sample}
               />
-            </div>
+            </section>
           ) : null}
         </div>
 
-        {/* Columna derecha: resumen del dataset + análisis de sentimientos */}
+        {/* COLUMNA DERECHA: Resumen + BETO */}
         <div className="space-y-4">
           {/* Resumen del dataset */}
-          <section className="space-y-3 rounded-2xl bg-white shadow p-4">
+          <section className="space-y-3 rounded-2xl bg-white/5 p-4 shadow">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <h2 className="text-lg font-semibold">Resumen del dataset</h2>
                 <p className="text-xs opacity-70">
-                  Filas, columnas, periodos y principales columnas detectadas.
+                  Filas, columnas, periodos y principales indicadores.
                 </p>
               </div>
               <button
@@ -603,17 +662,17 @@ export default function DataUpload() {
 
             {resumen ? (
               <>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="p-3 rounded-2xl bg-slate-50">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div className="p-3 rounded-2xl bg-slate-900/40">
                     <div className="text-[10px] uppercase opacity-60">Filas</div>
                     <div className="text-xl font-semibold">{resumen.n_rows}</div>
                   </div>
-                  <div className="p-3 rounded-2xl bg-slate-50">
+                  <div className="p-3 rounded-2xl bg-slate-900/40">
                     <div className="text-[10px] uppercase opacity-60">Columnas</div>
                     <div className="text-xl font-semibold">{resumen.n_cols}</div>
                   </div>
                   {resumen.n_docentes != null && (
-                    <div className="p-3 rounded-2xl bg-slate-50">
+                    <div className="p-3 rounded-2xl bg-slate-900/40">
                       <div className="text-[10px] uppercase opacity-60">Docentes</div>
                       <div className="text-xl font-semibold">
                         {resumen.n_docentes}
@@ -621,7 +680,7 @@ export default function DataUpload() {
                     </div>
                   )}
                   {resumen.n_asignaturas != null && (
-                    <div className="p-3 rounded-2xl bg-slate-50">
+                    <div className="p-3 rounded-2xl bg-slate-900/40">
                       <div className="text-[10px] uppercase opacity-60">
                         Asignaturas
                       </div>
@@ -650,7 +709,7 @@ export default function DataUpload() {
 
                 <div className="rounded-2xl border overflow-auto max-h-64">
                   <table className="min-w-full text-xs">
-                    <thead className="bg-slate-50">
+                    <thead className="bg-slate-900/60">
                       <tr>
                         <th className="px-3 py-2 text-left">Columna</th>
                         <th className="px-3 py-2 text-left">Tipo</th>
@@ -660,7 +719,7 @@ export default function DataUpload() {
                     </thead>
                     <tbody>
                       {(resumen.columns ?? []).map((col) => (
-                        <tr key={col.name} className="border-t">
+                        <tr key={col.name} className="border-t border-slate-800">
                           <td className="px-3 py-1 font-mono text-[11px]">
                             {col.name}
                           </td>
@@ -680,13 +739,13 @@ export default function DataUpload() {
             ) : (
               <p className="text-sm opacity-70">
                 Aún no hay resumen para este dataset. Sube un archivo y pulsa
-                «Actualizar».
+                «Cargar y procesar» o «Actualizar».
               </p>
             )}
           </section>
 
           {/* Panel de análisis de sentimientos (BETO) */}
-          <section className="space-y-3 rounded-2xl bg-white shadow p-4">
+          <section className="space-y-3 rounded-2xl bg-white/5 p-4 shadow">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <h2 className="text-lg font-semibold">
@@ -700,7 +759,7 @@ export default function DataUpload() {
               <div className="flex flex-col items-end gap-1">
                 {betoJob && (
                   <div className="text-[10px] opacity-70 text-right">
-                    <div className="font-semibold">Job BETO lanzado</div>
+                    <div className="font-semibold">Job BETO</div>
                     <div className="font-mono break-all">{betoJob.id}</div>
                     <div>estado: {betoJob.status}</div>
                   </div>
@@ -734,7 +793,7 @@ export default function DataUpload() {
                 </p>
 
                 {/* Gráfico global de sentimientos */}
-                <div className="h-48 rounded-2xl bg-slate-50 p-3">
+                <div className="h-48 rounded-2xl bg-slate-900/40 p-3">
                   <h3 className="text-xs font-semibold mb-2">
                     Distribución global
                   </h3>
@@ -744,13 +803,13 @@ export default function DataUpload() {
                       <XAxis dataKey="label" />
                       <YAxis />
                       <Tooltip />
-                      <Bar dataKey="count" name="Comentarios" fill="#0f766e" />
+                      <Bar dataKey="count" name="Comentarios" fill="#22c55e" />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
 
                 {/* Gráfico por docente (top 10) */}
-                <div className="h-64 rounded-2xl bg-slate-50 p-3">
+                <div className="h-64 rounded-2xl bg-slate-900/40 p-3">
                   <h3 className="text-xs font-semibold mb-2">
                     Por docente (top 10 por número de comentarios)
                   </h3>
@@ -775,61 +834,83 @@ export default function DataUpload() {
                 1) Asegúrate de que existe un dataset procesado para el periodo
                 indicado.
                 <br />
-                2) Lanza BETO desde aquí o desde la pestaña Jobs.
+                2) Marca «Ejecutar análisis de sentimientos» al cargar, o usa el
+                botón «Ejecutar BETO».
                 <br />
-                3) Pulsa «Actualizar» en el panel de resumen.
+                3) Usa «Actualizar» para refrescar los resultados.
               </p>
             )}
           </section>
         </div>
       </div>
 
-      {/* Tabla de esquema (plantilla) a ancho completo */}
+      {/* Plantilla de columnas: sección auxiliar para documentación */}
       <section className="space-y-2">
-        <h2 className="font-semibold">Columnas esperadas (plantilla)</h2>
-        <div className="overflow-auto border rounded-xl">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr>
-                <th className="text-left p-2">Columna</th>
-                <th className="text-left p-2">Tipo</th>
-                <th className="text-left p-2">Requerida</th>
-                <th className="text-left p-2">Descripción</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!fetching &&
-                rows.map((r) => (
-                  <tr key={r.name} className="border-t">
-                    <td className="p-2">{r.name}</td>
-                    <td className="p-2">{r.dtype ?? "-"}</td>
-                    <td className="p-2">{r.required ? "Sí" : "No"}</td>
-                    <td className="p-2">{r.desc ?? "-"}</td>
-                  </tr>
-                ))}
-              {fetching && (
-                <tr>
-                  <td className="p-2" colSpan={4}>
-                    Cargando esquema…
-                  </td>
-                </tr>
-              )}
-              {!fetching && rows.length === 0 && (
-                <tr>
-                  <td className="p-2" colSpan={4}>
-                    Sin datos (verifica backend).
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-sm">
+            Plantilla de columnas (para referencia)
+          </h2>
+          <button
+            type="button"
+            className="text-xs underline"
+            onClick={() => setShowSchemaDetails((v) => !v)}
+          >
+            {showSchemaDetails ? "Ocultar plantilla" : "Ver plantilla"}
+          </button>
         </div>
 
-        <div className="text-xs opacity-80 space-y-1">
-          <p>* Los campos de PLN no van en la plantilla (se calculan más adelante).</p>
-          <p>* Los encabezados con espacios/acentos se normalizan automáticamente.</p>
-          <p>* Se aplica coerción de tipos previa y se pueden exigir patrones.</p>
-        </div>
+        {showSchemaDetails && (
+          <>
+            <div className="overflow-auto border rounded-xl">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr>
+                    <th className="text-left p-2">Columna</th>
+                    <th className="text-left p-2">Tipo</th>
+                    <th className="text-left p-2">Requerida</th>
+                    <th className="text-left p-2">Descripción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!fetching &&
+                    rows.map((r) => (
+                      <tr key={r.name} className="border-t">
+                        <td className="p-2">{r.name}</td>
+                        <td className="p-2">{r.dtype ?? "-"}</td>
+                        <td className="p-2">{r.required ? "Sí" : "No"}</td>
+                        <td className="p-2">{r.desc ?? "-"}</td>
+                      </tr>
+                    ))}
+                  {fetching && (
+                    <tr>
+                      <td className="p-2" colSpan={4}>
+                        Cargando esquema…
+                      </td>
+                    </tr>
+                  )}
+                  {!fetching && rows.length === 0 && (
+                    <tr>
+                      <td className="p-2" colSpan={4}>
+                        No se pudo cargar la plantilla de columnas desde el backend.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="text-xs opacity-80 space-y-1">
+              <p>
+                · Esta plantilla describe las columnas esperadas en los datasets
+                de evaluación docente.
+              </p>
+              <p>
+                · Algunos campos derivados de PLN se calculan en etapas posteriores
+                del pipeline.
+              </p>
+            </div>
+          </>
+        )}
       </section>
     </div>
   );

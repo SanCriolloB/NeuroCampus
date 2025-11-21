@@ -77,7 +77,7 @@ help:
 	@echo "  be-test          - Tests backend"
 	@echo "  fe-test          - Tests frontend"
 	@echo "  validate-sample  - Validar dataset de ejemplo via API"
-
+	@echo "  docs-html  	  - Crear documentacion"
 # ===========================
 # Entorno virtual
 # ===========================
@@ -297,3 +297,8 @@ validate-sample:
 	@echo ">> Validando archivo '$(NC_SAMPLE_CSV)' como dataset_id=$(NC_DATASET_ID) contra http://$(API_HOST):$(API_PORT)/datos/validar"
 	@curl -s -F "file=@$(NC_SAMPLE_CSV)" -F "dataset_id=$(NC_DATASET_ID)" \
 		"http://$(API_HOST):$(API_PORT)/datos/validar" | jq .
+
+# HTML de la documentacion
+.PHONY: docs-html
+docs-html:
+	@cd docs && make html

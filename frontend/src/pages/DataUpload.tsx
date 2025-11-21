@@ -72,7 +72,8 @@ function inferFormatFromFilename(
  *  - tamaño máximo permitido.
  */
 function preflightChecks(file: File | null): { ok: boolean; message?: string } {
-  if (!file) return { ok: false, message: "Selecciona un archivo CSV/XLSX/Parquet." };
+  if (!file)
+    return { ok: false, message: "Selecciona un archivo CSV/XLSX/Parquet." };
 
   const lower = (file.name || "").toLowerCase();
   const hasAllowedExt = ALLOWED_EXT.some((ext) => lower.endsWith(ext));
@@ -94,19 +95,15 @@ function preflightChecks(file: File | null): { ok: boolean; message?: string } {
   return { ok: true };
 }
 
-/**
- * Pequeño helper para usar esperas en el polling de BETO.
- */
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Pequeño helper para usar esperas en el polling de BETO. */
+const sleep = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /* ==========================================================================
  * 2. Tipos locales y helpers de esquema (plantilla)
  * ========================================================================== */
 
-/**
- * Fila normalizada para la tabla de plantilla de columnas.
- * Se deriva de EsquemaResp para simplificar el renderizado.
- */
+/** Fila normalizada para la tabla de plantilla de columnas. */
 type SchemaRow = {
   name: string;
   dtype?: string | null;
@@ -114,9 +111,7 @@ type SchemaRow = {
   desc?: string | null;
 };
 
-/**
- * Normaliza EsquemaResp (varias formas) a una lista de SchemaRow.
- */
+/** Normaliza EsquemaResp (varias formas) a una lista de SchemaRow. */
 function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
   if (!schema) return [];
   if (Array.isArray(schema.fields) && schema.fields.length > 0) {
@@ -128,12 +123,15 @@ function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
     }));
   }
 
-  // Soporte para esquemas más simples (solo required/optional)
   const req = Array.isArray(schema.required) ? schema.required : [];
   const opt = Array.isArray(schema.optional) ? schema.optional : [];
   const rows: SchemaRow[] = [];
-  req.forEach((name) => rows.push({ name, dtype: undefined, required: true, desc: "" }));
-  opt.forEach((name) => rows.push({ name, dtype: undefined, required: false, desc: "" }));
+  req.forEach((name) =>
+    rows.push({ name, dtype: undefined, required: true, desc: "" })
+  );
+  opt.forEach((name) =>
+    rows.push({ name, dtype: undefined, required: false, desc: "" })
+  );
   return rows;
 }
 
@@ -149,7 +147,7 @@ export default function DataUpload() {
 
   // --- Estado: formulario de ingesta ---
   const [file, setFile] = useState<File | null>(null);
-  const [periodo, setPeriodo] = useState<string>("2024-2"); // dataset_id / periodo
+  const [periodo, setPeriodo] = useState<string>("2024-2");
   const [overwrite, setOverwrite] = useState<boolean>(false);
   const [applyPreproc, setApplyPreproc] = useState<boolean>(true);
   const [runSentiment, setRunSentiment] = useState<boolean>(true);
@@ -160,24 +158,26 @@ export default function DataUpload() {
   const [result, setResult] = useState<UploadResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // --- Estado: validación sin guardar ---
+  // --- Estado: validación sin guardar (vista previa de filas) ---
   const [validRes, setValidRes] = useState<ValidarResp | null>(null);
   const [valLoading, setValLoading] = useState<boolean>(false);
   const [valError, setValError] = useState<string | null>(null);
 
-  // --- Estado: resumen de dataset (panel derecho) ---
+  // --- Estado: resumen de dataset ---
   const [resumen, setResumen] = useState<DatasetResumen | null>(null);
   const [loadingResumen, setLoadingResumen] = useState<boolean>(false);
 
   // --- Estado: análisis de sentimientos (BETO) ---
-  const [sentimientos, setSentimientos] = useState<DatasetSentimientos | null>(null);
+  const [sentimientos, setSentimientos] =
+    useState<DatasetSentimientos | null>(null);
   const [loadingSent, setLoadingSent] = useState<boolean>(false);
   const [sentError, setSentError] = useState<string | null>(null);
   const [betoJob, setBetoJob] = useState<BetoPreprocJob | null>(null);
   const [betoLaunching, setBetoLaunching] = useState<boolean>(false);
 
   // --- Estado: plantilla de columnas visible/oculta ---
-  const [showSchemaDetails, setShowSchemaDetails] = useState<boolean>(false);
+  const [showSchemaDetails, setShowSchemaDetails] =
+    useState<boolean>(false);
 
   /* ------------------------------------------------------------------------
    * Efectos
@@ -204,18 +204,17 @@ export default function DataUpload() {
     })();
   }, []);
 
-  // Polling simple de sentimientos tras lanzar un job de BETO (paso 5.2).
-  // En lugar de consultar el estado del job, intentamos recuperar los
-  // sentimientos varias veces hasta que estén disponibles.
+  // Polling de sentimientos tras lanzar BETO
   useEffect(() => {
     if (!betoJob?.id) return;
     let cancelled = false;
 
     async function pollSentimientos() {
-      // Si el backend devuelve inicialmente "created", en el frontend lo
-      // marcamos como "running" mientras esperamos los resultados.
+      // Pequeña indicación de progreso local
       setBetoJob((prev) =>
-        prev ? { ...prev, status: prev.status === "created" ? "running" : prev.status } : prev
+        prev
+          ? { ...prev, status: prev.status === "created" ? "running" : prev.status }
+          : prev
       );
 
       setLoadingSent(true);
@@ -223,18 +222,16 @@ export default function DataUpload() {
 
       try {
         const dataset = periodo.trim();
-        // Intentos limitados para evitar bucles infinitos
         for (let attempt = 0; attempt < 10 && !cancelled; attempt++) {
           try {
             const sent = await getSentimientos({ dataset });
             if (cancelled) return;
             setSentimientos(sent);
             setBetoJob((prev) =>
-              prev ? { ...prev, status: "finished" as any } : prev
+              prev ? { ...prev, status: "done" as any } : prev
             );
             return;
-          } catch (err) {
-            // Si aún no está listo, esperamos un poco y volvemos a intentar
+          } catch (_err) {
             await sleep(3000);
           }
         }
@@ -259,7 +256,6 @@ export default function DataUpload() {
     return () => {
       cancelled = true;
     };
-    // Solo relanzar el polling cuando el id del job cambie
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [betoJob?.id]);
 
@@ -305,10 +301,6 @@ export default function DataUpload() {
    * Handlers de backend (ingesta, resumen, BETO)
    * ------------------------------------------------------------------------ */
 
-  /**
-   * Carga el resumen para un dataset concreto.
-   * Se usa después de la ingesta y desde el botón «Actualizar».
-   */
   async function fetchResumen(datasetId: string) {
     const trimmed = datasetId.trim();
     if (!trimmed) return;
@@ -324,9 +316,6 @@ export default function DataUpload() {
     }
   }
 
-  /**
-   * Carga tanto resumen como sentimientos en un solo paso.
-   */
   async function fetchResumenYSentimientos(datasetId: string) {
     await fetchResumen(datasetId);
     setLoadingSent(true);
@@ -347,13 +336,12 @@ export default function DataUpload() {
     }
   }
 
-  /**
-   * Lanza el job de análisis de sentimientos BETO para el dataset indicado.
-   */
   async function runBeto(datasetId: string) {
     const trimmed = datasetId.trim();
     if (!trimmed) {
-      setSentError("Ingresa primero un periodo/dataset válido antes de lanzar BETO.");
+      setSentError(
+        "Ingresa primero un periodo/dataset válido antes de lanzar BETO."
+      );
       return;
     }
     setBetoLaunching(true);
@@ -361,7 +349,6 @@ export default function DataUpload() {
     try {
       const job = await launchBetoPreproc({ dataset: trimmed });
       setBetoJob(job);
-      // El polling de sentimientos se dispara en el useEffect que observa betoJob.id
     } catch (e: any) {
       console.error("Error lanzando BETO:", e);
       setSentError(
@@ -374,12 +361,6 @@ export default function DataUpload() {
     }
   }
 
-  /**
-   * Maneja la subida de dataset (ingesta).
-   * Si la subida es correcta:
-   *  - refresca el resumen si applyPreproc está activo,
-   *  - lanza BETO si runSentiment está activo.
-   */
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -401,12 +382,10 @@ export default function DataUpload() {
       const r = await uploadDatos(file as File, trimmed, overwrite);
       setResult(r);
 
-      // Resumen automático tras la carga (según flag de preprocesamiento)
       if (applyPreproc) {
         void fetchResumen(trimmed);
       }
 
-      // Lanzar BETO desde la propia carga si así se indica
       if (runSentiment) {
         void runBeto(trimmed);
       }
@@ -421,9 +400,6 @@ export default function DataUpload() {
     }
   }
 
-  /**
-   * Ejecuta la validación en servidor sin persistir el dataset.
-   */
   async function onValidate() {
     setValError(null);
     setValidRes(null);
@@ -461,9 +437,6 @@ export default function DataUpload() {
     }
   }
 
-  /**
-   * Resetea el formulario y los paneles de resultado.
-   */
   function onClear() {
     setFile(null);
     setResult(null);
@@ -495,8 +468,8 @@ export default function DataUpload() {
         </p>
       </header>
 
-      {/* Layout principal: dos columnas como en el mock */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
+      {/* Layout principal: 2 columnas (≈40% / 60%) */}
+      <div className="grid gap-6 md:grid-cols-[minmax(0,0.4fr)_minmax(0,0.6fr)]">
         {/* COLUMNA IZQUIERDA: Ingreso de dataset */}
         <div className="space-y-4">
           <section className="space-y-4 rounded-2xl bg-white/5 p-4 shadow">
@@ -527,7 +500,7 @@ export default function DataUpload() {
                 />
               </label>
 
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-sm justify-end md:justify-start">
                 <input
                   type="checkbox"
                   checked={overwrite}
@@ -586,7 +559,6 @@ export default function DataUpload() {
               </div>
             </div>
 
-            {/* Mensajes de estado de ingesta */}
             {error && (
               <div className="mt-2 p-3 rounded-xl bg-red-100 text-red-800 text-sm">
                 {error}
@@ -594,7 +566,7 @@ export default function DataUpload() {
             )}
 
             {result && (
-              <div className="mt-2 p-3 rounded-xl border text-sm space-y-1">
+              <div className="mt-2 p-3 rounded-2xl border text-sm space-y-1">
                 <div>
                   <strong>dataset_id:</strong> {result.dataset_id ?? periodo}
                 </div>
@@ -615,33 +587,12 @@ export default function DataUpload() {
                 )}
               </div>
             )}
-
-            {/* Resultado de validación sin guardar */}
-            {valError && (
-              <div className="mt-2 p-3 rounded-xl bg-red-50 text-red-700 text-sm">
-                {valError}
-              </div>
-            )}
           </section>
-
-          {validRes?.sample?.length ? (
-            <section className="p-4 rounded-2xl bg-white/5 shadow space-y-2">
-              <h3 className="font-semibold text-sm">
-                Muestra del archivo validado
-              </h3>
-              <ResultsTable
-                columns={Object.keys(validRes.sample[0])
-                  .slice(0, 8)
-                  .map((k) => ({ key: k, header: k }))}
-                rows={validRes.sample}
-              />
-            </section>
-          ) : null}
         </div>
 
-        {/* COLUMNA DERECHA: Resumen + BETO */}
+        {/* COLUMNA DERECHA: Resumen + tablas + BETO */}
         <div className="space-y-4">
-          {/* Resumen del dataset */}
+          {/* Resumen del dataset (arriba derecha) */}
           <section className="space-y-3 rounded-2xl bg-white/5 p-4 shadow">
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -665,15 +616,23 @@ export default function DataUpload() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                   <div className="p-3 rounded-2xl bg-slate-900/40">
                     <div className="text-[10px] uppercase opacity-60">Filas</div>
-                    <div className="text-xl font-semibold">{resumen.n_rows}</div>
+                    <div className="text-xl font-semibold">
+                      {resumen.n_rows}
+                    </div>
                   </div>
                   <div className="p-3 rounded-2xl bg-slate-900/40">
-                    <div className="text-[10px] uppercase opacity-60">Columnas</div>
-                    <div className="text-xl font-semibold">{resumen.n_cols}</div>
+                    <div className="text-[10px] uppercase opacity-60">
+                      Columnas
+                    </div>
+                    <div className="text-xl font-semibold">
+                      {resumen.n_cols}
+                    </div>
                   </div>
                   {resumen.n_docentes != null && (
                     <div className="p-3 rounded-2xl bg-slate-900/40">
-                      <div className="text-[10px] uppercase opacity-60">Docentes</div>
+                      <div className="text-[10px] uppercase opacity-60">
+                        Docentes
+                      </div>
                       <div className="text-xl font-semibold">
                         {resumen.n_docentes}
                       </div>
@@ -707,6 +666,7 @@ export default function DataUpload() {
                   )}
                 </div>
 
+                {/* Tabla de columnas como resumen estructural */}
                 <div className="rounded-2xl border overflow-auto max-h-64">
                   <table className="min-w-full text-xs">
                     <thead className="bg-slate-900/60">
@@ -719,7 +679,10 @@ export default function DataUpload() {
                     </thead>
                     <tbody>
                       {(resumen.columns ?? []).map((col) => (
-                        <tr key={col.name} className="border-t border-slate-800">
+                        <tr
+                          key={col.name}
+                          className="border-t border-slate-800"
+                        >
                           <td className="px-3 py-1 font-mono text-[11px]">
                             {col.name}
                           </td>
@@ -744,7 +707,22 @@ export default function DataUpload() {
             )}
           </section>
 
-          {/* Panel de análisis de sentimientos (BETO) */}
+          {/* Vista previa de filas (usa la muestra de /datos/validar) */}
+          {validRes?.sample?.length ? (
+            <section className="p-4 rounded-2xl bg-white/5 shadow space-y-2">
+              <h3 className="font-semibold text-sm">
+                Vista previa del dataset (primeras filas)
+              </h3>
+              <ResultsTable
+                columns={Object.keys(validRes.sample[0])
+                  .slice(0, 8)
+                  .map((k) => ({ key: k, header: k }))}
+                rows={validRes.sample}
+              />
+            </section>
+          ) : null}
+
+          {/* Panel de análisis de sentimientos (parte baja) */}
           <section className="space-y-3 rounded-2xl bg-white/5 p-4 shadow">
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -781,70 +759,118 @@ export default function DataUpload() {
               </div>
             )}
 
-            {loadingSent ? (
-              <p className="text-sm opacity-70">
-                Cargando análisis de sentimientos…
+            {sentimientos && (
+              <p className="text-xs opacity-80">
+                Total de comentarios analizados:{" "}
+                <strong>{sentimientos.total_comentarios}</strong>
               </p>
-            ) : sentimientos ? (
-              <>
-                <p className="text-xs opacity-80">
-                  Total de comentarios analizados:{" "}
-                  <strong>{sentimientos.total_comentarios}</strong>
-                </p>
+            )}
 
-                {/* Gráfico global de sentimientos */}
-                <div className="h-48 rounded-2xl bg-slate-900/40 p-3">
-                  <h3 className="text-xs font-semibold mb-2">
-                    Distribución global
-                  </h3>
+            {/* Layout interno de gráficas: 2 cards horizontales */}
+            <div className="grid gap-3 lg:grid-cols-2">
+              {/* Distribución global (barras horizontales) */}
+              <div className="h-56 rounded-2xl bg-slate-900/40 p-3">
+                <h3 className="text-xs font-semibold mb-2">
+                  Distribución global
+                </h3>
+                {globalChartData.length > 0 ? (
                   <ResponsiveContainer>
-                    <BarChart data={globalChartData}>
+                    <BarChart
+                      data={globalChartData}
+                      layout="vertical"
+                      margin={{ left: 10, right: 10, top: 5, bottom: 5 }}
+                    >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="label" />
-                      <YAxis />
+                      <XAxis type="number" />
+                      <YAxis
+                        type="category"
+                        dataKey="label"
+                        width={80}
+                        tick={{ fontSize: 11 }}
+                      />
                       <Tooltip />
+                      {/* Verde para positivo, gris para neutro, rojo para negativo.
+                         Como aquí hay una sola barra por fila (count), usamos verde
+                         como color base para la serie. */}
                       <Bar dataKey="count" name="Comentarios" fill="#22c55e" />
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-xs opacity-60 text-center">
+                    {loadingSent
+                      ? "Cargando análisis de sentimientos…"
+                      : "Sin datos de sentimientos aún. Ejecuta BETO o pulsa Actualizar."}
+                  </div>
+                )}
+              </div>
 
-                {/* Gráfico por docente (top 10) */}
-                <div className="h-64 rounded-2xl bg-slate-900/40 p-3">
-                  <h3 className="text-xs font-semibold mb-2">
-                    Por docente (top 10 por número de comentarios)
-                  </h3>
+              {/* Distribución por docente (barras apiladas horizontales) */}
+              <div className="h-64 rounded-2xl bg-slate-900/40 p-3">
+                <h3 className="text-xs font-semibold mb-2">
+                  Por docente (top 10 por número de comentarios)
+                </h3>
+                {docentesChartData.length > 0 ? (
                   <ResponsiveContainer>
-                    <BarChart data={docentesChartData} stackOffset="none">
+                    <BarChart
+                      data={docentesChartData}
+                      layout="vertical"
+                      margin={{ left: 10, right: 10, top: 5, bottom: 5 }}
+                    >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="group" tick={{ fontSize: 10 }} />
-                      <YAxis />
+                      <XAxis type="number" />
+                      <YAxis
+                        type="category"
+                        dataKey="group"
+                        width={100}
+                        tick={{ fontSize: 10 }}
+                      />
                       <Tooltip />
                       <Legend />
-                      <Bar dataKey="neg" name="Negativo" stackId="a" fill="#ef4444" />
-                      <Bar dataKey="neu" name="Neutro" stackId="a" fill="#9ca3af" />
-                      <Bar dataKey="pos" name="Positivo" stackId="a" fill="#22c55e" />
+                      {/* Colores consistentes para sentimientos */}
+                      <Bar
+                        dataKey="neg"
+                        name="Negativo"
+                        stackId="a"
+                        fill="#ef4444"
+                      />
+                      <Bar
+                        dataKey="neu"
+                        name="Neutro"
+                        stackId="a"
+                        fill="#9ca3af"
+                      />
+                      <Bar
+                        dataKey="pos"
+                        name="Positivo"
+                        stackId="a"
+                        fill="#22c55e"
+                      />
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm opacity-70">
-                Para ver el análisis de sentimientos:
-                <br />
-                1) Asegúrate de que existe un dataset procesado para el periodo
-                indicado.
-                <br />
-                2) Marca «Ejecutar análisis de sentimientos» al cargar, o usa el
-                botón «Ejecutar BETO».
-                <br />
-                3) Usa «Actualizar» para refrescar los resultados.
+                ) : (
+                  <div className="flex items-center justify-center h-full text-xs opacity-60 text-center">
+                    {loadingSent
+                      ? "Cargando análisis de sentimientos…"
+                      : "Sin datos agregados por docente. Ejecuta BETO o pulsa Actualizar."}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {!sentimientos && !loadingSent && !sentError && (
+              <p className="text-xs opacity-70">
+                Para ver el análisis de sentimientos: 1) Asegúrate de que existe
+                un dataset procesado para el periodo indicado. 2) Marca
+                «Ejecutar análisis de sentimientos» al cargar, o usa el botón
+                «Ejecutar BETO». 3) Usa «Actualizar» para refrescar los
+                resultados.
               </p>
             )}
           </section>
         </div>
       </div>
 
-      {/* Plantilla de columnas: sección auxiliar para documentación */}
+      {/* Plantilla de columnas (para referencia, plegable) */}
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold text-sm">
@@ -891,7 +917,8 @@ export default function DataUpload() {
                   {!fetching && rows.length === 0 && (
                     <tr>
                       <td className="p-2" colSpan={4}>
-                        No se pudo cargar la plantilla de columnas desde el backend.
+                        No se pudo cargar la plantilla de columnas desde el
+                        backend.
                       </td>
                     </tr>
                   )}
@@ -901,12 +928,12 @@ export default function DataUpload() {
 
             <div className="text-xs opacity-80 space-y-1">
               <p>
-                · Esta plantilla describe las columnas esperadas en los datasets
-                de evaluación docente.
+                · Esta plantilla describe las columnas esperadas en los
+                datasets de evaluación docente.
               </p>
               <p>
-                · Algunos campos derivados de PLN se calculan en etapas posteriores
-                del pipeline.
+                · Algunos campos derivados de PLN se calculan en etapas
+                posteriores del pipeline.
               </p>
             </div>
           </>

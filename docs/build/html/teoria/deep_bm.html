@@ -1,0 +1,269 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deep Boltzmann Machines (DBM) &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Implementación de modelos de Boltzmann en NeuroCampus" href="implementacion_neurocampus.html" />
+    <link rel="prev" title="Máquinas de Boltzmann (BM)" href="restricted_bm.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Teoría de modelos</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="boltzmann_machine.html">Máquinas de Boltzmann (BM)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="restricted_bm.html">Máquinas de Boltzmann (BM)</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Deep Boltzmann Machines (DBM)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#introduccion">Introducción</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#estructura-del-modelo">Estructura del modelo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#inferencia-aproximada">Inferencia aproximada</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#entrenamiento-en-dos-etapas-pre-entrenamiento-afinado">Entrenamiento en dos etapas (pre-entrenamiento + afinado)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#ventajas-y-desafios">Ventajas y desafíos</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#ventajas">Ventajas</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#desafios">Desafíos</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#papel-de-las-dbm-en-neurocampus">Papel de las DBM en NeuroCampus</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="implementacion_neurocampus.html">Implementación de modelos de Boltzmann en NeuroCampus</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Teoría de modelos</a></li>
+      <li class="breadcrumb-item active">Deep Boltzmann Machines (DBM)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/teoria/deep_bm.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="deep-boltzmann-machines-dbm">
+<h1>Deep Boltzmann Machines (DBM)<a class="headerlink" href="#deep-boltzmann-machines-dbm" title="Link to this heading"></a></h1>
+<section id="introduccion">
+<h2>Introducción<a class="headerlink" href="#introduccion" title="Link to this heading"></a></h2>
+<p>Las <strong>Deep Boltzmann Machines</strong> (DBM) extienden la idea de las RBM y BM a
+<strong>múltiples capas ocultas</strong>, formando modelos de energía profundos. El objetivo
+es capturar representaciones jerárquicas de los datos, donde capas superiores
+aprenden características progresivamente más abstractas.</p>
+<p>En términos conceptuales, una DBM se parece a una pila de RBM con conexiones
+entre capas adyacentes, pero con una interpretación conjunta como modelo
+probabilístico global.</p>
+<p>En NeuroCampus, las DBM se consideran una alternativa avanzada dentro de la
+familia de modelos de Boltzmann para explorar representaciones más profundas
+de las evaluaciones docentes.</p>
+</section>
+<hr class="docutils" />
+<section id="estructura-del-modelo">
+<h2>Estructura del modelo<a class="headerlink" href="#estructura-del-modelo" title="Link to this heading"></a></h2>
+<p>Una DBM típica puede representarse como:</p>
+<ul class="simple">
+<li><p>Capa visible (v).</p></li>
+<li><p>Varias capas ocultas: (h^{(1)}, h^{(2)}, \ldots, h^{(L)}).</p></li>
+</ul>
+<p>Las conexiones se dan únicamente entre capas <strong>adyacentes</strong>:</p>
+<ul class="simple">
+<li><p>Pesos (W^{(0)}) entre (v) y (h^{(1)}),</p></li>
+<li><p>Pesos (W^{(1)}) entre (h^{(1)}) y (h^{(2)}), y así sucesivamente.</p></li>
+</ul>
+<p>La energía de un estado completo se escribe como una suma de interacciones
+entre capas vecinas y términos de sesgo. De forma esquemática:</p>
+<p>[
+E(v, h^{(1)}, \ldots, h^{(L)}) =</p>
+<ul class="simple">
+<li><p>v^T W^{(0)} h^{(1)}</p></li>
+<li><p>(h^{(1)})^T W^{(1)} h^{(2)} - \cdots</p></li>
+<li><p>\text{sesgos}.
+]</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="inferencia-aproximada">
+<h2>Inferencia aproximada<a class="headerlink" href="#inferencia-aproximada" title="Link to this heading"></a></h2>
+<p>A diferencia de las RBM, donde las condicionales (P(h \mid v)) y
+(P(v \mid h)) factorizan cómodamente, en la DBM la inferencia es más
+compleja:</p>
+<ul class="simple">
+<li><p>Las unidades de una misma capa no son condicionalmente independientes dado
+solo las visibles.</p></li>
+<li><p>Para inferir (h^{(l)}) se debe tener en cuenta información de las capas
+vecinas (h^{(l-1)}) y (h^{(l+1)}).</p></li>
+</ul>
+<p>Por ello, se suelen usar:</p>
+<ul class="simple">
+<li><p>Métodos de inferencia variacional,</p></li>
+<li><p>aproximaciones mean-field,</p></li>
+<li><p>o cadenas de Gibbs más elaboradas.</p></li>
+</ul>
+<p>El entrenamiento conjunto de todas las capas requiere aproximar las
+expectativas necesarias para el gradiente, igual que en BM/RBM, pero con más
+capas y variables.</p>
+</section>
+<hr class="docutils" />
+<section id="entrenamiento-en-dos-etapas-pre-entrenamiento-afinado">
+<h2>Entrenamiento en dos etapas (pre-entrenamiento + afinado)<a class="headerlink" href="#entrenamiento-en-dos-etapas-pre-entrenamiento-afinado" title="Link to this heading"></a></h2>
+<p>Una estrategia habitual para entrenar DBM es:</p>
+<ol class="arabic simple">
+<li><p><strong>Pre-entrenamiento por capas</strong> (layer-wise pretraining):</p>
+<ul class="simple">
+<li><p>Entrenar una RBM entre (v) y (h^{(1)}).</p></li>
+<li><p>Luego una RBM entre (h^{(1)}) y (h^{(2)}), y así sucesivamente.</p></li>
+<li><p>Esto inicializa los pesos de la DBM con valores razonables.</p></li>
+</ul>
+</li>
+<li><p><strong>Entrenamiento conjunto (fine-tuning)</strong>:</p>
+<ul class="simple">
+<li><p>Tras el pre-entrenamiento, se trata el modelo completo como una DBM.</p></li>
+<li><p>Se aplican algoritmos de entrenamiento aproximado (variacional, CD, PCD,
+etc.) para ajustar conjuntamente todas las capas.</p></li>
+</ul>
+</li>
+</ol>
+<p>Este enfoque se inspira en la idea de que cada RBM intermedia aprende una
+representación útil, que luego se refina cuando se consideran todas las capas
+al mismo tiempo.</p>
+</section>
+<hr class="docutils" />
+<section id="ventajas-y-desafios">
+<h2>Ventajas y desafíos<a class="headerlink" href="#ventajas-y-desafios" title="Link to this heading"></a></h2>
+<section id="ventajas">
+<h3>Ventajas<a class="headerlink" href="#ventajas" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Capacidad de representar estructuras complejas y jerárquicas:</p>
+<ul>
+<li><p>capas bajas capturan patrones locales,</p></li>
+<li><p>capas altas capturan patrones más globales.</p></li>
+</ul>
+</li>
+<li><p>Puede lograr mejores representaciones que una sola RBM, especialmente en
+problemas con estructura de alto nivel.</p></li>
+</ul>
+</section>
+<section id="desafios">
+<h3>Desafíos<a class="headerlink" href="#desafios" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Entrenamiento significativamente más costoso que RBM o BM simples.</p></li>
+<li><p>Requiere técnicas más sofisticadas de inferencia aproximada.</p></li>
+<li><p>Mayor sensibilidad a la inicialización y a la configuración de
+hiperparámetros.</p></li>
+</ul>
+<p>Por estos motivos, en contextos prácticos se suele comparar el esfuerzo y
+beneficio de usar DBM frente a modelos más sencillos.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="papel-de-las-dbm-en-neurocampus">
+<h2>Papel de las DBM en NeuroCampus<a class="headerlink" href="#papel-de-las-dbm-en-neurocampus" title="Link to this heading"></a></h2>
+<p>En NeuroCampus, la DBM se plantea como:</p>
+<ul class="simple">
+<li><p>Una <strong>extensión profunda</strong> de la RBM manual.</p></li>
+<li><p>Un experimento avanzado para capturar patrones de alto nivel en:</p>
+<ul>
+<li><p>evaluaciones históricas,</p></li>
+<li><p>perfiles de docentes,</p></li>
+<li><p>contextos de asignaturas y programas.</p></li>
+</ul>
+</li>
+</ul>
+<p>La implementación se encuentra en el módulo <code class="docutils literal notranslate"><span class="pre">neurocampus.models.dbm_manual</span></code>,
+que se apoya en componentes de RBM manual para la definición de capas y en
+estrategias específicas para su entrenamiento. El objetivo es:</p>
+<ul class="simple">
+<li><p>Comparar el rendimiento de la DBM con RBM y BM.</p></li>
+<li><p>Analizar si las representaciones profundas aportan una mejora tangible en la
+predicción de rendimiento docente y en los indicadores que se muestran en
+Predicciones y Dashboard.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="restricted_bm.html" class="btn btn-neutral float-left" title="Máquinas de Boltzmann (BM)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="implementacion_neurocampus.html" class="btn btn-neutral float-right" title="Implementación de modelos de Boltzmann en NeuroCampus" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

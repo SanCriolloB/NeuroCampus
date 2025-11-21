@@ -1,17 +1,33 @@
-# backend/src/neurocampus/app/jobs/cmd_train_rbm_manual.py
 """
-Entrena RBM/BM manual (NumPy) con el mismo estilo del pipeline:
-- Lee .parquet/.csv
-- Toma solo columnas numéricas
-- Entrena y calcula métricas:
-  * Reconstrucción MSE
-  * (Opcional) Clasificación proxy: LogisticRegression sobre H para predecir 'sentiment_label_teacher'
-- Guarda reporte JSON en --out-dir
+Entrena un modelo RBM/BM manual (NumPy) sobre un dataset preprocesado.
 
-Para RBM:
-- Usa RestrictedBoltzmannMachine + RBMTrainer (early stopping, callbacks, metrics).
-Para BM:
-- Mantiene BMManualStrategy como en la versión previa.
+Este script forma parte del pipeline de experimentación de NeuroCampus y se
+usa principalmente como comando de línea de comandos.
+
+Resumen de funcionalidad
+------------------------
+
+- Lee un archivo de entrada en formato ``.parquet`` o ``.csv``.
+- Selecciona únicamente las columnas numéricas.
+- Entrena el modelo y calcula métricas de calidad:
+
+  - Error cuadrático medio de reconstrucción (MSE).
+  - Opcionalmente, una clasificación proxy con ``LogisticRegression`` sobre
+    las representaciones ocultas para predecir la etiqueta
+    ``sentiment_label_teacher``.
+
+- Guarda un reporte JSON en el directorio indicado por ``--out-dir`` con
+  parámetros y métricas.
+
+Modos de entrenamiento
+----------------------
+
+- RBM: usa ``RestrictedBoltzmannMachine`` junto con ``RBMTrainer`` para
+  gestionar entrenamiento, early stopping, callbacks y registro de métricas.
+- BM: utiliza ``BMManualStrategy`` para mantener compatibilidad con la
+  versión previa del pipeline.
+
+El punto de entrada principal es la función :func:`main`.
 """
 
 from __future__ import annotations
@@ -32,12 +48,39 @@ from neurocampus.models.strategies.bm_manual_strategy import BMManualStrategy
 
 
 def _load_table(path: str) -> pd.DataFrame:
+    """
+    Carga una tabla desde disco en formato ``.parquet`` o ``.csv``.
+
+    Parameters
+    ----------
+    path:
+        Ruta al archivo de entrada.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Tabla con los datos cargados.
+    """
     if path.lower().endswith(".parquet"):
         return pd.read_parquet(path)
     return pd.read_csv(path)
 
 
 def _numeric_matrix(df: pd.DataFrame) -> np.ndarray:
+    """
+    Extrae únicamente las columnas numéricas de un DataFrame y las devuelve
+    como matriz NumPy de ``float32`` rellenando ausentes con cero.
+
+    Parameters
+    ----------
+    df:
+        DataFrame de entrada.
+
+    Returns
+    -------
+    numpy.ndarray
+        Matriz de características numéricas.
+    """
     X = (
         df.select_dtypes(include=[np.number])
         .fillna(0.0)
@@ -48,8 +91,23 @@ def _numeric_matrix(df: pd.DataFrame) -> np.ndarray:
 
 def _reconstruction_mse(model_like, X: np.ndarray) -> float:
     """
-    Calcula MSE de reconstrucción usando la API:
-      - model_like.reconstruct(X) -> X_rec
+    Calcula el error cuadrático medio (MSE) de reconstrucción.
+
+    Se asume que ``model_like`` implementa el método
+    ``reconstruct(X) -> X_rec``, que devuelve una reconstrucción del
+    mismo tamaño que ``X``.
+
+    Parameters
+    ----------
+    model_like:
+        Modelo con un método ``reconstruct``.
+    X:
+        Matriz de entrada original.
+
+    Returns
+    -------
+    float
+        Valor de MSE entre ``X`` y su reconstrucción.
     """
     X_rec = model_like.reconstruct(X)
     return float(mean_squared_error(X, X_rec))
@@ -57,12 +115,37 @@ def _reconstruction_mse(model_like, X: np.ndarray) -> float:
 
 def _logreg_proxy_on_hidden(model_like, df: pd.DataFrame, X: np.ndarray) -> dict:
     """
-    Si existe 'sentiment_label_teacher' en df, entrena un clasificador lineal en H
-    como proxy de calidad de embedding. Split holdout sencillo.
+    Entrena un clasificador lineal sobre las representaciones ocultas como
+    proxy de calidad del embedding, si existe la etiqueta
+    ``sentiment_label_teacher``.
 
-    model_like puede ofrecer:
-      - transform_hidden(X) -> H   (RBMManual)
-      - transform(X) -> H          (estrategias)
+    El procedimiento es:
+
+    - Filtrar filas con etiqueta no vacía.
+    - Obtener las representaciones ocultas ``H`` a partir de ``X``.
+    - Normalizar ``H`` con ``StandardScaler``.
+    - Entrenar una ``LogisticRegression`` con un split holdout simple (80/20).
+    - Devolver métricas de exactitud y F1 macro.
+
+    Se asume que ``model_like`` implementa al menos uno de:
+
+    * ``transform_hidden(X) -> H`` (por ejemplo, ``RBMManual``).
+    * ``transform(X) -> H`` (estrategias que solo exponen ``transform``).
+
+    Parameters
+    ----------
+    model_like:
+        Modelo que proporciona representaciones ocultas.
+    df:
+        DataFrame original con la columna ``sentiment_label_teacher``.
+    X:
+        Matriz numérica correspondiente a ``df``.
+
+    Returns
+    -------
+    dict
+        Diccionario con información sobre si se habilitó el proxy y, en caso
+        afirmativo, métricas de entrenamiento y prueba.
     """
     if "sentiment_label_teacher" not in df.columns:
         return {"enabled": False}
@@ -75,7 +158,7 @@ def _logreg_proxy_on_hidden(model_like, df: pd.DataFrame, X: np.ndarray) -> dict
     y_raw = y_raw[mask]
     X_sub = X[mask.values]
 
-    # Hidden features
+    # Representaciones ocultas
     if hasattr(model_like, "transform_hidden"):
         H = model_like.transform_hidden(X_sub)
     else:
@@ -84,7 +167,7 @@ def _logreg_proxy_on_hidden(model_like, df: pd.DataFrame, X: np.ndarray) -> dict
     scaler = StandardScaler()
     Hs = scaler.fit_transform(H)
 
-    # Holdout simple 80/20
+    # Split holdout 80/20 reproducible
     n = Hs.shape[0]
     idx = np.arange(n)
     rng = np.random.default_rng(42)
@@ -110,8 +193,18 @@ def _logreg_proxy_on_hidden(model_like, df: pd.DataFrame, X: np.ndarray) -> dict
 
 
 def main() -> None:
+    """
+    Punto de entrada del script de entrenamiento RBM/BM manual.
+
+    Lee argumentos de línea de comandos, carga el dataset preprocesado,
+    entrena el modelo especificado (RBM o BM) y genera un reporte JSON
+    con parámetros y métricas en el directorio de salida.
+    """
     ap = argparse.ArgumentParser(
-        description="Entrenamiento manual de RBM/BM (NumPy) con métricas de reconstrucción y proxy de clasificación."
+        description=(
+            "Entrenamiento manual de RBM/BM (NumPy) con métricas de "
+            "reconstrucción y proxy de clasificación."
+        )
     )
     ap.add_argument(
         "--in",
@@ -213,10 +306,10 @@ def main() -> None:
     # ----------------------------------------
     # Entrenamiento según tipo de modelo
     # ----------------------------------------
-    trainer_metrics = None  # para el caso RBM
+    trainer_metrics = None  # historial de entrenamiento (solo RBM)
 
     if args.model == "rbm":
-        # ----- RBM + RBMTrainer -----
+        # Entrenamiento de RBM con RBMTrainer
         rbm = RestrictedBoltzmannMachine(
             n_visible=X.shape[1],
             n_hidden=args.n_hidden,
@@ -238,7 +331,11 @@ def main() -> None:
             patience=5,
         )
 
-        def log_callback(epoch: int, metrics: dict):
+        def log_callback(epoch: int, metrics: dict) -> None:
+            """
+            Callback sencillo para registrar por consola el avance
+            de cada epoch durante el entrenamiento de la RBM.
+            """
             print(
                 f"[RBMTrainer] epoch={epoch:03d} "
                 f"mse_recon={metrics.get('mse_recon', float('nan')):.6f} "
@@ -264,7 +361,7 @@ def main() -> None:
         }
 
     else:
-        # ----- BM vía estrategia previa -----
+        # Entrenamiento de BM mediante estrategia BMManualStrategy
         strat = BMManualStrategy(
             n_hidden=args.n_hidden,
             learning_rate=args.lr,
@@ -282,7 +379,7 @@ def main() -> None:
         model_for_metrics = strat
         params = strat.get_params()
 
-    # Métricas de reconstrucción y proxy
+    # Métricas de reconstrucción y proxy de clasificación
     mse = _reconstruction_mse(model_for_metrics, X)
     proxy = _logreg_proxy_on_hidden(model_for_metrics, df, X)
 
@@ -301,6 +398,7 @@ def main() -> None:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
+    # También se imprime el reporte por consola para inspección rápida.
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

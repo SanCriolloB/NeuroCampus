@@ -1,6 +1,5 @@
 // frontend/src/pages/DataUpload.tsx
-// Pestaña «Datos»: carga/validación de datasets y resumen básico +
-// conexión con el job de análisis de sentimientos BETO.
+// Pestaña «Datos»: carga/validación de datasets, resumen y análisis de sentimientos.
 
 import React, { useEffect, useMemo, useState } from "react";
 import UploadDropzone from "../components/UploadDropzone";
@@ -32,8 +31,6 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-/* ===== Helpers locales ===== */
-
 // Límite de tamaño (MB) desde .env, por defecto 10 MB
 const MAX_UPLOAD_MB =
   Number((import.meta as any).env?.VITE_MAX_UPLOAD_MB ?? 10) || 10;
@@ -55,8 +52,7 @@ function inferFormatFromFilename(
   return undefined;
 }
 
-// Normalizar columnas del esquema: puede venir como `required: string[]`,
-// o como `fields: {name, dtype, required, desc...}[]`.
+// Normalizar columnas del esquema a filas para la tabla de plantilla
 type SchemaRow = {
   name: string;
   dtype?: string | null;
@@ -74,7 +70,6 @@ function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
       desc: (f as any).desc ?? undefined,
     }));
   }
-  // Fallback a listas simples
   const req = Array.isArray(schema.required) ? schema.required : [];
   const opt = Array.isArray(schema.optional) ? schema.optional : [];
   const rows: SchemaRow[] = [];
@@ -83,7 +78,7 @@ function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
   return rows;
 }
 
-// Validaciones mínimas en cliente: extensión y tamaño.
+// Validaciones mínimas en cliente: extensión y tamaño
 function preflightChecks(file: File | null): { ok: boolean; message?: string } {
   if (!file) return { ok: false, message: "Selecciona un archivo CSV/XLSX/Parquet." };
 
@@ -101,7 +96,7 @@ function preflightChecks(file: File | null): { ok: boolean; message?: string } {
       ok: false,
       message: `El archivo pesa ${(file.size / (1024 * 1024)).toFixed(
         2
-      )} MB y supera el límite de ${MAX_UPLOAD_MB} MB. Reduce el archivo o contacta a soporte.`,
+      )} MB y supera el límite de ${MAX_UPLOAD_MB} MB.`,
     };
   }
   return { ok: true };
@@ -113,9 +108,9 @@ export default function DataUpload() {
   const [rows, setRows] = useState<SchemaRow[]>([]);
   const [version, setVersion] = useState<string>("");
 
-  // Formulario
+  // Formulario de ingesta
   const [file, setFile] = useState<File | null>(null);
-  const [periodo, setPeriodo] = useState<string>("2024-2"); // dataset_id / periodo
+  const [periodo, setPeriodo] = useState<string>("2024-2");
   const [overwrite, setOverwrite] = useState<boolean>(false);
 
   // Estados de subida
@@ -129,18 +124,18 @@ export default function DataUpload() {
   const [valLoading, setValLoading] = useState<boolean>(false);
   const [valError, setValError] = useState<string | null>(null);
 
-  // Resumen de dataset (panel derecho)
+  // Resumen de dataset
   const [resumen, setResumen] = useState<DatasetResumen | null>(null);
   const [loadingResumen, setLoadingResumen] = useState<boolean>(false);
 
-  // Análisis de sentimientos (BETO) + job asociado
+  // Análisis de sentimientos (BETO)
   const [sentimientos, setSentimientos] = useState<DatasetSentimientos | null>(null);
   const [loadingSent, setLoadingSent] = useState<boolean>(false);
   const [sentError, setSentError] = useState<string | null>(null);
   const [betoJob, setBetoJob] = useState<BetoPreprocJob | null>(null);
   const [betoLaunching, setBetoLaunching] = useState<boolean>(false);
 
-  // Permite lanzar BETO automáticamente tras una carga exitosa
+  // Lanzar BETO automáticamente tras la carga
   const [autoLaunchBeto, setAutoLaunchBeto] = useState<boolean>(true);
 
   // Cargar esquema al montar
@@ -164,7 +159,7 @@ export default function DataUpload() {
     })();
   }, []);
 
-  // Datos derivados para gráficas de sentimientos
+  // Datos para gráficas de sentimientos
   const globalChartData = useMemo(
     () =>
       sentimientos
@@ -256,7 +251,7 @@ export default function DataUpload() {
     }
   }
 
-  // Subir dataset (guardar)
+  // Subir dataset y (opcionalmente) lanzar BETO
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -278,10 +273,9 @@ export default function DataUpload() {
       const r = await uploadDatos(file as File, trimmed, overwrite);
       setResult(r);
 
-      // Refrescamos resumen + sentimientos para el dataset cargado
+      // Actualizar panel derecho
       void fetchResumenYSentimientos(trimmed);
 
-      // Lanzamos BETO si está activado el modo automático
       if (autoLaunchBeto) {
         void runBeto(trimmed);
       }
@@ -348,7 +342,7 @@ export default function DataUpload() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Encabezado principal */}
+      {/* Encabezado */}
       <header className="space-y-1">
         <h1 className="text-2xl font-bold">Datos — Ingesta y análisis</h1>
         <p className="text-sm opacity-80">
@@ -361,9 +355,9 @@ export default function DataUpload() {
         </p>
       </header>
 
-      {/* Layout de dos columnas: izquierda (ingesta), derecha (resumen + sentimientos) */}
+      {/* Layout 2 columnas: izquierda (ingesta/validación), derecha (resumen/sentimientos) */}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
-        {/* Columna izquierda: carga, validación y resultados básicos */}
+        {/* Columna izquierda */}
         <div className="space-y-4">
           <form onSubmit={onSubmit} className="space-y-4">
             <UploadDropzone
@@ -479,7 +473,6 @@ export default function DataUpload() {
               {(() => {
                 const ok = (result as any)?.ok ?? false;
                 const ing = Number((result as any).rows_ingested ?? 0);
-
                 if (ing > 0 || ok === true) {
                   return (
                     <div className="mt-2 text-sm text-green-500">
@@ -487,7 +480,6 @@ export default function DataUpload() {
                     </div>
                   );
                 }
-
                 return (
                   <div className="mt-2 text-sm text-yellow-400">
                     Ingesta no confirmada. Revisa el mensaje del backend o usa
@@ -515,8 +507,9 @@ export default function DataUpload() {
           ) : null}
         </div>
 
-        {/* Columna derecha: resumen del dataset + análisis de sentimientos */}
+        {/* Columna derecha */}
         <div className="space-y-4">
+          {/* Resumen del dataset */}
           <section className="space-y-3 rounded-2xl bg-white shadow p-4">
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -619,6 +612,7 @@ export default function DataUpload() {
             )}
           </section>
 
+          {/* Análisis de sentimientos (BETO) */}
           <section className="space-y-3 rounded-2xl bg-white shadow p-4">
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -715,7 +709,7 @@ export default function DataUpload() {
         </div>
       </div>
 
-      {/* Tabla de esquema (plantilla) a ancho completo */}
+      {/* Plantilla de columnas (esquema) */}
       <section className="space-y-2">
         <h2 className="font-semibold">Columnas esperadas (plantilla)</h2>
         <div className="overflow-auto border rounded-xl">
@@ -757,9 +751,9 @@ export default function DataUpload() {
         </div>
 
         <div className="text-xs opacity-80 space-y-1">
-          <p>*Los campos de PLN no van en la plantilla (se calculan más adelante).</p>
-          <p>*Los encabezados con espacios/acentos se normalizan automáticamente.</p>
-          <p>*Se aplica coerción de tipos previa y se pueden exigir patrones por columna.</p>
+          <p>* Los campos de PLN no van en la plantilla (se calculan más adelante).</p>
+          <p>* Los encabezados con espacios/acentos se normalizan automáticamente.</p>
+          <p>* Se aplica coerción de tipos previa y se pueden exigir patrones.</p>
         </div>
       </section>
     </div>

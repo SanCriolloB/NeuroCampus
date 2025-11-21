@@ -1,5 +1,13 @@
 // frontend/src/pages/DataUpload.tsx
-// Pestaña «Datos»: carga/validación de datasets, resumen y análisis de sentimientos.
+//
+// Pestaña «Datos» del frontend NeuroCampus.
+// Integra tres responsabilidades principales:
+//
+//  - Conectar el formulario con los servicios de backend
+//    (esquema, validación, subida, resumen y sentimientos/BETO).
+//  - Presentar la ingesta y el resumen en un layout de dos columnas.
+//  - Mostrar el análisis de sentimientos (BETO) en formato gráfico.
+//
 
 import React, { useEffect, useMemo, useState } from "react";
 import UploadDropzone from "../components/UploadDropzone";
@@ -31,15 +39,22 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-// Límite de tamaño (MB) desde .env, por defecto 10 MB
+/* ==========================================================================
+ * 1. Configuración y helpers
+ * ========================================================================== */
+
+// Límite de tamaño del archivo de entrada (en MB)
 const MAX_UPLOAD_MB =
   Number((import.meta as any).env?.VITE_MAX_UPLOAD_MB ?? 10) || 10;
 const MAX_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
-// Extensiones soportadas en FE (deben coincidir con el BE)
+// Extensiones soportadas en el frontend (deben coincidir con el backend)
 const ALLOWED_EXT = [".csv", ".xlsx", ".xls", ".parquet"] as const;
 
-// Inferir formato a partir del nombre del archivo (solo informativo/UI)
+/**
+ * Inferir el formato a partir del nombre de archivo.
+ * Solo se usa para mostrar información contextual en la UI.
+ */
 function inferFormatFromFilename(
   name?: string
 ): "csv" | "xlsx" | "xls" | "parquet" | undefined {
@@ -52,33 +67,11 @@ function inferFormatFromFilename(
   return undefined;
 }
 
-// Normalizar columnas del esquema a filas para la tabla de plantilla
-type SchemaRow = {
-  name: string;
-  dtype?: string | null;
-  required?: boolean;
-  desc?: string | null;
-};
-
-function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
-  if (!schema) return [];
-  if (Array.isArray(schema.fields) && schema.fields.length > 0) {
-    return schema.fields.map((f) => ({
-      name: f.name,
-      dtype: typeof f.dtype === "string" ? f.dtype : undefined,
-      required: f.required ?? undefined,
-      desc: (f as any).desc ?? undefined,
-    }));
-  }
-  const req = Array.isArray(schema.required) ? schema.required : [];
-  const opt = Array.isArray(schema.optional) ? schema.optional : [];
-  const rows: SchemaRow[] = [];
-  req.forEach((name) => rows.push({ name, dtype: undefined, required: true, desc: "" }));
-  opt.forEach((name) => rows.push({ name, dtype: undefined, required: false, desc: "" }));
-  return rows;
-}
-
-// Validaciones mínimas en cliente: extensión y tamaño
+/**
+ * Validaciones mínimas en cliente:
+ *  - extensión del archivo,
+ *  - tamaño máximo permitido.
+ */
 function preflightChecks(file: File | null): { ok: boolean; message?: string } {
   if (!file) return { ok: false, message: "Selecciona un archivo CSV/XLSX/Parquet." };
 
@@ -102,43 +95,89 @@ function preflightChecks(file: File | null): { ok: boolean; message?: string } {
   return { ok: true };
 }
 
+/* ==========================================================================
+ * 2. Tipos locales y helpers de esquema (plantilla)
+ * ========================================================================== */
+
+/**
+ * Fila normalizada para la tabla de plantilla de columnas.
+ * Se deriva de EsquemaResp para simplificar el renderizado.
+ */
+type SchemaRow = {
+  name: string;
+  dtype?: string | null;
+  required?: boolean;
+  desc?: string | null;
+};
+
+/**
+ * Normaliza EsquemaResp (varias formas) a una lista de SchemaRow.
+ */
+function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
+  if (!schema) return [];
+  if (Array.isArray(schema.fields) && schema.fields.length > 0) {
+    return schema.fields.map((f) => ({
+      name: f.name,
+      dtype: typeof f.dtype === "string" ? f.dtype : undefined,
+      required: f.required ?? undefined,
+      desc: (f as any).desc ?? undefined,
+    }));
+  }
+
+  // Soporte para esquemas más simples (solo required/optional)
+  const req = Array.isArray(schema.required) ? schema.required : [];
+  const opt = Array.isArray(schema.optional) ? schema.optional : [];
+  const rows: SchemaRow[] = [];
+  req.forEach((name) => rows.push({ name, dtype: undefined, required: true, desc: "" }));
+  opt.forEach((name) => rows.push({ name, dtype: undefined, required: false, desc: "" }));
+  return rows;
+}
+
+/* ==========================================================================
+ * 3. Componente principal: DataUpload
+ * ========================================================================== */
+
 export default function DataUpload() {
-  // Esquema / plantilla
+  // --- Estado: esquema / plantilla ---
   const [schema, setSchema] = useState<EsquemaResp | null>(null);
   const [rows, setRows] = useState<SchemaRow[]>([]);
   const [version, setVersion] = useState<string>("");
 
-  // Formulario de ingesta
+  // --- Estado: formulario de ingesta ---
   const [file, setFile] = useState<File | null>(null);
-  const [periodo, setPeriodo] = useState<string>("2024-2");
+  const [periodo, setPeriodo] = useState<string>("2024-2"); // dataset_id / periodo
   const [overwrite, setOverwrite] = useState<boolean>(false);
 
-  // Estados de subida
+  // --- Estado: respuestas de subida ---
   const [fetching, setFetching] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [result, setResult] = useState<UploadResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Validación (sin guardar)
+  // --- Estado: validación sin guardar ---
   const [validRes, setValidRes] = useState<ValidarResp | null>(null);
   const [valLoading, setValLoading] = useState<boolean>(false);
   const [valError, setValError] = useState<string | null>(null);
 
-  // Resumen de dataset
+  // --- Estado: resumen de dataset (panel derecho) ---
   const [resumen, setResumen] = useState<DatasetResumen | null>(null);
   const [loadingResumen, setLoadingResumen] = useState<boolean>(false);
 
-  // Análisis de sentimientos (BETO)
+  // --- Estado: análisis de sentimientos (BETO) ---
   const [sentimientos, setSentimientos] = useState<DatasetSentimientos | null>(null);
   const [loadingSent, setLoadingSent] = useState<boolean>(false);
   const [sentError, setSentError] = useState<string | null>(null);
   const [betoJob, setBetoJob] = useState<BetoPreprocJob | null>(null);
   const [betoLaunching, setBetoLaunching] = useState<boolean>(false);
 
-  // Lanzar BETO automáticamente tras la carga
+  // Controla si se lanza BETO automáticamente tras la carga
   const [autoLaunchBeto, setAutoLaunchBeto] = useState<boolean>(true);
 
-  // Cargar esquema al montar
+  /* ------------------------------------------------------------------------
+   * Efectos
+   * ------------------------------------------------------------------------ */
+
+  // Cargar esquema (plantilla) al montar la página
   useEffect(() => {
     (async () => {
       setFetching(true);
@@ -159,7 +198,10 @@ export default function DataUpload() {
     })();
   }, []);
 
-  // Datos para gráficas de sentimientos
+  /* ------------------------------------------------------------------------
+   * Datos derivados para gráficas de sentimientos (Paso 4)
+   * ------------------------------------------------------------------------ */
+
   const globalChartData = useMemo(
     () =>
       sentimientos
@@ -196,11 +238,23 @@ export default function DataUpload() {
     [sentimientos]
   );
 
+  /* ------------------------------------------------------------------------
+   * Handlers de backend (Paso 2)
+   * ------------------------------------------------------------------------ */
+
+  /**
+   * Carga el resumen y el análisis de sentimientos para un dataset.
+   * Se llama:
+   *  - después de una carga exitosa,
+   *  - desde el botón «Actualizar» en el panel derecho.
+   */
   async function fetchResumenYSentimientos(datasetId: string) {
     const trimmed = datasetId.trim();
     if (!trimmed) return;
+
     setSentError(null);
 
+    // Resumen del dataset
     setLoadingResumen(true);
     try {
       const res = await getResumen({ dataset: trimmed });
@@ -211,6 +265,7 @@ export default function DataUpload() {
       setLoadingResumen(false);
     }
 
+    // Sentimientos (BETO)
     setLoadingSent(true);
     try {
       const sent = await getSentimientos({ dataset: trimmed });
@@ -228,6 +283,10 @@ export default function DataUpload() {
     }
   }
 
+  /**
+   * Lanza el job de análisis de sentimientos BETO para el dataset indicado.
+   * El estado del job se muestra de forma resumida en el panel de BETO.
+   */
   async function runBeto(datasetId: string) {
     const trimmed = datasetId.trim();
     if (!trimmed) {
@@ -251,7 +310,12 @@ export default function DataUpload() {
     }
   }
 
-  // Subir dataset y (opcionalmente) lanzar BETO
+  /**
+   * Maneja la subida de dataset (ingesta).
+   * Si la subida es correcta:
+   *  - refresca el panel derecho (resumen + sentimientos),
+   *  - lanza BETO si está activado autoLaunchBeto.
+   */
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -273,9 +337,10 @@ export default function DataUpload() {
       const r = await uploadDatos(file as File, trimmed, overwrite);
       setResult(r);
 
-      // Actualizar panel derecho
+      // Actualizar panel derecho con el dataset recién cargado
       void fetchResumenYSentimientos(trimmed);
 
+      // Lanzar BETO automáticamente si está activado
       if (autoLaunchBeto) {
         void runBeto(trimmed);
       }
@@ -290,7 +355,9 @@ export default function DataUpload() {
     }
   }
 
-  // Validar sin guardar
+  /**
+   * Ejecuta la validación en servidor sin persistir el dataset.
+   */
   async function onValidate() {
     setValError(null);
     setValidRes(null);
@@ -328,6 +395,9 @@ export default function DataUpload() {
     }
   }
 
+  /**
+   * Resetea el formulario y los paneles de resultado.
+   */
   function onClear() {
     setFile(null);
     setResult(null);
@@ -340,9 +410,13 @@ export default function DataUpload() {
     setBetoJob(null);
   }
 
+  /* ------------------------------------------------------------------------
+   * Render
+   * ------------------------------------------------------------------------ */
+
   return (
     <div className="p-6 space-y-6">
-      {/* Encabezado */}
+      {/* Encabezado general */}
       <header className="space-y-1">
         <h1 className="text-2xl font-bold">Datos — Ingesta y análisis</h1>
         <p className="text-sm opacity-80">
@@ -355,9 +429,9 @@ export default function DataUpload() {
         </p>
       </header>
 
-      {/* Layout 2 columnas: izquierda (ingesta/validación), derecha (resumen/sentimientos) */}
+      {/* Paso 3: Layout 2 columnas (izquierda: ingesta/validación, derecha: resumen/BETO) */}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
-        {/* Columna izquierda */}
+        {/* Columna izquierda: formulario de ingesta + validación */}
         <div className="space-y-4">
           <form onSubmit={onSubmit} className="space-y-4">
             <UploadDropzone
@@ -432,6 +506,7 @@ export default function DataUpload() {
             </label>
           </form>
 
+          {/* Mensajes de error y resultado de ingesta */}
           {error && (
             <div className="p-3 rounded-xl bg-red-100 text-red-800">{error}</div>
           )}
@@ -490,6 +565,7 @@ export default function DataUpload() {
             </div>
           )}
 
+          {/* Resultado de validación sin guardar */}
           {valError && (
             <div className="p-3 rounded-xl bg-red-50 text-red-700">{valError}</div>
           )}
@@ -507,7 +583,7 @@ export default function DataUpload() {
           ) : null}
         </div>
 
-        {/* Columna derecha */}
+        {/* Columna derecha: resumen del dataset + análisis de sentimientos (Paso 3 y 4) */}
         <div className="space-y-4">
           {/* Resumen del dataset */}
           <section className="space-y-3 rounded-2xl bg-white shadow p-4">
@@ -612,7 +688,7 @@ export default function DataUpload() {
             )}
           </section>
 
-          {/* Análisis de sentimientos (BETO) */}
+          {/* Paso 4: Panel de análisis de sentimientos (BETO) */}
           <section className="space-y-3 rounded-2xl bg-white shadow p-4">
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -660,6 +736,7 @@ export default function DataUpload() {
                   <strong>{sentimientos.total_comentarios}</strong>
                 </p>
 
+                {/* Gráfico global de sentimientos */}
                 <div className="h-48 rounded-2xl bg-slate-50 p-3">
                   <h3 className="text-xs font-semibold mb-2">
                     Distribución global
@@ -675,6 +752,7 @@ export default function DataUpload() {
                   </ResponsiveContainer>
                 </div>
 
+                {/* Gráfico por docente (top 10) */}
                 <div className="h-64 rounded-2xl bg-slate-50 p-3">
                   <h3 className="text-xs font-semibold mb-2">
                     Por docente (top 10 por número de comentarios)
@@ -709,7 +787,7 @@ export default function DataUpload() {
         </div>
       </div>
 
-      {/* Plantilla de columnas (esquema) */}
+      {/* Tabla de esquema (plantilla) a ancho completo */}
       <section className="space-y-2">
         <h2 className="font-semibold">Columnas esperadas (plantilla)</h2>
         <div className="overflow-auto border rounded-xl">

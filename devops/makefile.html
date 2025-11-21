@@ -1,0 +1,281 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Targets del Makefile &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Despliegue y operación" href="deploy.html" />
+    <link rel="prev" title="Tests y calidad del código" href="tests.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Guía de desarrollo y operación</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="instalacion.html">Instalación y entorno de desarrollo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tests.html">Tests y calidad del código</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Targets del Makefile</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#variables-principales">Variables principales</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#desarrollo">Desarrollo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tests">Tests</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#backend">Backend</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#frontend">Frontend</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#procesamiento-de-datos-y-modelos">Procesamiento de datos y modelos</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#documentacion-sphinx">Documentación (Sphinx)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#limpieza-y-utilidades">Limpieza y utilidades</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#recomendaciones-de-uso">Recomendaciones de uso</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="deploy.html">Despliegue y operación</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Guía de desarrollo y operación</a></li>
+      <li class="breadcrumb-item active">Targets del Makefile</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/devops/makefile.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="targets-del-makefile">
+<h1>Targets del Makefile<a class="headerlink" href="#targets-del-makefile" title="Link to this heading"></a></h1>
+<p>El <code class="docutils literal notranslate"><span class="pre">Makefile</span></code> en la raíz del proyecto reúne comandos de uso frecuente para el
+backend, el frontend, los tests, el procesamiento de datos y la documentación.
+Esta sección describe los targets más importantes y su propósito.</p>
+<blockquote>
+<div><p><strong>Nota</strong>: los nombres exactos de los targets pueden variar ligeramente según
+la versión del proyecto. Esta guía se centra en los más habituales y en su
+intención funcional.</p>
+</div></blockquote>
+<hr class="docutils" />
+<section id="variables-principales">
+<h2>Variables principales<a class="headerlink" href="#variables-principales" title="Link to this heading"></a></h2>
+<p>En la parte superior del <code class="docutils literal notranslate"><span class="pre">Makefile</span></code> se definen variables reutilizables:</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nv">SRC_DIR</span><span class="w">       </span><span class="o">:=</span><span class="w"> </span>backend/src
+<span class="nv">BACKEND_DIR</span><span class="w">   </span><span class="o">:=</span><span class="w"> </span>backend
+<span class="nv">FRONTEND_DIR</span><span class="w">  </span><span class="o">:=</span><span class="w"> </span>frontend
+<span class="nv">REPORTS_DIR</span><span class="w">   </span><span class="o">:=</span><span class="w"> </span>reports
+<span class="nv">DATA_DIR</span><span class="w">      </span><span class="o">:=</span><span class="w"> </span>data
+<span class="nv">EXAMPLES_DIR</span><span class="w">  </span><span class="o">:=</span><span class="w"> </span>examples
+<span class="nv">OUT_DIR</span><span class="w">      </span><span class="o">?=</span><span class="w"> </span><span class="k">$(</span>DATA_DIR<span class="k">)</span>/prep_auto
+</pre></div>
+</div>
+<p>Estas variables permiten escribir reglas más legibles, por ejemplo:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">$(BACKEND_DIR)</span></code> en lugar de <code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">backend</span></code>.</p></li>
+<li><p>Usar <code class="docutils literal notranslate"><span class="pre">$(DATA_DIR)</span></code> para referirse a la carpeta de datos.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="desarrollo">
+<h2>Desarrollo<a class="headerlink" href="#desarrollo" title="Link to this heading"></a></h2>
+<p>Targets típicos para desarrollo (nombres aproximados):</p>
+<ul>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">be-dev</span></code></strong>: arranca el backend en modo desarrollo.</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">be-dev</span><span class="o">:</span>
+<span class="w">  </span><span class="nb">cd</span><span class="w"> </span><span class="k">$(</span>BACKEND_DIR<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>uvicorn<span class="w"> </span>neurocampus.app.main:app<span class="w"> </span>--reload<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">fe-dev</span></code></strong>: arranca el frontend en modo desarrollo.</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">fe-dev</span><span class="o">:</span>
+<span class="w">  </span><span class="nb">cd</span><span class="w"> </span><span class="k">$(</span>FRONTEND_DIR<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>npm<span class="w"> </span>run<span class="w"> </span>dev
+</pre></div>
+</div>
+</li>
+</ul>
+<p>Estos comandos se ejecutan desde la raíz del proyecto:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>be-dev
+make<span class="w"> </span>fe-dev
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="tests">
+<h2>Tests<a class="headerlink" href="#tests" title="Link to this heading"></a></h2>
+<section id="backend">
+<h3>Backend<a class="headerlink" href="#backend" title="Link to this heading"></a></h3>
+<ul>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">be-test</span></code></strong>: ejecuta los tests de backend (normalmente con <code class="docutils literal notranslate"><span class="pre">pytest</span></code>).</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">be-test</span><span class="o">:</span>
+<span class="w">  </span><span class="nb">cd</span><span class="w"> </span><span class="k">$(</span>BACKEND_DIR<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>pytest
+</pre></div>
+</div>
+</li>
+</ul>
+</section>
+<section id="frontend">
+<h3>Frontend<a class="headerlink" href="#frontend" title="Link to this heading"></a></h3>
+<ul>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">fe-test</span></code></strong>: ejecuta los tests de frontend (Vitest).</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">fe-test</span><span class="o">:</span>
+<span class="w">  </span><span class="nb">cd</span><span class="w"> </span><span class="k">$(</span>FRONTEND_DIR<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>npm<span class="w"> </span>run<span class="w"> </span>test:run
+</pre></div>
+</div>
+</li>
+</ul>
+<p>Usar estos targets garantiza que se ejecutan los comandos de test de manera
+consistente en todos los entornos.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="procesamiento-de-datos-y-modelos">
+<h2>Procesamiento de datos y modelos<a class="headerlink" href="#procesamiento-de-datos-y-modelos" title="Link to this heading"></a></h2>
+<p>En muchos flujos de trabajo, el <code class="docutils literal notranslate"><span class="pre">Makefile</span></code> incluye targets para:</p>
+<ul>
+<li><p><strong>Preprocesamiento de datos</strong>:</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">prep-all</span><span class="o">:</span>
+<span class="w">  </span><span class="nb">cd</span><span class="w"> </span><span class="k">$(</span>BACKEND_DIR<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>neurocampus.app.jobs.cmd_preprocesar_batch
+</pre></div>
+</div>
+</li>
+<li><p><strong>Entrenamiento de modelos</strong> (RBM, DBM, etc.), siguiendo combinaciones como:</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">train-rbm</span><span class="o">:</span>
+<span class="w">  </span><span class="nb">cd</span><span class="w"> </span><span class="k">$(</span>BACKEND_DIR<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>neurocampus.app.jobs.cmd_train_rbm_manual
+
+<span class="nf">train-dbm</span><span class="o">:</span>
+<span class="w">  </span><span class="nb">cd</span><span class="w"> </span><span class="k">$(</span>BACKEND_DIR<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>neurocampus.app.jobs.cmd_train_dbm_manual
+</pre></div>
+</div>
+</li>
+</ul>
+<p>Los nombres reales pueden cambiar, pero la idea es ofrecer un punto de entrada
+sencillo para lanzar pipelines completos sin recordar comandos largos.</p>
+</section>
+<hr class="docutils" />
+<section id="documentacion-sphinx">
+<h2>Documentación (Sphinx)<a class="headerlink" href="#documentacion-sphinx" title="Link to this heading"></a></h2>
+<p>Si se integra Sphinx en <code class="docutils literal notranslate"><span class="pre">docs/</span></code>, es habitual definir un target para generar la
+documentación HTML:</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">docs-html</span><span class="o">:</span>
+<span class="w">	</span><span class="nb">cd</span><span class="w"> </span>docs<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>make<span class="w"> </span>html
+</pre></div>
+</div>
+<p>De esta manera, desde la raíz del repositorio:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>docs-html
+</pre></div>
+</div>
+<p>Genera la documentación estática en <code class="docutils literal notranslate"><span class="pre">docs/build/html/</span></code>, lista para ser servida
+o publicada en GitHub Pages.</p>
+</section>
+<hr class="docutils" />
+<section id="limpieza-y-utilidades">
+<h2>Limpieza y utilidades<a class="headerlink" href="#limpieza-y-utilidades" title="Link to this heading"></a></h2>
+<p>Otros targets que suelen aparecer:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">clean</span></code></strong>: elimina archivos temporales de Python (<code class="docutils literal notranslate"><span class="pre">__pycache__</span></code>, <code class="docutils literal notranslate"><span class="pre">.pytest_cache</span></code>, etc.).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">clean-data</span></code></strong>: limpia directorios de datos de ejemplo o temporales.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">lint</span></code></strong> o <strong><code class="docutils literal notranslate"><span class="pre">format</span></code></strong>: ejecutan herramientas como <code class="docutils literal notranslate"><span class="pre">black</span></code>, <code class="docutils literal notranslate"><span class="pre">isort</span></code>,
+<code class="docutils literal notranslate"><span class="pre">flake8</span></code>, <code class="docutils literal notranslate"><span class="pre">ruff</span></code>, etc. (si están configuradas).</p></li>
+</ul>
+<p>Ejemplo genérico:</p>
+<div class="highlight-make notranslate"><div class="highlight"><pre><span></span><span class="nf">clean</span><span class="o">:</span>
+<span class="w">	</span>find<span class="w"> </span>.<span class="w"> </span>-type<span class="w"> </span>d<span class="w"> </span>-name<span class="w"> </span><span class="s2">&quot;__pycache__&quot;</span><span class="w"> </span>-exec<span class="w"> </span>rm<span class="w"> </span>-rf<span class="w"> </span><span class="o">{}</span><span class="w"> </span>+
+<span class="w">	</span>find<span class="w"> </span>.<span class="w"> </span>-type<span class="w"> </span>d<span class="w"> </span>-name<span class="w"> </span><span class="s2">&quot;.pytest_cache&quot;</span><span class="w"> </span>-exec<span class="w"> </span>rm<span class="w"> </span>-rf<span class="w"> </span><span class="o">{}</span><span class="w"> </span>+
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="recomendaciones-de-uso">
+<h2>Recomendaciones de uso<a class="headerlink" href="#recomendaciones-de-uso" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Usar <code class="docutils literal notranslate"><span class="pre">make</span></code> para las tareas repetitivas en lugar de recordar comandos largos.</p></li>
+<li><p>Documentar en comentarios de <code class="docutils literal notranslate"><span class="pre">Makefile</span></code> los targets menos evidentes.</p></li>
+<li><p>Mantener los targets que se utilizan en CI/CD alineados con los que se usan
+en desarrollo (por ejemplo, <code class="docutils literal notranslate"><span class="pre">be-test</span></code> y <code class="docutils literal notranslate"><span class="pre">fe-test</span></code>).</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="tests.html" class="btn btn-neutral float-left" title="Tests y calidad del código" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="deploy.html" class="btn btn-neutral float-right" title="Despliegue y operación" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

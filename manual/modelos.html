@@ -1,0 +1,406 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pestaña «Modelos» &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Pestaña «Predicciones»" href="predicciones.html" />
+    <link rel="prev" title="Pestaña «Datos» – Ingesta y análisis" href="datos.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Manual de usuario</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="datos.html">Pestaña «Datos» – Ingesta y análisis</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Pestaña «Modelos»</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#organizacion-de-la-pantalla">Organización de la pantalla</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#flujo-de-trabajo-basico">Flujo de trabajo básico</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#comparativa-de-modelos">Comparativa de modelos</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#configuracion-rapida">1. Configuración rápida</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#tabla-comparativa-de-metricas">2. Tabla comparativa de métricas</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#graficos-comparativos">3. Gráficos comparativos</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#detalles-del-mejor-modelo">Detalles del mejor modelo</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#resumen-del-modelo">1. Resumen del modelo</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#curvas-de-entrenamiento">2. Curvas de entrenamiento</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#tiempo-por-epoca">3. Tiempo por época</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#matriz-de-confusion">4. Matriz de confusión</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#errores-frecuentes-y-recomendaciones">Errores frecuentes y recomendaciones</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#relacion-con-otras-secciones">Relación con otras secciones</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="predicciones.html">Pestaña «Predicciones»</a></li>
+<li class="toctree-l2"><a class="reference internal" href="dashboard.html">Pestaña «Dashboard»</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Manual de usuario</a></li>
+      <li class="breadcrumb-item active">Pestaña «Modelos»</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/manual/modelos.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="pestana-modelos">
+<h1>Pestaña «Modelos»<a class="headerlink" href="#pestana-modelos" title="Link to this heading"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link to this heading"></a></h2>
+<p>La pestaña <strong>Modelos</strong> permite entrenar y comparar diferentes arquitecturas de
+Máquinas de Boltzmann (BM, RBM, DBM y variantes “puras”) sobre los datasets
+preprocesados, para seleccionar el modelo con mejor desempeño y usarlo en las
+predicciones posteriores.</p>
+<p>Está pensada para usuarios técnicos o analistas de datos que necesiten:</p>
+<ul class="simple">
+<li><p>Ejecutar entrenamientos controlados.</p></li>
+<li><p>Revisar métricas y curvas de aprendizaje.</p></li>
+<li><p>Entender cómo se comportan los distintos modelos sobre un mismo dataset.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="organizacion-de-la-pantalla">
+<h2>Organización de la pantalla<a class="headerlink" href="#organizacion-de-la-pantalla" title="Link to this heading"></a></h2>
+<p>La interfaz se organiza en:</p>
+<ol class="arabic simple">
+<li><p><strong>Barra superior</strong></p>
+<ul class="simple">
+<li><p>Selector de <strong>dataset activo</strong> (por periodo o identificador).</p></li>
+<li><p>Botón principal <strong>«Entrenar todos los modelos»</strong>.</p></li>
+<li><p>Opcionalmente, acceso a ajustes avanzados (épocas, tamaño de batch, etc.).</p></li>
+</ul>
+</li>
+<li><p><strong>Pestañas internas</strong></p>
+<ul class="simple">
+<li><p><strong>Comparativa de modelos</strong><br />
+Vista general para comparar resultados de BM, RBM, DBM y variantes.</p></li>
+<li><p><strong>Detalles del mejor modelo</strong><br />
+Análisis en profundidad del modelo con mejor métrica global.</p></li>
+</ul>
+</li>
+</ol>
+<p>La navegación entre pestañas no reinicia los resultados; se reusa el último
+experimento lanzado para el dataset actual.</p>
+</section>
+<hr class="docutils" />
+<section id="flujo-de-trabajo-basico">
+<h2>Flujo de trabajo básico<a class="headerlink" href="#flujo-de-trabajo-basico" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Seleccionar dataset</strong></p>
+<ul class="simple">
+<li><p>En la parte superior, escoge el periodo o identificador de dataset sobre el
+que quieras entrenar.</p></li>
+<li><p>Idealmente es un dataset que ya pasó por:</p>
+<ul>
+<li><p>Preprocesamiento (limpieza, codificación).</p></li>
+<li><p>Enriquecimiento con BETO (si el modelo usa características de texto).</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Configurar parámetros de entrenamiento (opcional)</strong></p>
+<ul class="simple">
+<li><p>En el panel de configuración rápida puedes ajustar:</p>
+<ul>
+<li><p>Número de épocas.</p></li>
+<li><p>Tamaño de batch.</p></li>
+<li><p>Tasas de aprendizaje.</p></li>
+</ul>
+</li>
+<li><p>Si no se ajustan, se usan valores por defecto recomendados.</p></li>
+</ul>
+</li>
+<li><p><strong>Entrenar los modelos</strong></p>
+<ul class="simple">
+<li><p>Pulsa <strong>«Entrenar BM/RBM/DBM/BM pura/RBM pura»</strong> o el botón principal
+equivalente.</p></li>
+<li><p>El backend lanzará los jobs correspondientes para cada modelo:</p>
+<ul>
+<li><p>BM (Máquina de Boltzmann completa),</p></li>
+<li><p>RBM (Restricted Boltzmann Machine),</p></li>
+<li><p>DBM (Deep Boltzmann Machine),</p></li>
+<li><p>variantes “puras” según la configuración interna.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Revisar la comparativa de modelos</strong></p>
+<ul class="simple">
+<li><p>Al finalizar el entrenamiento, se actualiza la pestaña <strong>Comparativa de
+modelos</strong> con una tabla y gráficos de resumen.</p></li>
+</ul>
+</li>
+<li><p><strong>Seleccionar el modelo campeón</strong></p>
+<ul class="simple">
+<li><p>El sistema resalta automáticamente la fila del <strong>mejor modelo</strong> según la
+métrica principal configurada (por ejemplo, F1 o accuracy).</p></li>
+<li><p>Desde ahí puedes ir a <strong>Detalles del mejor modelo</strong> para analizarlo con
+mayor profundidad.</p></li>
+</ul>
+</li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="comparativa-de-modelos">
+<h2>Comparativa de modelos<a class="headerlink" href="#comparativa-de-modelos" title="Link to this heading"></a></h2>
+<p>En esta pestaña se muestra:</p>
+<section id="configuracion-rapida">
+<h3>1. Configuración rápida<a class="headerlink" href="#configuracion-rapida" title="Link to this heading"></a></h3>
+<p>Pequeña card donde se visualizan:</p>
+<ul class="simple">
+<li><p>Dataset actual.</p></li>
+<li><p>Hiperparámetros globales usados en el entrenamiento.</p></li>
+<li><p>Fecha y hora del último experimento.</p></li>
+</ul>
+<p>Sirve como contexto al analizar las métricas.</p>
+</section>
+<section id="tabla-comparativa-de-metricas">
+<h3>2. Tabla comparativa de métricas<a class="headerlink" href="#tabla-comparativa-de-metricas" title="Link to this heading"></a></h3>
+<p>Tabla principal con:</p>
+<ul class="simple">
+<li><p><strong>Filas</strong>: cada modelo evaluado (BM, RBM, DBM, BM pura, RBM pura, etc.).</p></li>
+<li><p><strong>Columnas típicas</strong>:</p>
+<ul>
+<li><p>Accuracy (exactitud),</p></li>
+<li><p>Precision,</p></li>
+<li><p>Recall,</p></li>
+<li><p>F1-score,</p></li>
+<li><p>Tiempo total de entrenamiento,</p></li>
+<li><p>Número de parámetros (si está disponible),</p></li>
+<li><p>Identificador del modelo/artefacto guardado.</p></li>
+</ul>
+</li>
+</ul>
+<p>La <strong>fila del mejor modelo</strong> se destaca visualmente (por ejemplo, con un fondo
+ligeramente diferente o un icono).</p>
+</section>
+<section id="graficos-comparativos">
+<h3>3. Gráficos comparativos<a class="headerlink" href="#graficos-comparativos" title="Link to this heading"></a></h3>
+<p>Según la configuración, se suelen mostrar:</p>
+<ul class="simple">
+<li><p><strong>Gráfico de barras comparativas</strong>:</p>
+<ul>
+<li><p>Eje X: modelos.</p></li>
+<li><p>Eje Y: métrica seleccionada (p. ej., F1).</p></li>
+<li><p>Permite ver rápidamente qué arquitectura ofrece mejor desempeño.</p></li>
+</ul>
+</li>
+<li><p><strong>Gráfico de barras apiladas o agrupadas</strong> (opcional):</p>
+<ul>
+<li><p>Para visualizar varias métricas a la vez (por ejemplo, precision y recall).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="detalles-del-mejor-modelo">
+<h2>Detalles del mejor modelo<a class="headerlink" href="#detalles-del-mejor-modelo" title="Link to this heading"></a></h2>
+<p>Al seleccionar la pestaña <strong>Detalles del mejor modelo</strong>, se muestran:</p>
+<section id="resumen-del-modelo">
+<h3>1. Resumen del modelo<a class="headerlink" href="#resumen-del-modelo" title="Link to this heading"></a></h3>
+<p>Card con:</p>
+<ul class="simple">
+<li><p>Nombre del modelo (por ejemplo, <code class="docutils literal notranslate"><span class="pre">RBM_manual</span></code> o <code class="docutils literal notranslate"><span class="pre">DBM</span></code>).</p></li>
+<li><p>Métricas clave (Accuracy, F1, etc.).</p></li>
+<li><p>Hiperparámetros (número de neuronas ocultas, capas, tasa de aprendizaje,
+épocas, etc.).</p></li>
+<li><p>Ruta del artefacto guardado (por ejemplo, en <code class="docutils literal notranslate"><span class="pre">artifacts/</span></code>).</p></li>
+</ul>
+</section>
+<section id="curvas-de-entrenamiento">
+<h3>2. Curvas de entrenamiento<a class="headerlink" href="#curvas-de-entrenamiento" title="Link to this heading"></a></h3>
+<p>Gráficas que permiten entender el comportamiento del modelo durante el
+entrenamiento:</p>
+<ul class="simple">
+<li><p><strong>Curva de pérdida (loss vs epoch)</strong>:</p>
+<ul>
+<li><p>Eje X: epochs.</p></li>
+<li><p>Eje Y: valor de la función de pérdida.</p></li>
+<li><p>Permite ver si el entrenamiento ha convergido o si hay sobreajuste.</p></li>
+</ul>
+</li>
+<li><p><strong>Curva de accuracy (accuracy vs epoch)</strong>:</p>
+<ul>
+<li><p>Eje X: epochs.</p></li>
+<li><p>Eje Y: exactitud en entrenamiento/validación (si aplica).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="tiempo-por-epoca">
+<h3>3. Tiempo por época<a class="headerlink" href="#tiempo-por-epoca" title="Link to this heading"></a></h3>
+<p>Gráfico adicional:</p>
+<ul class="simple">
+<li><p><strong>Gráfico de barras o de línea</strong>:</p>
+<ul>
+<li><p>Eje X: epochs.</p></li>
+<li><p>Eje Y: tiempo de entrenamiento por epoch.</p></li>
+<li><p>Útil para comparar modelos pesados (como DBM) frente a otros más ligeros.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="matriz-de-confusion">
+<h3>4. Matriz de confusión<a class="headerlink" href="#matriz-de-confusion" title="Link to this heading"></a></h3>
+<p>Visualización esencial para entender qué está clasificando bien o mal el
+modelo:</p>
+<ul class="simple">
+<li><p><strong>Matriz de confusión</strong> (idealmente en forma de mapa de calor):</p>
+<ul>
+<li><p>Ejes: clases verdaderas vs clases predichas (por ejemplo, alto/bajo
+rendimiento).</p></li>
+<li><p>Cada celda indica el número de casos.</p></li>
+</ul>
+</li>
+<li><p>Métricas derivadas:</p>
+<ul>
+<li><p>TP (True Positive),</p></li>
+<li><p>TN (True Negative),</p></li>
+<li><p>FP (False Positive),</p></li>
+<li><p>FN (False Negative).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="errores-frecuentes-y-recomendaciones">
+<h2>Errores frecuentes y recomendaciones<a class="headerlink" href="#errores-frecuentes-y-recomendaciones" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>No aparece ningún modelo en la tabla</strong><br />
+Verifica que:</p>
+<ol class="arabic simple">
+<li><p>Hay un dataset seleccionado.</p></li>
+<li><p>Se ha ejecutado al menos un entrenamiento para ese dataset.</p></li>
+</ol>
+</li>
+<li><p><strong>Las métricas son muy bajas para todos los modelos</strong><br />
+Puede indicar:</p>
+<ul>
+<li><p>Problemas con el preprocesamiento del dataset.</p></li>
+<li><p>Hiperparámetros muy poco adecuados (épocas insuficientes, learning rate
+muy alto, etc.).</p></li>
+</ul>
+</li>
+<li><p><strong>El entrenamiento tarda demasiado</strong></p>
+<ul>
+<li><p>Considera reducir el tamaño de las capas ocultas o el número de epochs.</p></li>
+<li><p>Revisa si es necesario entrenar todos los modelos o solo un subconjunto.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="relacion-con-otras-secciones">
+<h2>Relación con otras secciones<a class="headerlink" href="#relacion-con-otras-secciones" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>La pestaña <strong>Modelos</strong> se alimenta de:</p>
+<ul>
+<li><p>Los datasets preparados en la pestaña <strong>Datos</strong>.</p></li>
+<li><p>La teoría de BM/RBM/DBM descrita en la sección de <strong>Teoría de modelos</strong>.</p></li>
+</ul>
+</li>
+<li><p>El modelo campeón seleccionado se usa posteriormente en:</p>
+<ul>
+<li><p><strong>Predicciones</strong> (para inferencias individuales o por lote).</p></li>
+<li><p><strong>Dashboard</strong> (para métricas agregadas y proyecciones).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="datos.html" class="btn btn-neutral float-left" title="Pestaña «Datos» – Ingesta y análisis" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="predicciones.html" class="btn btn-neutral float-right" title="Pestaña «Predicciones»" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

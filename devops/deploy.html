@@ -1,0 +1,322 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Despliegue y operación &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="prev" title="Targets del Makefile" href="makefile.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../manual/index.html">Manual de usuario</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Guía de desarrollo y operación</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="instalacion.html">Instalación y entorno de desarrollo</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tests.html">Tests y calidad del código</a></li>
+<li class="toctree-l2"><a class="reference internal" href="makefile.html">Targets del Makefile</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Despliegue y operación</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#construir-artefactos">1. Construir artefactos</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#backend">Backend</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#frontend">Frontend</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#configuracion-de-entorno">2. Configuración de entorno</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#configuracion-de-red-y-dominios">3. Configuración de red y dominios</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#persistencia-de-datos-y-artefactos">4. Persistencia de datos y artefactos</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#monitorizacion-y-logging">5. Monitorización y logging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#actualizaciones-y-migraciones">6. Actualizaciones y migraciones</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#despliegue-de-documentacion">7. Despliegue de documentación</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Guía de desarrollo y operación</a></li>
+      <li class="breadcrumb-item active">Despliegue y operación</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/devops/deploy.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="despliegue-y-operacion">
+<h1>Despliegue y operación<a class="headerlink" href="#despliegue-y-operacion" title="Link to this heading"></a></h1>
+<p>Esta guía ofrece una visión general de cómo desplegar NeuroCampus en un entorno
+más cercano a producción. Los detalles concretos (orquestador, proveedor cloud,
+etc.) pueden variar, pero los pasos conceptuales suelen ser similares.</p>
+<hr class="docutils" />
+<section id="construir-artefactos">
+<h2>1. Construir artefactos<a class="headerlink" href="#construir-artefactos" title="Link to this heading"></a></h2>
+<section id="backend">
+<h3>Backend<a class="headerlink" href="#backend" title="Link to this heading"></a></h3>
+<p>El backend es una aplicación FastAPI que se puede empaquetar como:</p>
+<ul class="simple">
+<li><p>Una imagen Docker, o</p></li>
+<li><p>Una aplicación Python servida con Uvicorn/Gunicorn en un servidor.</p></li>
+</ul>
+<p>Ejemplo de arranque con Uvicorn (modo producción básico):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>backend
+uvicorn<span class="w"> </span>neurocampus.app.main:app<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Para entornos más exigentes se recomienda usar:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">gunicorn</span></code> con workers <code class="docutils literal notranslate"><span class="pre">uvicorn</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>gunicorn<span class="w"> </span>-k<span class="w"> </span>uvicorn.workers.UvicornWorker<span class="w"> </span>neurocampus.app.main:app<span class="w">     </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--bind<span class="w"> </span><span class="m">0</span>.0.0.0:8000
+</pre></div>
+</div>
+</li>
+</ul>
+</section>
+<section id="frontend">
+<h3>Frontend<a class="headerlink" href="#frontend" title="Link to this heading"></a></h3>
+<p>El frontend (Vite + React) debe compilarse en modo producción:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>frontend
+npm<span class="w"> </span>install
+npm<span class="w"> </span>run<span class="w"> </span>build
+</pre></div>
+</div>
+<p>Esto genera archivos estáticos (generalmente en <code class="docutils literal notranslate"><span class="pre">frontend/dist/</span></code>) que pueden:</p>
+<ul class="simple">
+<li><p>Servirse desde un servidor web (Nginx, Apache, etc.).</p></li>
+<li><p>Servirse a través de un CDN.</p></li>
+<li><p>O integrarse en una imagen Docker junto con un servidor HTTP ligero.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="configuracion-de-entorno">
+<h2>2. Configuración de entorno<a class="headerlink" href="#configuracion-de-entorno" title="Link to this heading"></a></h2>
+<p>Variables de entorno recomendadas:</p>
+<ul class="simple">
+<li><p><strong>Backend</strong>:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">NEURO_ENV</span></code> (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">staging</span></code>, <code class="docutils literal notranslate"><span class="pre">prod</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">NEURO_DATA_DIR</span></code>: ruta persistente donde se almacenan datasets y artefactos.</p></li>
+<li><p>Configuración de logging (si se parametriza por entorno).</p></li>
+<li><p>Cadenas de conexión a bases de datos (si aplica).</p></li>
+</ul>
+</li>
+<li><p><strong>Frontend</strong>:</p>
+<ul>
+<li><p>Variables que definen la URL base de la API, por ejemplo:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">VITE_API_BASE_URL=http://backend:8000</span></code></p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>En Vite, las variables de entorno de <strong>build</strong> deben empezar por <code class="docutils literal notranslate"><span class="pre">VITE_</span></code> para
+ser accesibles desde el código del frontend.</p>
+</section>
+<hr class="docutils" />
+<section id="configuracion-de-red-y-dominios">
+<h2>3. Configuración de red y dominios<a class="headerlink" href="#configuracion-de-red-y-dominios" title="Link to this heading"></a></h2>
+<p>Una configuración típica puede ser:</p>
+<ul class="simple">
+<li><p>Backend (<code class="docutils literal notranslate"><span class="pre">FastAPI</span></code>):</p>
+<ul>
+<li><p>Corriendo en <code class="docutils literal notranslate"><span class="pre">http://backend:8000</span></code> (interno).</p></li>
+</ul>
+</li>
+<li><p>Frontend:</p>
+<ul>
+<li><p>Servido desde <code class="docutils literal notranslate"><span class="pre">http://app:4173</span></code> o un servidor web (Nginx) en el puerto 80/443.</p></li>
+</ul>
+</li>
+<li><p>Proxy reverso (Nginx/Traefik/etc.) delante, con rutas como:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">/api</span></code> → backend FastAPI.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/</span></code> → frontend estático.</p></li>
+</ul>
+</li>
+</ul>
+<p>Ejemplo conceptual de Nginx:</p>
+<div class="highlight-nginx notranslate"><div class="highlight"><pre><span></span><span class="k">location</span><span class="w"> </span><span class="s">/api/</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kn">proxy_pass</span><span class="w"> </span><span class="s">http://backend:8000/</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="k">location</span><span class="w"> </span><span class="s">/</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kn">root</span><span class="w"> </span><span class="s">/usr/share/nginx/html</span><span class="p">;</span><span class="w">  </span><span class="c1"># carpeta con el build de Vite</span>
+<span class="w">    </span><span class="kn">try_files</span><span class="w"> </span><span class="nv">$uri</span><span class="w"> </span><span class="s">/index.html</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<blockquote>
+<div><p>Ajustar las rutas (<code class="docutils literal notranslate"><span class="pre">/api</span></code>, <code class="docutils literal notranslate"><span class="pre">/datos</span></code>, etc.) según la convención utilizada en
+el proyecto (por ejemplo, si la API está montada en <code class="docutils literal notranslate"><span class="pre">/</span></code>).</p>
+</div></blockquote>
+</section>
+<hr class="docutils" />
+<section id="persistencia-de-datos-y-artefactos">
+<h2>4. Persistencia de datos y artefactos<a class="headerlink" href="#persistencia-de-datos-y-artefactos" title="Link to this heading"></a></h2>
+<p>Es importante que las rutas donde se almacenan:</p>
+<ul class="simple">
+<li><p>datasets procesados,</p></li>
+<li><p>artefactos de modelos,</p></li>
+<li><p>logs relevantes,</p></li>
+</ul>
+<p>estén ubicadas en volúmenes persistentes (en Docker) o en carpetas que no se
+pierdan al actualizar el despliegue.</p>
+<p>Si se usan contenedores, se recomienda montar volúmenes como:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">/app/data</span></code> para datasets y artefactos.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">/app/logs</span></code> para logs de aplicación (si no se envían a un sistema central).</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="monitorizacion-y-logging">
+<h2>5. Monitorización y logging<a class="headerlink" href="#monitorizacion-y-logging" title="Link to this heading"></a></h2>
+<p>El backend incluye una capa de observabilidad:</p>
+<ul class="simple">
+<li><p>Middleware de <strong>Correlation-Id</strong> para trazar peticiones.</p></li>
+<li><p>Configuración de logging estructurado.</p></li>
+</ul>
+<p>Recomendaciones:</p>
+<ul class="simple">
+<li><p>Redirigir logs a <code class="docutils literal notranslate"><span class="pre">stdout</span></code>/<code class="docutils literal notranslate"><span class="pre">stderr</span></code> en contenedores para que el orquestador
+(Kubernetes, Docker Compose, etc.) los recoja.</p></li>
+<li><p>Integrar con herramientas de monitorización (Prometheus, ELK/EFK, etc.)
+según las necesidades del entorno.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="actualizaciones-y-migraciones">
+<h2>6. Actualizaciones y migraciones<a class="headerlink" href="#actualizaciones-y-migraciones" title="Link to this heading"></a></h2>
+<p>Cuando se actualiza el proyecto:</p>
+<ol class="arabic simple">
+<li><p>Construir nuevos artefactos (backend y frontend).</p></li>
+<li><p>Aplicar migraciones de datos si son necesarias (por ejemplo, cambios en
+estructura de datasets o rutas de artefactos).</p></li>
+<li><p>Desplegar versiones nuevas de forma controlada:</p>
+<ul class="simple">
+<li><p>Blue/green deployment,</p></li>
+<li><p>rolling updates,</p></li>
+<li><p>o simplemente parar/levantar en entornos pequeños.</p></li>
+</ul>
+</li>
+</ol>
+<p>Es recomendable mantener:</p>
+<ul class="simple">
+<li><p>Copias de seguridad de <code class="docutils literal notranslate"><span class="pre">NEURO_DATA_DIR</span></code> antes de cambios mayores.</p></li>
+<li><p>Versionado de modelos y artefactos (por ejemplo, incluyendo el <code class="docutils literal notranslate"><span class="pre">dataset_id</span></code>
+y la fecha en los nombres).</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="despliegue-de-documentacion">
+<h2>7. Despliegue de documentación<a class="headerlink" href="#despliegue-de-documentacion" title="Link to this heading"></a></h2>
+<p>Si se utiliza Sphinx y GitHub Pages:</p>
+<ol class="arabic">
+<li><p>Construir la documentación localmente:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>docs-html
+</pre></div>
+</div>
+</li>
+<li><p>O bien, configurar un workflow de GitHub Actions que:</p>
+<ul class="simple">
+<li><p>Instale dependencias de <code class="docutils literal notranslate"><span class="pre">backend/requirements-dev.txt</span></code>.</p></li>
+<li><p>Ejecute <code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">docs</span> <span class="pre">&amp;&amp;</span> <span class="pre">make</span> <span class="pre">html</span></code>.</p></li>
+<li><p>Publique <code class="docutils literal notranslate"><span class="pre">docs/build/html/</span></code> en la rama <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code>.</p></li>
+</ul>
+</li>
+</ol>
+<p>De esta forma, la documentación se mantiene actualizada con cada cambio en la
+rama principal del proyecto.</p>
+<hr class="docutils" />
+<p>Esta guía ofrece una referencia general; los detalles exactos de despliegue
+dependerán del entorno (servidor propio, PaaS, contenedores, Kubernetes, etc.).
+En cualquier caso, la separación backend/frontend y el uso de variables de
+entorno facilitan la adaptación a distintos escenarios.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="makefile.html" class="btn btn-neutral float-left" title="Targets del Makefile" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,421 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="es" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pestaña «Predicciones» &mdash; documentación de NeuroCampus - 0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=ba61de6b"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/translations.js?v=f85f4cfb"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Índice" href="../genindex.html" />
+    <link rel="search" title="Búsqueda" href="../search.html" />
+    <link rel="next" title="Pestaña «Dashboard»" href="dashboard.html" />
+    <link rel="prev" title="Pestaña «Modelos»" href="modelos.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuroCampus
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Buscar documentos" aria-label="Buscar documentos" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Manual de usuario</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="datos.html">Pestaña «Datos» – Ingesta y análisis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="modelos.html">Pestaña «Modelos»</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Pestaña «Predicciones»</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#objetivo">Objetivo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#organizacion-de-la-pantalla">Organización de la pantalla</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#ingreso-manual">Ingreso manual</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#formulario-columna-izquierda">1. Formulario (columna izquierda)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#generar-prediccion">2. Generar predicción</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#resultados-de-la-prediccion-salida-inmediata">Resultados de la predicción (salida inmediata)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#tarjeta-de-resultado-principal">1. Tarjeta de resultado principal</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#grafico-tipo-radar-indicadores">2. Gráfico tipo radar (indicadores)</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#barras-comparativas">3. Barras comparativas</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#proyeccion-temporal-si-hay-historico">4. Proyección temporal (si hay histórico)</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#prediccion-por-lote">Predicción por lote</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#ingesta-de-archivo">1. Ingesta de archivo</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#ejecucion-de-predicciones">2. Ejecución de predicciones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#visualizaciones-agregadas">3. Visualizaciones agregadas</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#recomendaciones-de-uso">Recomendaciones de uso</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#errores-frecuentes">Errores frecuentes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#relacion-con-otras-pestanas">Relación con otras pestañas</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="dashboard.html">Pestaña «Dashboard»</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../teoria/index.html">Teoría de modelos</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_backend/index.html">API del backend</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_python/index.html">API Python (backend)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../devops/index.html">Guía de desarrollo y operación</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuroCampus</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Manual de usuario</a></li>
+      <li class="breadcrumb-item active">Pestaña «Predicciones»</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/manual/predicciones.md.txt" rel="nofollow"> Ver código fuente de la página</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="pestana-predicciones">
+<h1>Pestaña «Predicciones»<a class="headerlink" href="#pestana-predicciones" title="Link to this heading"></a></h1>
+<section id="objetivo">
+<h2>Objetivo<a class="headerlink" href="#objetivo" title="Link to this heading"></a></h2>
+<p>La pestaña <strong>Predicciones</strong> permite aplicar el modelo seleccionado (modelo
+campeón) para estimar el rendimiento esperado de docentes/asignaturas a partir
+de nuevas evaluaciones.</p>
+<p>Ofrece dos modos principales:</p>
+<ol class="arabic simple">
+<li><p><strong>Ingreso manual</strong>: registro de un caso a la vez vía formulario.</p></li>
+<li><p><strong>Predicción por lote</strong>: carga de múltiples casos desde un archivo.</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="organizacion-de-la-pantalla">
+<h2>Organización de la pantalla<a class="headerlink" href="#organizacion-de-la-pantalla" title="Link to this heading"></a></h2>
+<p>La pantalla se organiza con:</p>
+<ul class="simple">
+<li><p><strong>Layout maestro</strong>:</p>
+<ul>
+<li><p>Columna izquierda: formulario de entrada.</p></li>
+<li><p>Columna derecha: resultado y visualizaciones de la predicción.</p></li>
+</ul>
+</li>
+<li><p><strong>Tabs internos</strong>:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">Ingreso</span> <span class="pre">manual</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Predicción</span> <span class="pre">por</span> <span class="pre">lote</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+<p>Ambas pestañas comparten la misma zona de resultados (tarjetas y gráficos), que
+se actualiza cada vez que se genera una nueva predicción.</p>
+</section>
+<hr class="docutils" />
+<section id="ingreso-manual">
+<h2>Ingreso manual<a class="headerlink" href="#ingreso-manual" title="Link to this heading"></a></h2>
+<section id="formulario-columna-izquierda">
+<h3>1. Formulario (columna izquierda)<a class="headerlink" href="#formulario-columna-izquierda" title="Link to this heading"></a></h3>
+<p>Campos típicos:</p>
+<ul class="simple">
+<li><p><strong>Nombre del docente</strong> (texto).</p></li>
+<li><p><strong>Asignatura</strong> (texto o desplegable).</p></li>
+<li><p><strong>Calificaciones para las 10 preguntas</strong>:</p>
+<ul>
+<li><p>Usualmente 10 sliders o selectores con escala 1–5.</p></li>
+<li><p>Cada pregunta representa un aspecto de la evaluación (claridad, dominio de
+contenido, puntualidad, etc.).</p></li>
+</ul>
+</li>
+<li><p><strong>Comentario</strong> (textarea opcional):</p>
+<ul>
+<li><p>Texto libre que será procesado por el pipeline de PLN si el modelo lo
+utiliza.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="generar-prediccion">
+<h3>2. Generar predicción<a class="headerlink" href="#generar-prediccion" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Botón principal: <strong>«Generar predicción»</strong>.</p></li>
+<li><p>Al pulsarlo:</p>
+<ul>
+<li><p>El frontend prepara un payload con los campos del formulario.</p></li>
+<li><p>El backend aplica el modelo campeón configurado.</p></li>
+<li><p>Se obtiene una probabilidad de alto/bajo rendimiento y otras métricas
+asociadas.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="resultados-de-la-prediccion-salida-inmediata">
+<h2>Resultados de la predicción (salida inmediata)<a class="headerlink" href="#resultados-de-la-prediccion-salida-inmediata" title="Link to this heading"></a></h2>
+<p>En la columna derecha se muestran una o varias tarjetas y gráficos:</p>
+<section id="tarjeta-de-resultado-principal">
+<h3>1. Tarjeta de resultado principal<a class="headerlink" href="#tarjeta-de-resultado-principal" title="Link to this heading"></a></h3>
+<p>Incluye:</p>
+<ul class="simple">
+<li><p><strong>Probabilidad de alto/bajo rendimiento</strong><br />
+Ejemplo:</p>
+<ul>
+<li><p>Alto: 78% (IC 95% [70–85]),</p></li>
+<li><p>Bajo: 22% (IC 95% [15–30]).</p></li>
+</ul>
+</li>
+<li><p><strong>Clasificación final</strong>:</p>
+<ul>
+<li><p>“Predicción: Alto rendimiento esperado”</p></li>
+<li><p>o “Predicción: Bajo rendimiento esperado”.</p></li>
+</ul>
+</li>
+<li><p><strong>Mensaje explicativo</strong>:</p>
+<ul>
+<li><p>Texto corto que ayuda a interpretar el resultado:</p>
+<ul>
+<li><p>“El modelo sugiere que este docente tiene una alta probabilidad de
+mantener un rendimiento positivo, especialmente por las calificaciones
+en las preguntas X e Y.”</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="grafico-tipo-radar-indicadores">
+<h3>2. Gráfico tipo radar (indicadores)<a class="headerlink" href="#grafico-tipo-radar-indicadores" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Gráfico de radar</strong>:</p>
+<ul>
+<li><p>Cada eje representa una pregunta o indicador (P1, P2, …, P10).</p></li>
+<li><p>El área representa el perfil del docente para ese caso concreto.</p></li>
+</ul>
+</li>
+<li><p>Ayuda a visualizar fortalezas y debilidades relativas.</p></li>
+</ul>
+</section>
+<section id="barras-comparativas">
+<h3>3. Barras comparativas<a class="headerlink" href="#barras-comparativas" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Gráfico de barras</strong>:</p>
+<ul>
+<li><p>Comparación del docente/curso actual vs:</p>
+<ul>
+<li><p>promedio histórico del mismo docente,</p></li>
+<li><p>promedio de la asignatura,</p></li>
+<li><p>promedio global.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Eje X: indicadores o dimensiones.</p></li>
+<li><p>Eje Y: puntuaciones normalizadas.</p></li>
+</ul>
+</section>
+<section id="proyeccion-temporal-si-hay-historico">
+<h3>4. Proyección temporal (si hay histórico)<a class="headerlink" href="#proyeccion-temporal-si-hay-historico" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Gráfico de línea o barras en el tiempo</strong>:</p>
+<ul>
+<li><p>Eje X: semestres o periodos.</p></li>
+<li><p>Eje Y: rendimiento predicho o indicador agregado.</p></li>
+</ul>
+</li>
+<li><p>Permite ver si el rendimiento está mejorando, estable o empeorando.</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="prediccion-por-lote">
+<h2>Predicción por lote<a class="headerlink" href="#prediccion-por-lote" title="Link to this heading"></a></h2>
+<section id="ingesta-de-archivo">
+<h3>1. Ingesta de archivo<a class="headerlink" href="#ingesta-de-archivo" title="Link to this heading"></a></h3>
+<p>En la pestaña <strong>Predicción por lote</strong>:</p>
+<ul class="simple">
+<li><p>Se muestra un componente de subida de archivo similar al de la pestaña
+<strong>Datos</strong>.</p></li>
+<li><p>Formatos aceptados:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">.csv</span></code>, <code class="docutils literal notranslate"><span class="pre">.xlsx</span></code>, <code class="docutils literal notranslate"><span class="pre">.xls</span></code>, etc. (según se defina en el backend).</p></li>
+</ul>
+</li>
+<li><p>El archivo debe seguir una <strong>plantilla de columnas</strong> compatible con el
+modelo:</p>
+<ul>
+<li><p>nombre docente,</p></li>
+<li><p>asignatura,</p></li>
+<li><p>respuestas a las 10 preguntas,</p></li>
+<li><p>comentario (opcional),</p></li>
+<li><p>otros campos que sean necesarios.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="ejecucion-de-predicciones">
+<h3>2. Ejecución de predicciones<a class="headerlink" href="#ejecucion-de-predicciones" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Botón: <strong>«Generar predicciones (lote)»</strong>.</p></li>
+<li><p>El backend procesa cada fila, aplicando el mismo modelo campeón.</p></li>
+<li><p>Se devuelve:</p>
+<ul>
+<li><p>Una tabla de resultados (probabilidad de alto/bajo rendimiento por fila).</p></li>
+<li><p>Agregados globales (por ejemplo, porcentaje de casos en riesgo alto).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="visualizaciones-agregadas">
+<h3>3. Visualizaciones agregadas<a class="headerlink" href="#visualizaciones-agregadas" title="Link to this heading"></a></h3>
+<p>Al trabajar con un lote, es posible mostrar:</p>
+<ul class="simple">
+<li><p><strong>Distribución de riesgo</strong>:</p>
+<ul>
+<li><p>Gráfico de barras o pastel con categorías:</p>
+<ul>
+<li><p>Bajo riesgo,</p></li>
+<li><p>Riesgo medio,</p></li>
+<li><p>Alto riesgo.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>Ranking de docentes/asignaturas</strong>:</p>
+<ul>
+<li><p>Ordenados por probabilidad de bajo rendimiento.</p></li>
+</ul>
+</li>
+<li><p><strong>Mapa de calor por indicador</strong>:</p>
+<ul>
+<li><p>Eje X: indicadores/preguntas.</p></li>
+<li><p>Eje Y: docentes o asignaturas.</p></li>
+<li><p>Celdas coloreadas según el nivel de riesgo.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="recomendaciones-de-uso">
+<h2>Recomendaciones de uso<a class="headerlink" href="#recomendaciones-de-uso" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Antes de utilizar la pestaña <strong>Predicciones</strong>, asegúrate de que:</p>
+<ul>
+<li><p>Hay un <strong>modelo campeón</strong> seleccionado y entrenado en la pestaña <strong>Modelos</strong>.</p></li>
+<li><p>Los datos de entrada siguen el mismo esquema de preprocesamiento que el
+dataset de entrenamiento.</p></li>
+</ul>
+</li>
+<li><p>Para casos límite (probabilidades cercanas al 50/50):</p>
+<ul>
+<li><p>Complementar la decisión con información contextual adicional.</p></li>
+<li><p>Utilizar la pestaña <strong>Dashboard</strong> para revisar tendencias históricas.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="errores-frecuentes">
+<h2>Errores frecuentes<a class="headerlink" href="#errores-frecuentes" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>El sistema indica que no hay modelo disponible</strong></p>
+<ul>
+<li><p>Revisa la pestaña <strong>Modelos</strong> y entrena al menos un modelo para el
+dataset de interés.</p></li>
+</ul>
+</li>
+<li><p><strong>Formato incorrecto en predicción por lote</strong></p>
+<ul>
+<li><p>Comprueba que las columnas coinciden con la plantilla usada en el
+entrenamiento.</p></li>
+<li><p>Asegúrate de que las escalas de calificación son las mismas (por ejemplo,
+1–5).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="relacion-con-otras-pestanas">
+<h2>Relación con otras pestañas<a class="headerlink" href="#relacion-con-otras-pestanas" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Se apoya en:</p>
+<ul>
+<li><p><strong>Modelos</strong>: elección y entrenamiento del modelo campeón.</p></li>
+<li><p><strong>Datos</strong>: estructura y preprocesamiento de los datasets.</p></li>
+</ul>
+</li>
+<li><p>Alimenta:</p>
+<ul>
+<li><p><strong>Dashboard</strong>: KPIs y visualizaciones agregadas a nivel histórico,
+docente, asignatura y programa.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
+        <a href="modelos.html" class="btn btn-neutral float-left" title="Pestaña «Modelos»" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
+        <a href="dashboard.html" class="btn btn-neutral float-right" title="Pestaña «Dashboard»" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Derechos de autor 2025, Daniel Felipe Ramirez Cabrera &amp; Santiago Criollo Bermudez.</p>
+  </div>
+
+  Compilado con <a href="https://www.sphinx-doc.org/">Sphinx</a> usando un
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">tema</a>
+    proporcionado por <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

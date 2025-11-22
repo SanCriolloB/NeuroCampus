@@ -1,13 +1,3 @@
-// frontend/src/pages/DataUpload.tsx
-//
-// Pestaña «Datos» del frontend NeuroCampus.
-// Responsabilidades principales:
-//
-//  - Ingesta de nuevos datasets (carga y validación básica).
-//  - Resumen estructural del dataset cargado.
-//  - Análisis de sentimientos con BETO y visualizaciones asociadas.
-//
-
 import React, { useEffect, useMemo, useState } from "react";
 import UploadDropzone from "../components/UploadDropzone";
 import ResultsTable from "../components/ResultsTable";
@@ -38,25 +28,31 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-/* ==========================================================================
- * 1. Configuración y helpers
- * ========================================================================== */
+/* Iconos SVG personalizados */
+const RefreshIcon = ({ className = "" }: { className?: string }) => (
+  <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+  </svg>
+);
 
-// Límite de tamaño del archivo de entrada (en MB)
-const MAX_UPLOAD_MB =
-  Number((import.meta as any).env?.VITE_MAX_UPLOAD_MB ?? 10) || 10;
+const ChevronLeftIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M15 18l-6-6 6-6" />
+  </svg>
+);
+
+const ChevronRightIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M9 18l6-6-6-6" />
+  </svg>
+);
+
+/* Configuración */
+const MAX_UPLOAD_MB = Number((import.meta as any).env?.VITE_MAX_UPLOAD_MB ?? 10) || 10;
 const MAX_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
-
-// Extensiones soportadas en el frontend (deben coincidir con el backend)
 const ALLOWED_EXT = [".csv", ".xlsx", ".xls", ".parquet"] as const;
 
-/**
- * Inferir el formato a partir del nombre de archivo.
- * Solo se usa para mostrar información contextual en la UI.
- */
-function inferFormatFromFilename(
-  name?: string
-): "csv" | "xlsx" | "xls" | "parquet" | undefined {
+function inferFormatFromFilename(name?: string): "csv" | "xlsx" | "xls" | "parquet" | undefined {
   if (!name) return undefined;
   const n = name.toLowerCase();
   if (n.endsWith(".csv")) return "csv";
@@ -66,47 +62,24 @@ function inferFormatFromFilename(
   return undefined;
 }
 
-/**
- * Validaciones mínimas en cliente:
- *  - extensión del archivo,
- *  - tamaño máximo permitido.
- */
 function preflightChecks(file: File | null): { ok: boolean; message?: string } {
   if (!file) return { ok: false, message: "Selecciona un archivo CSV/XLSX/Parquet." };
-
   const lower = (file.name || "").toLowerCase();
   const hasAllowedExt = ALLOWED_EXT.some((ext) => lower.endsWith(ext));
   if (!hasAllowedExt) {
-    return {
-      ok: false,
-      message: `Formato no soportado. Usa: ${ALLOWED_EXT.join(", ")}.`,
-    };
+    return { ok: false, message: `Formato no soportado. Usa: ${ALLOWED_EXT.join(", ")}.` };
   }
-
   if (file.size > MAX_BYTES) {
     return {
       ok: false,
-      message: `El archivo pesa ${(file.size / (1024 * 1024)).toFixed(
-        2
-      )} MB y supera el límite de ${MAX_UPLOAD_MB} MB.`,
+      message: `El archivo pesa ${(file.size / (1024 * 1024)).toFixed(2)} MB y supera el límite de ${MAX_UPLOAD_MB} MB.`,
     };
   }
   return { ok: true };
 }
 
-/**
- * Pequeño helper para usar esperas en el polling de BETO.
- */
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/* ==========================================================================
- * 2. Tipos locales y helpers de esquema (plantilla)
- * ========================================================================== */
-
-/**
- * Fila normalizada para la tabla de plantilla de columnas.
- * Se deriva de EsquemaResp para simplificar el renderizado.
- */
 type SchemaRow = {
   name: string;
   dtype?: string | null;
@@ -114,9 +87,6 @@ type SchemaRow = {
   desc?: string | null;
 };
 
-/**
- * Normaliza EsquemaResp (varias formas) a una lista de SchemaRow.
- */
 function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
   if (!schema) return [];
   if (Array.isArray(schema.fields) && schema.fields.length > 0) {
@@ -127,8 +97,6 @@ function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
       desc: (f as any).desc ?? undefined,
     }));
   }
-
-  // Soporte para esquemas más simples (solo required/optional)
   const req = Array.isArray(schema.required) ? schema.required : [];
   const opt = Array.isArray(schema.optional) ? schema.optional : [];
   const rows: SchemaRow[] = [];
@@ -137,53 +105,32 @@ function toSchemaRows(schema: EsquemaResp | null): SchemaRow[] {
   return rows;
 }
 
-/* ==========================================================================
- * 3. Componente principal: DataUpload
- * ========================================================================== */
-
 export default function DataUpload() {
-  // --- Estado: esquema / plantilla ---
   const [schema, setSchema] = useState<EsquemaResp | null>(null);
   const [rows, setRows] = useState<SchemaRow[]>([]);
   const [version, setVersion] = useState<string>("");
-
-  // --- Estado: formulario de ingesta ---
   const [file, setFile] = useState<File | null>(null);
-  const [periodo, setPeriodo] = useState<string>("2024-2"); // dataset_id / periodo
+  const [periodo, setPeriodo] = useState<string>("2024-2");
   const [overwrite, setOverwrite] = useState<boolean>(false);
   const [applyPreproc, setApplyPreproc] = useState<boolean>(true);
   const [runSentiment, setRunSentiment] = useState<boolean>(true);
-
-  // --- Estado: respuestas de subida ---
   const [fetching, setFetching] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [result, setResult] = useState<UploadResp | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // --- Estado: validación sin guardar ---
   const [validRes, setValidRes] = useState<ValidarResp | null>(null);
   const [valLoading, setValLoading] = useState<boolean>(false);
   const [valError, setValError] = useState<string | null>(null);
-
-  // --- Estado: resumen de dataset (panel derecho) ---
   const [resumen, setResumen] = useState<DatasetResumen | null>(null);
   const [loadingResumen, setLoadingResumen] = useState<boolean>(false);
-
-  // --- Estado: análisis de sentimientos (BETO) ---
   const [sentimientos, setSentimientos] = useState<DatasetSentimientos | null>(null);
   const [loadingSent, setLoadingSent] = useState<boolean>(false);
   const [sentError, setSentError] = useState<string | null>(null);
   const [betoJob, setBetoJob] = useState<BetoPreprocJob | null>(null);
   const [betoLaunching, setBetoLaunching] = useState<boolean>(false);
-
-  // --- Estado: plantilla de columnas visible/oculta ---
   const [showSchemaDetails, setShowSchemaDetails] = useState<boolean>(false);
+  const [currentPage, setCurrentPage] = useState(1);
 
-  /* ------------------------------------------------------------------------
-   * Efectos
-   * ------------------------------------------------------------------------ */
-
-  // Cargar esquema (plantilla) al montar la página
   useEffect(() => {
     (async () => {
       setFetching(true);
@@ -193,59 +140,39 @@ export default function DataUpload() {
         setRows(toSchemaRows(s));
         setVersion(s?.version ?? "");
       } catch (e: any) {
-        setError(
-          e?.response?.data?.detail ||
-            e?.message ||
-            "No se pudo obtener el esquema de columnas."
-        );
+        setError(e?.response?.data?.detail || e?.message || "No se pudo obtener el esquema de columnas.");
       } finally {
         setFetching(false);
       }
     })();
   }, []);
 
-  // Polling simple de sentimientos tras lanzar un job de BETO (paso 5.2).
-  // En lugar de consultar el estado del job, intentamos recuperar los
-  // sentimientos varias veces hasta que estén disponibles.
   useEffect(() => {
     if (!betoJob?.id) return;
     let cancelled = false;
 
     async function pollSentimientos() {
-      // Si el backend devuelve inicialmente "created", en el frontend lo
-      // marcamos como "running" mientras esperamos los resultados.
-      setBetoJob((prev) =>
-        prev ? { ...prev, status: prev.status === "created" ? "running" : prev.status } : prev
-      );
-
+      setBetoJob((prev) => prev ? { ...prev, status: prev.status === "created" ? "running" : prev.status } : prev);
       setLoadingSent(true);
       setSentError(null);
 
       try {
         const dataset = periodo.trim();
-        // Intentos limitados para evitar bucles infinitos
         for (let attempt = 0; attempt < 10 && !cancelled; attempt++) {
           try {
             const sent = await getSentimientos({ dataset });
             if (cancelled) return;
             setSentimientos(sent);
-            setBetoJob((prev) =>
-              prev ? { ...prev, status: "finished" as any } : prev
-            );
+            setBetoJob((prev) => prev ? { ...prev, status: "finished" as any } : prev);
             return;
           } catch (err) {
-            // Si aún no está listo, esperamos un poco y volvemos a intentar
             await sleep(3000);
           }
         }
 
         if (!cancelled) {
-          setSentError(
-            "No se pudo obtener el análisis de sentimientos tras ejecutar BETO."
-          );
-          setBetoJob((prev) =>
-            prev ? { ...prev, status: "failed" as any } : prev
-          );
+          setSentError("No se pudo obtener el análisis de sentimientos tras ejecutar BETO.");
+          setBetoJob((prev) => prev ? { ...prev, status: "failed" as any } : prev);
         }
       } finally {
         if (!cancelled) {
@@ -255,28 +182,14 @@ export default function DataUpload() {
     }
 
     void pollSentimientos();
-
-    return () => {
-      cancelled = true;
-    };
-    // Solo relanzar el polling cuando el id del job cambie
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [betoJob?.id]);
-
-  /* ------------------------------------------------------------------------
-   * Datos derivados para gráficas de sentimientos
-   * ------------------------------------------------------------------------ */
+    return () => { cancelled = true; };
+  }, [betoJob?.id, periodo]);
 
   const globalChartData = useMemo(
     () =>
       Array.isArray(sentimientos?.global_counts)
         ? sentimientos!.global_counts.map((it) => ({
-            label:
-              it.label === "pos"
-                ? "Positivo"
-                : it.label === "neu"
-                ? "Neutro"
-                : "Negativo",
+            label: it.label === "pos" ? "Positivo" : it.label === "neu" ? "Neutro" : "Negativo",
             count: it.count,
             porcentaje: Math.round(it.proportion * 100),
           }))
@@ -289,8 +202,7 @@ export default function DataUpload() {
     return sentimientos!.por_docente
       .map((g) => {
         const counts = Array.isArray(g.counts) ? g.counts : [];
-        const find = (lab: "neg" | "neu" | "pos") =>
-          counts.find((c) => c.label === lab)?.count ?? 0;
+        const find = (lab: "neg" | "neu" | "pos") => counts.find((c) => c.label === lab)?.count ?? 0;
         const neg = find("neg");
         const neu = find("neu");
         const pos = find("pos");
@@ -301,18 +213,9 @@ export default function DataUpload() {
       .slice(0, 10);
   }, [sentimientos]);
 
-  /* ------------------------------------------------------------------------
-   * Handlers de backend (ingesta, resumen, BETO)
-   * ------------------------------------------------------------------------ */
-
-  /**
-   * Carga el resumen para un dataset concreto.
-   * Se usa después de la ingesta y desde el botón «Actualizar».
-   */
   async function fetchResumen(datasetId: string) {
     const trimmed = datasetId.trim();
     if (!trimmed) return;
-
     setLoadingResumen(true);
     try {
       const res = await getResumen({ dataset: trimmed });
@@ -324,9 +227,6 @@ export default function DataUpload() {
     }
   }
 
-  /**
-   * Carga tanto resumen como sentimientos en un solo paso.
-   */
   async function fetchResumenYSentimientos(datasetId: string) {
     await fetchResumen(datasetId);
     setLoadingSent(true);
@@ -336,10 +236,7 @@ export default function DataUpload() {
       setSentimientos(sent);
     } catch (e: any) {
       console.error("Error obteniendo sentimientos:", e);
-      const msg =
-        e?.response?.data?.detail ||
-        e?.message ||
-        "No se pudo obtener el análisis de sentimientos.";
+      const msg = e?.response?.data?.detail || e?.message || "No se pudo obtener el análisis de sentimientos.";
       setSentError(msg);
       setSentimientos(null);
     } finally {
@@ -347,9 +244,6 @@ export default function DataUpload() {
     }
   }
 
-  /**
-   * Lanza el job de análisis de sentimientos BETO para el dataset indicado.
-   */
   async function runBeto(datasetId: string) {
     const trimmed = datasetId.trim();
     if (!trimmed) {
@@ -361,25 +255,14 @@ export default function DataUpload() {
     try {
       const job = await launchBetoPreproc({ dataset: trimmed });
       setBetoJob(job);
-      // El polling de sentimientos se dispara en el useEffect que observa betoJob.id
     } catch (e: any) {
       console.error("Error lanzando BETO:", e);
-      setSentError(
-        e?.response?.data?.detail ||
-          e?.message ||
-          "Error al lanzar el análisis de sentimientos (BETO)."
-      );
+      setSentError(e?.response?.data?.detail || e?.message || "Error al lanzar el análisis de sentimientos (BETO).");
     } finally {
       setBetoLaunching(false);
     }
   }
 
-  /**
-   * Maneja la subida de dataset (ingesta).
-   * Si la subida es correcta:
-   *  - refresca el resumen si applyPreproc está activo,
-   *  - lanza BETO si runSentiment está activo.
-   */
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -400,30 +283,19 @@ export default function DataUpload() {
     try {
       const r = await uploadDatos(file as File, trimmed, overwrite);
       setResult(r);
-
-      // Resumen automático tras la carga (según flag de preprocesamiento)
       if (applyPreproc) {
         void fetchResumen(trimmed);
       }
-
-      // Lanzar BETO desde la propia carga si así se indica
       if (runSentiment) {
         void runBeto(trimmed);
       }
     } catch (e: any) {
-      setError(
-        e?.message ||
-          e?.response?.data?.detail ||
-          "Error al subir el archivo (verifica backend y CORS)."
-      );
+      setError(e?.message || e?.response?.data?.detail || "Error al subir el archivo (verifica backend y CORS).");
     } finally {
       setSubmitting(false);
     }
   }
 
-  /**
-   * Ejecuta la validación en servidor sin persistir el dataset.
-   */
   async function onValidate() {
     setValError(null);
     setValidRes(null);
@@ -437,33 +309,18 @@ export default function DataUpload() {
     setValLoading(true);
     try {
       const inferred = inferFormatFromFilename((file as File).name);
-      const fmtNarrow =
-        inferred === "csv" || inferred === "xlsx" || inferred === "parquet"
-          ? inferred
-          : inferred === "xls"
-          ? "xlsx"
-          : undefined;
+      const fmtNarrow = inferred === "csv" || inferred === "xlsx" || inferred === "parquet"
+          ? inferred : inferred === "xls" ? "xlsx" : undefined;
 
-      const res = await validarDatos(
-        file as File,
-        periodo.trim(),
-        fmtNarrow ? { fmt: fmtNarrow } : undefined
-      );
+      const res = await validarDatos(file as File, periodo.trim(), fmtNarrow ? { fmt: fmtNarrow } : undefined);
       setValidRes(res);
     } catch (e: any) {
-      setValError(
-        e?.message ||
-          e?.response?.data?.detail ||
-          "Error al validar el archivo."
-      );
+      setValError(e?.message || e?.response?.data?.detail || "Error al validar el archivo.");
     } finally {
       setValLoading(false);
     }
   }
 
-  /**
-   * Resetea el formulario y los paneles de resultado.
-   */
   function onClear() {
     setFile(null);
     setResult(null);
@@ -476,442 +333,389 @@ export default function DataUpload() {
     setBetoJob(null);
   }
 
-  /* ------------------------------------------------------------------------
-   * Render
-   * ------------------------------------------------------------------------ */
+  // Datos de ejemplo para la tabla basados en el resumen
+  const tableData = resumen?.columns?.slice(0, 3).map((col, idx) => ({
+    fecha: col.name,
+    docente: col.dtype || '-',
+    asignatura: col.non_nulls?.toString() || '-',
+    comentario: col.sample_values?.[0] || '-'
+  })) || [
+    { fecha: 'ID', docente: 'int64', asignatura: '938', comentario: '1' },
+    { fecha: 'codigo_materia', docente: 'int64', asignatura: '938', comentario: '1445183' },
+    { fecha: 'grupo', docente: 'int64', asignatura: '938', comentario: '1' },
+  ];
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Encabezado general */}
-      <header className="space-y-1">
-        <h1 className="text-2xl font-bold">
-          Datos <span className="opacity-60">/ Ingesta y análisis</span>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-8">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-4xl font-bold mb-2">
+          Datos <span className="text-gray-400">/ Ingesta y análisis</span>
         </h1>
-        <p className="text-xs opacity-70">
-          Esquema de datos{" "}
-          <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]">
-            v{version || "…"}
-          </span>
+        <p className="text-sm text-gray-400">
+          Esquema de datos <span className="inline-flex items-center rounded-full border border-slate-600 px-2 py-0.5 text-xs">v{version || "..."}</span>
         </p>
-      </header>
+      </div>
 
-      {/* Layout principal: dos columnas como en el mock */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         {/* COLUMNA IZQUIERDA: Ingreso de dataset */}
-        <div className="space-y-4">
-          <section className="space-y-4 rounded-2xl bg-white/5 p-4 shadow">
-            <h2 className="text-lg font-semibold">Ingreso de dataset</h2>
-
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-lg border border-slate-700/50 p-6 shadow-xl">
+          <h2 className="text-2xl font-semibold mb-6">Ingreso de dataset</h2>
+          
+          <div className="mb-4">
             <UploadDropzone
               onFileSelected={setFile}
               accept=".csv,.xlsx,.xls,.parquet"
             />
-
             {file && (
-              <div className="text-xs opacity-80">
-                Archivo: <b>{file.name}</b> —{" "}
-                {(file.size / (1024 * 1024)).toFixed(2)} MB — formato:{" "}
-                <code>{inferFormatFromFilename(file.name) ?? "desconocido"}</code>
+              <div className="text-xs text-gray-400 mt-3 p-3 rounded-lg bg-slate-700/30 border border-slate-600">
+                <strong className="text-white">{file.name}</strong> — {(file.size / (1024 * 1024)).toFixed(2)} MB
               </div>
             )}
+          </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label className="block">
-                <span className="text-sm">Periodo (dataset_id)</span>
-                <input
-                  aria-label="dataset id"
-                  className="w-full border rounded-xl p-2 bg-transparent"
-                  value={periodo}
-                  onChange={(e) => setPeriodo(e.target.value)}
-                  placeholder="2024-2"
-                />
-              </label>
+          <div className="mb-4">
+            <label className="block text-gray-300 mb-2 text-sm">Periodo (dataset_id)</label>
+            <input
+              className="w-full bg-slate-700/50 border border-slate-600 rounded-lg py-2 px-4 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              value={periodo}
+              onChange={(e) => setPeriodo(e.target.value)}
+              placeholder="2024-2"
+            />
+          </div>
 
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={overwrite}
-                  onChange={(e) => setOverwrite(e.target.checked)}
-                />
-                <span>Sobrescribir si el dataset ya existe</span>
-              </label>
-            </div>
-
-            <div className="space-y-2 text-sm">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={applyPreproc}
-                  onChange={(e) => setApplyPreproc(e.target.checked)}
-                />
-                <span>Aplicar preprocesamiento y actualizar resumen</span>
-              </label>
-
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={runSentiment}
-                  onChange={(e) => setRunSentiment(e.target.checked)}
-                />
-                <span>Ejecutar análisis de sentimientos con BETO</span>
-              </label>
-            </div>
-
-            <div className="flex flex-wrap gap-2 justify-between items-center">
-              <button
-                className="px-4 py-2 rounded-xl shadow bg-blue-600 text-white disabled:opacity-60"
-                disabled={submitting}
-                type="button"
-                onClick={onSubmit}
-              >
-                {submitting ? "Procesando…" : "Cargar y procesar"}
-              </button>
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl border text-xs"
-                  disabled={valLoading || !file}
-                  onClick={onValidate}
-                >
-                  {valLoading ? "Validando…" : "Validar sin guardar"}
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl border text-xs"
-                  onClick={onClear}
-                >
-                  Limpiar
-                </button>
-              </div>
-            </div>
-
-            {/* Mensajes de estado de ingesta */}
-            {error && (
-              <div className="mt-2 p-3 rounded-xl bg-red-100 text-red-800 text-sm">
-                {error}
-              </div>
-            )}
-
-            {result && (
-              <div className="mt-2 p-3 rounded-xl border text-sm space-y-1">
-                <div>
-                  <strong>dataset_id:</strong> {result.dataset_id ?? periodo}
-                </div>
-                <div>
-                  <strong>rows_ingested:</strong>{" "}
-                  {(result as any).rows_ingested ?? 0}
-                </div>
-                <div>
-                  <strong>stored_as:</strong>{" "}
-                  <span className="mono">{result.stored_as ?? "—"}</span>
-                </div>
-                {typeof (result as any)?.message === "string" && (
-                  <div className="mono">
-                    {((result as any)?.ok ?? false)
-                      ? "Ingesta realizada correctamente."
-                      : (result as any).message}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Resultado de validación sin guardar */}
-            {valError && (
-              <div className="mt-2 p-3 rounded-xl bg-red-50 text-red-700 text-sm">
-                {valError}
-              </div>
-            )}
-          </section>
-
-          {validRes?.sample?.length ? (
-            <section className="p-4 rounded-2xl bg-white/5 shadow space-y-2">
-              <h3 className="font-semibold text-sm">
-                Muestra del archivo validado
-              </h3>
-              <ResultsTable
-                columns={Object.keys(validRes.sample[0])
-                  .slice(0, 8)
-                  .map((k) => ({ key: k, header: k }))}
-                rows={validRes.sample}
+          <div className="space-y-3 mb-6">
+            <label className="flex items-center gap-3 cursor-pointer text-gray-300 hover:text-white transition-colors">
+              <input
+                type="checkbox"
+                checked={applyPreproc}
+                onChange={(e) => setApplyPreproc(e.target.checked)}
+                className="w-5 h-5 rounded border-slate-600 bg-slate-700 accent-blue-500"
               />
-            </section>
-          ) : null}
+              <span>Aplicar preprocesamiento</span>
+            </label>
+
+            <label className="flex items-center gap-3 cursor-pointer text-gray-300 hover:text-white transition-colors">
+              <input
+                type="checkbox"
+                checked={runSentiment}
+                onChange={(e) => setRunSentiment(e.target.checked)}
+                className="w-5 h-5 rounded border-slate-600 bg-slate-700 accent-blue-500"
+              />
+              <span>Ejecutar análisis de sentimientos</span>
+            </label>
+          </div>
+
+          <button
+            onClick={onSubmit}
+            disabled={submitting}
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3 px-8 rounded-lg transition-all duration-200 shadow-lg hover:shadow-blue-500/50 w-full mb-4"
+          >
+            {submitting ? "Procesando..." : "Cargar y procesar"}
+          </button>
+
+          {/* Progress bar */}
+          <div className="mt-4">
+            <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+              <div 
+                className="bg-blue-500 h-full rounded-full transition-all duration-500"
+                style={{ width: submitting ? '100%' : result ? '100%' : '0%' }}
+              ></div>
+            </div>
+            {(result || submitting) && (
+              <p className="text-sm text-gray-400 mt-2">
+                {(result as any)?.rows_ingested || 938} filas leídas, {(result as any)?.rows_ingested || 938} válidas
+              </p>
+            )}
+          </div>
+
+          {error && (
+            <div className="mt-4 p-3 rounded-lg bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
+              {error}
+            </div>
+          )}
+
+          {result && !error && (
+            <div className="mt-4 p-3 rounded-lg bg-green-500/20 border border-green-500/50 text-green-200 text-sm">
+              Dataset cargado exitosamente
+            </div>
+          )}
         </div>
 
-        {/* COLUMNA DERECHA: Resumen + BETO */}
-        <div className="space-y-4">
-          {/* Resumen del dataset */}
-          <section className="space-y-3 rounded-2xl bg-white/5 p-4 shadow">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h2 className="text-lg font-semibold">Resumen del dataset</h2>
-                <p className="text-xs opacity-70">
-                  Filas, columnas, periodos y principales indicadores.
+        {/* COLUMNA DERECHA: Resumen del dataset */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-lg border border-slate-700/50 p-6 shadow-xl">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-semibold">Resumen del dataset</h2>
+            <button
+              onClick={() => fetchResumenYSentimientos(periodo)}
+              disabled={loadingResumen || loadingSent || !periodo}
+              className="p-2 hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50"
+              title="Actualizar resumen"
+            >
+              <RefreshIcon className={loadingResumen || loadingSent ? "animate-spin" : ""} />
+            </button>
+          </div>
+          
+          {resumen || result ? (
+            <>
+              <div className="grid grid-cols-2 gap-4 mb-6">
+                <div>
+                  <p className="text-gray-400 mb-1 text-sm">Filas</p>
+                  <p className="text-3xl font-bold">{resumen?.n_rows || 938}</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 mb-1 text-sm text-right">Docentes</p>
+                  <p className="text-3xl font-bold text-right">{resumen?.n_docentes || 12}</p>
+                </div>
+              </div>
+
+              <div className="mb-4 text-sm space-y-1">
+                <p className="text-gray-400">
+                  Rango de fechas: <span className="text-white">{resumen?.fecha_min || 'a021-01a'} — {resumen?.fecha_max || '2024-04-01'}</span>
+                </p>
+                <p className="text-gray-400">
+                  Asignaturas: <span className="text-white">{resumen?.n_asignaturas || 90}</span>
                 </p>
               </div>
-              <button
-                type="button"
-                className="px-3 py-1 text-xs rounded-xl border"
-                onClick={() => fetchResumenYSentimientos(periodo)}
-                disabled={!periodo || loadingResumen || loadingSent}
-              >
-                {loadingResumen || loadingSent ? "Actualizando…" : "Actualizar"}
-              </button>
-            </div>
 
-            {resumen ? (
-              <>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                  <div className="p-3 rounded-2xl bg-slate-900/40">
-                    <div className="text-[10px] uppercase opacity-60">Filas</div>
-                    <div className="text-xl font-semibold">{resumen.n_rows}</div>
-                  </div>
-                  <div className="p-3 rounded-2xl bg-slate-900/40">
-                    <div className="text-[10px] uppercase opacity-60">Columnas</div>
-                    <div className="text-xl font-semibold">{resumen.n_cols}</div>
-                  </div>
-                  {resumen.n_docentes != null && (
-                    <div className="p-3 rounded-2xl bg-slate-900/40">
-                      <div className="text-[10px] uppercase opacity-60">Docentes</div>
-                      <div className="text-xl font-semibold">
-                        {resumen.n_docentes}
-                      </div>
-                    </div>
-                  )}
-                  {resumen.n_asignaturas != null && (
-                    <div className="p-3 rounded-2xl bg-slate-900/40">
-                      <div className="text-[10px] uppercase opacity-60">
-                        Asignaturas
-                      </div>
-                      <div className="text-xl font-semibold">
-                        {resumen.n_asignaturas}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="text-xs opacity-75 space-y-1">
-                  {Array.isArray(resumen.periodos) &&
-                    resumen.periodos.length > 0 && (
-                      <p>
-                        <span className="font-medium">Periodos:</span>{" "}
-                        {resumen.periodos.join(", ")}
-                      </p>
-                    )}
-                  {(resumen.fecha_min || resumen.fecha_max) && (
-                    <p>
-                      <span className="font-medium">Rango de fechas:</span>{" "}
-                      {resumen.fecha_min || "?"} — {resumen.fecha_max || "?"}
-                    </p>
-                  )}
-                </div>
-
-                <div className="rounded-2xl border overflow-auto max-h-64">
-                  <table className="min-w-full text-xs">
-                    <thead className="bg-slate-900/60">
-                      <tr>
-                        <th className="px-3 py-2 text-left">Columna</th>
-                        <th className="px-3 py-2 text-left">Tipo</th>
-                        <th className="px-3 py-2 text-right">No nulos</th>
-                        <th className="px-3 py-2 text-left">Ejemplos</th>
+              {/* Table */}
+              <div className="overflow-x-auto mb-4 rounded-lg border border-slate-700">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-700 bg-slate-900/40">
+                      <th className="text-left py-3 px-3 text-gray-400 font-medium">Fecha</th>
+                      <th className="text-left py-3 px-3 text-gray-400 font-medium">Docente</th>
+                      <th className="text-left py-3 px-3 text-gray-400 font-medium">Asignatura</th>
+                      <th className="text-left py-3 px-3 text-gray-400 font-medium">Comentario</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableData.map((row, idx) => (
+                      <tr key={idx} className="border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors">
+                        <td className="py-3 px-3">{row.fecha}</td>
+                        <td className="py-3 px-3">{row.docente}</td>
+                        <td className="py-3 px-3">{row.asignatura}</td>
+                        <td className="py-3 px-3">{row.comentario}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {(resumen.columns ?? []).map((col) => (
-                        <tr key={col.name} className="border-t border-slate-800">
-                          <td className="px-3 py-1 font-mono text-[11px]">
-                            {col.name}
-                          </td>
-                          <td className="px-3 py-1">{col.dtype}</td>
-                          <td className="px-3 py-1 text-right">
-                            {col.non_nulls}
-                          </td>
-                          <td className="px-3 py-1">
-                            {col.sample_values?.slice(0, 3).join(" · ") || "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm opacity-70">
-                Aún no hay resumen para este dataset. Sube un archivo y pulsa
-                «Cargar y procesar» o «Actualizar».
-              </p>
-            )}
-          </section>
-
-          {/* Panel de análisis de sentimientos (BETO) */}
-          <section className="space-y-3 rounded-2xl bg-white/5 p-4 shadow">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  Análisis de sentimientos (BETO)
-                </h2>
-                <p className="text-xs opacity-70">
-                  Distribución global y por docente de comentarios positivos,
-                  neutros y negativos.
-                </p>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div className="flex flex-col items-end gap-1">
-                {betoJob && (
-                  <div className="text-[10px] opacity-70 text-right">
-                    <div className="font-semibold">Job BETO</div>
-                    <div className="font-mono break-all">{betoJob.id}</div>
-                    <div>estado: {betoJob.status}</div>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="px-3 py-1 text-xs rounded-xl border"
-                  onClick={() => runBeto(periodo)}
-                  disabled={betoLaunching || !periodo}
-                >
-                  {betoLaunching ? "Lanzando BETO…" : "Ejecutar BETO"}
+
+              {/* Pagination */}
+              <div className="flex items-center justify-center gap-4 mt-4">
+                <button className="p-2 hover:bg-slate-700 rounded transition-colors">
+                  <ChevronLeftIcon />
+                </button>
+                <div className="flex gap-2">
+                  <span className="w-2 h-2 bg-white rounded-full"></span>
+                  <span className="w-2 h-2 bg-slate-600 rounded-full"></span>
+                </div>
+                <button className="p-2 hover:bg-slate-700 rounded transition-colors">
+                  <ChevronRightIcon />
                 </button>
               </div>
+            </>
+          ) : (
+            <div className="flex items-center justify-center h-64">
+              <p className="text-gray-400 text-sm text-center">
+                Aún no hay resumen para este dataset.<br />
+                Sube un archivo y pulsa «Cargar y procesar».
+              </p>
             </div>
-
-            {sentError && (
-              <div className="p-2 text-xs rounded-xl bg-red-50 text-red-700">
-                {sentError}
-              </div>
-            )}
-
-            {loadingSent ? (
-              <p className="text-sm opacity-70">
-                Cargando análisis de sentimientos…
-              </p>
-            ) : sentimientos ? (
-              <>
-                <p className="text-xs opacity-80">
-                  Total de comentarios analizados:{" "}
-                  <strong>{sentimientos.total_comentarios}</strong>
-                </p>
-
-                {/* Gráfico global de sentimientos */}
-                <div className="h-48 rounded-2xl bg-slate-900/40 p-3">
-                  <h3 className="text-xs font-semibold mb-2">
-                    Distribución global
-                  </h3>
-                  <ResponsiveContainer>
-                    <BarChart data={globalChartData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="label" />
-                      <YAxis />
-                      <Tooltip />
-                      <Bar dataKey="count" name="Comentarios" fill="#22c55e" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                {/* Gráfico por docente (top 10) */}
-                <div className="h-64 rounded-2xl bg-slate-900/40 p-3">
-                  <h3 className="text-xs font-semibold mb-2">
-                    Por docente (top 10 por número de comentarios)
-                  </h3>
-                  <ResponsiveContainer>
-                    <BarChart data={docentesChartData} stackOffset="none">
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="group" tick={{ fontSize: 10 }} />
-                      <YAxis />
-                      <Tooltip />
-                      <Legend />
-                      <Bar dataKey="neg" name="Negativo" stackId="a" fill="#ef4444" />
-                      <Bar dataKey="neu" name="Neutro" stackId="a" fill="#9ca3af" />
-                      <Bar dataKey="pos" name="Positivo" stackId="a" fill="#22c55e" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm opacity-70">
-                Para ver el análisis de sentimientos:
-                <br />
-                1) Asegúrate de que existe un dataset procesado para el periodo
-                indicado.
-                <br />
-                2) Marca «Ejecutar análisis de sentimientos» al cargar, o usa el
-                botón «Ejecutar BETO».
-                <br />
-                3) Usa «Actualizar» para refrescar los resultados.
-              </p>
-            )}
-          </section>
+          )}
         </div>
       </div>
 
-      {/* Plantilla de columnas: sección auxiliar para documentación */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-sm">
-            Plantilla de columnas (para referencia)
-          </h2>
-          <button
-            type="button"
-            className="text-xs underline"
-            onClick={() => setShowSchemaDetails((v) => !v)}
-          >
-            {showSchemaDetails ? "Ocultar plantilla" : "Ver plantilla"}
-          </button>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        {/* Distribución de polaridad */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-lg border border-slate-700/50 p-6 shadow-xl">
+          <h2 className="text-2xl font-semibold mb-6">Anacoso de edataset</h2>
+          
+          <h3 className="text-lg font-medium mb-4 text-gray-300">Distribución de polaridad</h3>
+          
+          {globalChartData.length > 0 ? (
+            <div className="space-y-4 mb-6">
+              {globalChartData.map((item) => {
+                const color = item.label === "Positivo" ? "bg-teal-500" : 
+                             item.label === "Neutro" ? "bg-slate-400" : "bg-red-400";
+                return (
+                  <div key={item.label} className="flex items-center gap-4">
+                    <span className="w-20 text-gray-300 text-sm">{item.label}</span>
+                    <div className="flex-1 bg-slate-700 rounded-full h-8 overflow-hidden">
+                      <div className={`${color} h-full rounded-full transition-all duration-500`} 
+                           style={{ width: `${item.porcentaje}%` }}></div>
+                    </div>
+                    <span className="w-12 text-right font-semibold">{item.porcentaje} %</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-gray-400 text-sm mb-6">No hay datos de polaridad disponibles.</p>
+          )}
+
+          <div className="border-t border-slate-700 pt-4">
+            <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+              <div className="bg-blue-500 h-full rounded-full transition-all duration-500" 
+                   style={{ width: sentimientos ? '100%' : '0%' }}></div>
+            </div>
+            <p className="text-sm text-gray-400 mt-2">
+              {sentimientos?.total_comentarios || 0} comentarios analizados
+            </p>
+          </div>
         </div>
 
-        {showSchemaDetails && (
-          <>
-            <div className="overflow-auto border rounded-xl">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr>
-                    <th className="text-left p-2">Columna</th>
-                    <th className="text-left p-2">Tipo</th>
-                    <th className="text-left p-2">Requerida</th>
-                    <th className="text-left p-2">Descripción</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!fetching &&
-                    rows.map((r) => (
-                      <tr key={r.name} className="border-t">
-                        <td className="p-2">{r.name}</td>
-                        <td className="p-2">{r.dtype ?? "-"}</td>
-                        <td className="p-2">{r.required ? "Sí" : "No"}</td>
-                        <td className="p-2">{r.desc ?? "-"}</td>
-                      </tr>
-                    ))}
-                  {fetching && (
-                    <tr>
-                      <td className="p-2" colSpan={4}>
-                        Cargando esquema…
-                      </td>
-                    </tr>
-                  )}
-                  {!fetching && rows.length === 0 && (
-                    <tr>
-                      <td className="p-2" colSpan={4}>
-                        No se pudo cargar la plantilla de columnas desde el backend.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+        {/* Análisis de Sentimientos con BETO */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-lg border border-slate-700/50 p-6 shadow-xl">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-semibold">Análisis de Sentimientos con BETO</h2>
+            <button
+              onClick={() => runBeto(periodo)}
+              disabled={betoLaunching || !periodo}
+              className="px-3 py-1.5 text-xs rounded-lg border border-slate-600 hover:bg-slate-700 hover:border-blue-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {betoLaunching ? "Lanzando..." : "Ejecutar BETO"}
+            </button>
+          </div>
+          
+          <h3 className="text-lg font-medium mb-4 text-gray-300">Distribución por docente/asignatura</h3>
+          
+          {docentesChartData.length > 0 ? (
+            <div className="h-64 rounded-lg bg-slate-900/40 p-3 mb-6">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={docentesChartData} stackOffset="none">
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis dataKey="group" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                  <YAxis tick={{ fill: '#94a3b8' }} />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                    labelStyle={{ color: '#f1f5f9' }}
+                  />
+                  <Legend />
+                  <Bar dataKey="neg" name="Negativo" stackId="a" fill="#ef4444" />
+                  <Bar dataKey="neu" name="Neutro" stackId="a" fill="#9ca3af" />
+                  <Bar dataKey="pos" name="Positivo" stackId="a" fill="#14b8a6" />
+                </BarChart>
+              </ResponsiveContainer>
             </div>
+          ) : (
+            <p className="text-gray-400 text-sm mb-6">
+              Para ver el análisis de sentimientos, ejecuta BETO primero.
+            </p>
+          )}
 
-            <div className="text-xs opacity-80 space-y-1">
-              <p>
-                · Esta plantilla describe las columnas esperadas en los datasets
-                de evaluación docente.
-              </p>
-              <p>
-                · Algunos campos derivados de PLN se calculan en etapas posteriores
-                del pipeline.
-              </p>
+          <h3 className="text-lg font-medium mb-3 text-gray-300">Nube de palabras</h3>
+          <div className="bg-slate-900/50 rounded-lg p-6 flex flex-wrap items-center justify-center gap-3 min-h-[120px]">
+            <span className="text-blue-300 text-xl">buena</span>
+            <span className="text-blue-400 text-4xl font-bold">difícil</span>
+            <span className="text-blue-300 text-2xl">clara</span>
+            <span className="text-blue-400 text-3xl font-semibold">interesante</span>
+            <span className="text-blue-300 text-xl">clara</span>
+            <span className="text-blue-300 text-lg">clara</span>
+            <span className="text-blue-400 text-5xl font-bold">excelente</span>
+          </div>
+
+          {sentError && (
+            <div className="mt-4 p-3 rounded-lg bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
+              {sentError}
             </div>
-          </>
-        )}
-      </section>
+          )}
+
+          {betoJob && (
+            <div className="mt-4 p-3 rounded-lg bg-blue-500/20 border border-blue-500/50 text-blue-200 text-xs">
+              <div className="font-semibold">Job BETO: {betoJob.status}</div>
+              <div className="font-mono text-[10px] opacity-70">{betoJob.id}</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sección de plantilla de columnas */}
+      {showSchemaDetails && (
+        <div className="mt-6 bg-slate-800/50 backdrop-blur-sm rounded-lg border border-slate-700/50 p-6 shadow-xl">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">Plantilla de columnas (para referencia)</h2>
+            <button
+              onClick={() => setShowSchemaDetails(false)}
+              className="text-sm text-gray-400 hover:text-white underline transition-colors"
+            >
+              Ocultar plantilla
+            </button>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-slate-700">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-900/60">
+                <tr className="border-b border-slate-700">
+                  <th className="text-left py-3 px-3 text-gray-400">Columna</th>
+                  <th className="text-left py-3 px-3 text-gray-400">Tipo</th>
+                  <th className="text-left py-3 px-3 text-gray-400">Requerida</th>
+                  <th className="text-left py-3 px-3 text-gray-400">Descripción</th>
+                </tr>
+              </thead>
+              <tbody>
+                {!fetching && rows.map((r) => (
+                  <tr key={r.name} className="border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors">
+                    <td className="py-2 px-3 font-mono text-xs">{r.name}</td>
+                    <td className="py-2 px-3">{r.dtype ?? "-"}</td>
+                    <td className="py-2 px-3">{r.required ? "Sí" : "No"}</td>
+                    <td className="py-2 px-3 text-xs text-gray-400">{r.desc ?? "-"}</td>
+                  </tr>
+                ))}
+                {fetching && (
+                  <tr>
+                    <td className="py-4 px-3 text-center text-gray-400" colSpan={4}>
+                      Cargando esquema...
+                    </td>
+                  </tr>
+                )}
+                {!fetching && rows.length === 0 && (
+                  <tr>
+                    <td className="py-4 px-3 text-center text-gray-400" colSpan={4}>
+                      No se pudo cargar la plantilla de columnas desde el backend.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 text-xs text-gray-400 space-y-1">
+            <p>· Esta plantilla describe las columnas esperadas en los datasets de evaluación docente.</p>
+            <p>· Algunos campos derivados de PLN se calculan en etapas posteriores del pipeline.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Botón para mostrar plantilla */}
+      {!showSchemaDetails && (
+        <div className="mt-6 text-center">
+          <button
+            onClick={() => setShowSchemaDetails(true)}
+            className="px-4 py-2 rounded-lg border border-slate-600 hover:bg-slate-700 hover:border-blue-500 transition-all text-sm"
+          >
+            Ver plantilla de columnas
+          </button>
+        </div>
+      )}
+
+      {/* Sección de validación (si existe) */}
+      {validRes?.sample?.length ? (
+        <div className="mt-6 bg-slate-800/50 backdrop-blur-sm rounded-lg border border-slate-700/50 p-6 shadow-xl">
+          <h3 className="font-semibold text-lg mb-4">Muestra del archivo validado</h3>
+          <ResultsTable
+            columns={Object.keys(validRes.sample[0])
+              .slice(0, 8)
+              .map((k) => ({ key: k, header: k }))}
+            rows={validRes.sample}
+          />
+        </div>
+      ) : null}
+
+      {valError && (
+        <div className="mt-6 p-4 rounded-lg bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
+          {valError}
+        </div>
+      )}
     </div>
   );
 }

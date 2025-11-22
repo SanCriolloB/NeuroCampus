@@ -110,7 +110,7 @@ be-install:
 .PHONY: fe-install
 fe-install:
 	@echo ">> Instalando dependencias frontend"
-	cd $(FRONTEND_DIR) && npm install && npm install recharts
+	cd $(FRONTEND_DIR) && npm install && npm install recharts && npm install lucide-react
 
 # ===========================
 # Backend: desarrollo y tests

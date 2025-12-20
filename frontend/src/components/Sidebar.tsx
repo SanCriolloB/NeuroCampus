@@ -11,9 +11,9 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", Icon: Home, end: true },
-  { to: "/datos", label: "Datos", Icon: Database },
-  { to: "/models", label: "Modelos", Icon: Network },
-  { to: "/prediction", label: "Predicciones", Icon: TrendingUp },
+  { to: "/datos", label: "Data", Icon: Database },
+  { to: "/models", label: "Models", Icon: Network },
+  { to: "/prediction", label: "Predictions", Icon: TrendingUp },
 ];
 
 export default function Sidebar() {

@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Checkbox } from './ui/checkbox';
 import { Progress } from './ui/progress';
 import { Upload, CheckCircle2 } from 'lucide-react';
+import { useAppFilters, setAppFilters } from "@/state/appFilters.store";
 
 const sentimentDistribution = [
   { name: 'Positive', value: 450, percentage: 45 },

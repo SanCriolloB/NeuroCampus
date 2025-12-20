@@ -30,15 +30,44 @@ export function mapSampleRowsToPreview(sample?: Array<Record<string, any>>): UiP
 
   return sample.slice(0, 8).map((row, idx) => {
     const teacher =
-      pick(row, ["teacher", "Teacher", "docente", "Docente", "profesor", "Profesor", "nombre_docente"]) ??
-      "—";
-    const subject =
-      pick(row, ["subject", "Subject", "asignatura", "Asignatura", "materia", "Materia", "nombre_asignatura"]) ??
-      "—";
-    const rating = asNumber(pick(row, ["rating", "Rating", "calificacion", "Calificacion", "nota", "score"])) || "—";
-    const comment =
-      pick(row, ["comment", "Comment", "comentario", "Comentario", "feedback", "observacion"]) ??
-      "—";
+  pick(row, [
+    "teacher", "Teacher",
+    "docente", "Docente", "DOCENTE",
+    "profesor", "Profesor", "PROFESOR",
+    "nombre_docente", "NOMBRE_DOCENTE",
+    "nombreProfesor", "NOMBRE_PROFESOR",
+  ]) ?? "—";
+
+const subject =
+  pick(row, [
+    "subject", "Subject",
+    "asignatura", "Asignatura", "ASIGNATURA",
+    "materia", "Materia", "MATERIA",
+    "nombre_asignatura", "NOMBRE_ASIGNATURA",
+    "curso", "CURSO",
+  ]) ?? "—";
+
+const rating =
+  asNumber(
+    pick(row, [
+      "rating", "Rating",
+      "calificacion", "Calificacion", "CALIFICACION",
+      "nota", "NOTA",
+      "score", "SCORE",
+      "promedio", "PROMEDIO",
+      "calificacion_final", "CALIFICACION_FINAL",
+    ]),
+  ) || "—";
+
+const comment =
+  pick(row, [
+    "comment", "Comment",
+    "comentario", "Comentario", "COMENTARIO",
+    "observacion", "Observacion", "OBSERVACION",
+    "feedback", "FEEDBACK",
+    "opinion", "OPINION",
+    "texto", "TEXTO",
+  ]) ?? "—";
     const id = pick(row, ["id", "ID", "codigo", "codigo_docente", "codigo_estudiante"]) ?? (idx + 1);
 
     return { id, teacher: String(teacher), subject: String(subject), rating, comment: String(comment) };

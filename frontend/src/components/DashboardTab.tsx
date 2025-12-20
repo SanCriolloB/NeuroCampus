@@ -5,6 +5,7 @@ import { Card } from './ui/card';
 import { TrendingUp, TrendingDown, Target, Database, Users, Award } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Badge } from './ui/badge';
+import { useAppFilters, setAppFilters } from "@/state/appFilters.store";
 
 // Base data structure
 const teachersData = {
@@ -52,9 +53,22 @@ const wordCloudData = [
 
 export function DashboardTab() {
   // Global filters
-  const [semester, setSemester] = useState('2025-1');
-  const [subject, setSubject] = useState('all');
-  const [teacher, setTeacher] = useState('all');
+  // Global filters (persistentes / compartidos)
+  const activePeriodo = useAppFilters((s) => s.activePeriodo) ?? '2024-2';
+  const asignatura = useAppFilters((s) => s.asignatura); // null = all
+  const docente = useAppFilters((s) => s.docente); // null = all
+
+  // Mantener mismas variables que usa la UI actual (sin tocar layout)
+  const semester = activePeriodo;
+  const subject = asignatura ?? 'all';
+  const teacher = docente ?? 'all';
+
+  // Mantener misma firma usada por <Select onValueChange={...}>
+  const setSemester = (v: string) => setAppFilters({ activePeriodo: v });
+  const setSubject = (v: string) => setAppFilters({ asignatura: v === 'all' ? null : v });
+  const setTeacher = (v: string) => setAppFilters({ docente: v === 'all' ? null : v });
+
+  // Este sí puede seguir local (no afecta trazabilidad dataset/periodo)
   const [rankingMode, setRankingMode] = useState<'best' | 'risk'>('best');
 
   // Generate dynamic data based on filters

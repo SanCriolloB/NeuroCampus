@@ -51,7 +51,7 @@ const labelToName: Record<string, string> = {
   neg: "Negative",
 };
 
-export function mapGlobalSentiment(ds?: DatasetSentimientos) {
+export function mapGlobalSentiment(ds: DatasetSentimientos | null | undefined) {
   if (!ds) return [];
   return (ds.global_counts ?? []).map((x) => ({
     name: labelToName[x.label] ?? x.label,
@@ -60,7 +60,7 @@ export function mapGlobalSentiment(ds?: DatasetSentimientos) {
   }));
 }
 
-export function mapTeacherSentiment(ds?: DatasetSentimientos) {
+export function mapTeacherSentiment(ds: DatasetSentimientos | null | undefined) {
   if (!ds) return [];
   const byTeacher = ds.por_docente ?? [];
 
@@ -75,12 +75,10 @@ export function mapTeacherSentiment(ds?: DatasetSentimientos) {
   });
 }
 
-export function rowsReadValidFromValidation(v?: ValidarResp) {
+export function rowsReadValidFromValidation(v: ValidarResp | null | undefined) {
   if (!v) return { rowsRead: null as number | null, rowsValid: null as number | null };
   const rowsRead = typeof v.n_rows === "number" ? v.n_rows : null;
 
-  // Si backend provee filas válidas explícitas, úsalo. Si no, aproximamos:
-  // - Si hay issues error severas, dejamos "valid" nulo para no mentir.
   const hasError =
     Array.isArray(v.issues) && v.issues.some((i) => i.level === "error");
 

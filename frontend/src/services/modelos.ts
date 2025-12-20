@@ -1,5 +1,6 @@
 // frontend/src/services/modelos.ts
-// Día 4 (B) — servicio axios-like basado en apiClient para /modelos
+// Cliente de API para /modelos (runs, champion, entrenamiento y estado)
+
 import api from "./apiClient";
 
 export type EntrenarReq = {
@@ -7,6 +8,11 @@ export type EntrenarReq = {
   data_ref?: string;
   epochs?: number;
   hparams?: Record<string, number | null>;
+};
+
+export type EntrenarResp = {
+  job_id: string;
+  status: string;
 };
 
 export type EstadoResp = {
@@ -19,19 +25,6 @@ export type EstadoResp = {
   };
   history: { epoch: number; loss: number; recon_error?: number }[];
 };
-
-export async function entrenar(req: EntrenarReq) {
-  const { data } = await api.post("/modelos/entrenar", req);
-  return data as { job_id: string; status: string };
-}
-
-export async function estado(jobId: string) {
-  const { data } = await api.get(`/modelos/estado/${jobId}`);
-  return data as EstadoResp;
-}
-
-// frontend/src/services/modelos.ts
-import api from "./apiClient";
 
 export interface RunSummary {
   run_id: string;
@@ -48,7 +41,7 @@ export interface RunSummary {
 
 export interface RunDetails {
   run_id: string;
-  metrics: any; // aquí puede venir histórico por época, etc.
+  metrics: any;
 }
 
 export interface ChampionInfo {
@@ -57,21 +50,51 @@ export interface ChampionInfo {
   path: string;
 }
 
-export function listRuns(modelName?: string) {
+/** POST /modelos/entrenar */
+export async function entrenar(req: EntrenarReq) {
+  const { data } = await api.post<EntrenarResp>("/modelos/entrenar", req);
+  return data;
+}
+
+/** GET /modelos/estado/:jobId */
+export async function estado(jobId: string) {
+  const { data } = await api.get<EstadoResp>(`/modelos/estado/${jobId}`);
+  return data;
+}
+
+/**
+ * GET /modelos/runs
+ * Soporta filtros opcionales (si backend los implementa):
+ * - model_name
+ * - dataset_id
+ * - periodo
+ */
+export function listRuns(filters?: { model_name?: string; dataset_id?: string; periodo?: string }) {
   const params = new URLSearchParams();
-  if (modelName) params.set("model_name", modelName);
+  if (filters?.model_name) params.set("model_name", filters.model_name);
+  if (filters?.dataset_id) params.set("dataset_id", filters.dataset_id);
+  if (filters?.periodo) params.set("periodo", filters.periodo);
+
   const qs = params.toString();
   const url = qs ? `/modelos/runs?${qs}` : "/modelos/runs";
   return api.get<RunSummary[]>(url).then((r) => r.data);
 }
 
+/** GET /modelos/runs/:runId */
 export function getRunDetails(runId: string) {
   return api.get<RunDetails>(`/modelos/runs/${runId}`).then((r) => r.data);
 }
 
-export function getChampion(modelName?: string) {
+/**
+ * GET /modelos/champion
+ * Soporta filtro opcional model_name (y potencialmente dataset/periodo si se define).
+ */
+export function getChampion(filters?: { model_name?: string; dataset_id?: string; periodo?: string }) {
   const params = new URLSearchParams();
-  if (modelName) params.set("model_name", modelName);
+  if (filters?.model_name) params.set("model_name", filters.model_name);
+  if (filters?.dataset_id) params.set("dataset_id", filters.dataset_id);
+  if (filters?.periodo) params.set("periodo", filters.periodo);
+
   const qs = params.toString();
   const url = qs ? `/modelos/champion?${qs}` : "/modelos/champion";
   return api.get<ChampionInfo>(url).then((r) => r.data);

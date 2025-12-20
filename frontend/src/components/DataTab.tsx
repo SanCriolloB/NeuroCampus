@@ -65,7 +65,7 @@ const COLORS = {
   negative: "#EF4444",
 };
 
-export default function DataTab() {
+export function DataTab() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Global filters (store)
@@ -470,3 +470,5 @@ export default function DataTab() {
     </div>
   );
 }
+
+export default DataTab;

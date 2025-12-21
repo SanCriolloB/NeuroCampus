@@ -21,7 +21,7 @@ NO forman parte del dataset de entrada. Se calcularán en una etapa posterior
 """
 
 from __future__ import annotations
-from typing import List, Optional, Tuple, Literal
+from typing import Any, Dict, List, Optional, Tuple, Literal
 import datetime
 from pydantic import BaseModel, Field
 
@@ -236,3 +236,27 @@ class DatasetSentimientosResponse(BaseModel):
         default_factory=list,
         description="Distribución de sentimientos por asignatura"
     )
+
+class DatasetPreviewResponse(BaseModel):
+    """
+    Respuesta de GET /datos/preview.
+
+    - mode="ui": columnas normalizadas para la tabla de la UI
+      (ID, Teacher, Subject, Rating, Comment, y opcionalmente Sentiment).
+    - mode="raw": columnas reales del dataset (sin normalizar).
+    """
+    dataset_id: str
+    variant: Literal["processed", "labeled"]
+    mode: Literal["ui", "raw"] = "ui"
+
+    # Ruta real usada por el backend (útil para diagnóstico)
+    source_path: Optional[str] = None
+
+    # Metadatos
+    n_rows_total: int
+    n_cols: int
+
+    # Datos tabulares
+    columns: List[str]
+    rows: List[Dict[str, Any]]
+

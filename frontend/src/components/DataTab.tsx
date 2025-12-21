@@ -165,7 +165,24 @@ export function DataTab() {
 
       // 2) Upload real (con progreso)
       const periodo = activePeriodo;
-      const up = await upload.run(file, periodo, false);
+      let up: any;
+
+      try {
+        up = await upload.run(file, periodo, false);
+      } catch (e: any) {
+        const status = e?.response?.status;
+        const msg = String(e?.message ?? "");
+        const is409 = status === 409 || msg.startsWith("HTTP 409");
+
+        if (!is409) throw e;
+
+        const ok = window.confirm(
+          `El dataset '${periodo}' ya existe. ¿Deseas reemplazarlo (overwrite)?`,
+        );
+        if (!ok) throw e;
+
+        up = await upload.run(file, periodo, true);
+      }
 
       // 3) Setear contexto global (clave para cross-tab futuro)
       setAppFilters({

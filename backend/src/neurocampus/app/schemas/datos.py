@@ -24,7 +24,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple, Literal
 import datetime
 from pydantic import BaseModel, Field
+from enum import Enum
 
+class SentimentLabel(str, Enum):
+    pos = "pos"
+    neu = "neu"
+    neg = "neg"
 
 # ---------------------------------------------------------------------------
 # Modelos ya existentes (Día 1)
@@ -200,7 +205,7 @@ class SentimentBreakdown(BaseModel):
     Conteo de comentarios por sentimiento.
     Las etiquetas son las usadas internamente en BETO/teacher: neg | neu | pos.
     """
-    label: Literal["neg", "neu", "pos"] = Field(..., description="Etiqueta de sentimiento")
+    label: SentimentLabel = Field(..., description="Etiqueta de sentimiento")
     count: int = Field(..., ge=0, description="Cantidad de comentarios")
     proportion: float = Field(..., ge=0.0, le=1.0, description="Proporción sobre el total [0,1]")
 

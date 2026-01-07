@@ -57,3 +57,4 @@ __pycache__/
 .venv/
 backend/.venv/
 *.joblib
+=2.12.1

@@ -1,29 +1,23 @@
-import { createBrowserRouter } from "react-router-dom";
-import MainLayout from "../layout/MainLayout";
+// frontend/src/routes/Router.tsx
+import { createBrowserRouter, Navigate } from "react-router-dom";
+import AppShell from "@/layouts/AppShell";
 
-// Páginas
-import Home from "../pages/Home";
-import Dashboard from "../pages/Dashboard";
-import Models from "../pages/Models";
-import Prediction from "../pages/Prediction";
-import Jobs from "../pages/Jobs";
-// Si no tienes DataUpload, comenta esta línea y su ruta:
-import App from "@/App";
-import DataUpload from "@/pages/DataUpload";
-import DatosDiagnostico from "@/pages/DatosDiagnostico";
+import DashboardPage from "@/pages/DashboardPage";
+import DatosPage from "@/pages/DatosPage";
+import ModelosPage from "@/pages/ModelosPage";
+import PrediccionesPage from "@/pages/PrediccionesPage";
 
 export const router = createBrowserRouter([
   {
-    element: <MainLayout />,
+    path: "/",
+    element: <AppShell />,
     children: [
-      { path: "/", element: <Home /> },
-      { path: "/", element: <App /> },
-      { path: "/dashboard", element: <Dashboard /> },
-      { path: "/models", element: <Models /> },
-      { path: "/prediction", element: <Prediction /> },
-      { path: "/jobs", element: <Jobs /> },
-      { path: "/datos", element: <DataUpload /> }, // comenta si no existe
-      { path: "/datos/diagnostico", element: <DatosDiagnostico /> },
+      { index: true, element: <Navigate to="/dashboard" replace /> },
+      { path: "dashboard", element: <DashboardPage /> },
+      { path: "datos", element: <DatosPage /> },
+      { path: "models", element: <ModelosPage /> },
+      { path: "prediction", element: <PrediccionesPage /> },
+      { path: "*", element: <Navigate to="/dashboard" replace /> },
     ],
   },
 ]);

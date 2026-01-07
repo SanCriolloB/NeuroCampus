@@ -1,20 +1,11 @@
-/**
- * frontend/src/main.tsx
- * Punto de entrada de React: monta <App /> envuelto en <BrowserRouter>.
- * Las rutas están definidas dentro de App.tsx (usa <Routes> y <Route>).
- */
-
-
-import { RouterProvider } from "react-router-dom";
-import { router } from "./routes/Router";
-import "./styles/index.css";
+// frontend/src/main.tsx
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
 import App from "./App";
+import "./styles/index.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <RouterProvider router={router} />
+    <App />
   </React.StrictMode>
 );

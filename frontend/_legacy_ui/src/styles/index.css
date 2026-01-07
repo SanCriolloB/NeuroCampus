@@ -1,0 +1,173 @@
+/* ====== Reset + base ====== */
+html, body, #root { height: 100%; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; }
+:focus { outline: none; }
+:root{
+  /* Paleta del mockup (oscuro con acentos azul/verde) */
+  --bg: #0e1624;                 /* fondo principal */
+  --panel: #111a2b;              /* tarjetas/paneles */
+  --panel-2: #0c1422;            /* panel alterno / sidebar */
+  --border: #1f2a44;             /* bordes sutiles */
+  --text: #e6eaf0;               /* texto principal */
+  --muted: #94a3b8;              /* texto secundario */
+  --muted-2: #6b7280;
+  --accent: #1e90ff;             /* azul eléctrico */
+  --accent-2: #00c48c;           /* verde neón */
+  --badge: #1a2438;              /* chips */
+  --shadow: 0 2px 16px rgba(0,0,0,.25);
+  --radius: 12px;
+  --radius-lg: 14px;
+}
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 
+               Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+/* ====== Helpers de layout ====== */
+.grid { display: grid; gap: 16px; }
+.flex { display: flex; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+
+/* Contenedor principal por defecto (si no usas layout con sidebar aún) */
+main.grid { padding: 16px; }
+
+/* ====== Cards / Panels ====== */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+.card.block { display: block; text-decoration: none; color: inherit; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--badge);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+/* ====== Títulos ====== */
+h1,h2,h3 { color: var(--text); }
+h1 { font-size: 22px; }
+h2 { font-size: 18px; }
+h3 { font-size: 16px; }
+
+/* ====== Enlaces ====== */
+a { color: var(--accent); text-decoration: none; }
+a:hover { opacity: .9; }
+a.badge { color: var(--text); }
+a.badge:hover { border-color: var(--accent); }
+
+/* ====== Botones ====== */
+button {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform .05s ease, opacity .2s ease, box-shadow .2s ease;
+  box-shadow: 0 2px 10px rgba(30,144,255,.25);
+}
+button:hover { transform: translateY(-1px); }
+button:disabled { opacity: .6; cursor: not-allowed; }
+button.btn-secondary {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+button.btn-success {
+  background: var(--accent-2);
+  box-shadow: 0 2px 10px rgba(0,196,140,.25);
+}
+
+/* ====== Inputs / Textareas / Selects ====== */
+input, textarea, select {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+input::placeholder, textarea::placeholder { color: var(--muted-2); }
+
+/* ====== Tablas ====== */
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  background: #0f1a2e;
+}
+tbody td {
+  padding: 10px 8px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+/* ====== Sidebar / Topbar (si lo necesitas ya) ====== */
+.sidebar {
+  background: var(--panel-2);
+  border-right: 1px solid var(--border);
+  padding: 12px;
+}
+.navlink {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 10px; color: var(--muted);
+}
+.navlink:hover { background: rgba(255,255,255,.03); color: var(--text); }
+.navlink.active {
+  background: rgba(30,144,255,.12);
+  border: 1px solid rgba(30,144,255,.35);
+  color: var(--text);
+}
+.topbar {
+  height: 56px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 12px;
+}
+
+/* ====== Chips de estado ====== */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 4px 8px; border-radius: 999px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--border);
+}
+.chip.ok { border-color: rgba(0,196,140,.5); color: var(--accent-2); }
+.chip.warn { border-color: #d97706; color: #fcd34d; }
+.chip.err { border-color: #ef4444; color: #fca5a5; }
+
+/* ====== Mono / code ====== */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+pre { background: var(--panel-2); border: 1px solid var(--border); padding: 12px; border-radius: 8px; overflow: auto; }
+
+/* ====== Scrollbar sutil (Chromium) ====== */
+*::-webkit-scrollbar { height: 10px; width: 10px; }
+*::-webkit-scrollbar-thumb { background: #1b2540; border-radius: 999px; border: 2px solid #0d1526; }
+*::-webkit-scrollbar-track { background: #0d1526; }
+
+/* ====== Utilitarios ====== */
+.opacity-75 { opacity: .75; }
+.block { display: block; }
+
+/* ====== Pequeño estado de foco accesible ====== */
+:focus-visible { box-shadow: 0 0 0 3px rgba(30,144,255,.35); border-radius: 6px; }

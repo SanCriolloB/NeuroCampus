@@ -58,6 +58,7 @@ from ..schemas.datos import (
     EsquemaResponse,
     DatasetResumenResponse,
     DatasetSentimientosResponse,
+    DatasetPreviewResponse,
 )
 
 # Facade que conecta con el wrapper unificado de validación
@@ -66,9 +67,12 @@ from ...data.facades.datos_facade import validar_archivo
 # Helpers de dominio para el "dashboard" de la pestaña Datos
 from ...data.datos_dashboard import (
     load_processed_dataset,
-    build_dataset_resumen,
     load_labeled_dataset,
+    build_dataset_resumen,
     build_sentimientos_resumen,
+    build_dataset_preview,
+    resolve_processed_path,
+    resolve_labeled_path,
 )
 
 router = APIRouter(tags=["datos"])
@@ -422,6 +426,60 @@ async def upload_dataset(
 
 
 # ---------------------------------------------------------------------------
+# Preview tabular para la pestaña "Datos" (/datos/preview)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/preview",
+    response_model=DatasetPreviewResponse,
+    summary="Devuelve un preview tabular del dataset para renderizar la tabla de la UI.",
+)
+def get_dataset_preview(
+    dataset_id: str = Query(
+        ...,
+        alias="dataset",
+        description="Identificador lógico del dataset/periodo (p.ej. '2025-1')",
+    ),
+    variant: str = Query(
+        "processed",
+        description="Fuente: processed (preproc) o labeled (beto).",
+        pattern="^(processed|labeled)$",
+    ),
+    mode: str = Query(
+        "ui",
+        description="ui (normaliza columnas) o raw (sin normalizar).",
+        pattern="^(ui|raw)$",
+    ),
+    limit: int = Query(25, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> DatasetPreviewResponse:
+    try:
+        if variant == "labeled":
+            path = resolve_labeled_path(dataset_id)
+            df = load_labeled_dataset(dataset_id)
+        else:
+            path = resolve_processed_path(dataset_id)
+            df = load_processed_dataset(dataset_id)
+
+        return build_dataset_preview(
+            df,
+            dataset_id,
+            variant=variant,  # type: ignore[arg-type]
+            mode=mode,        # type: ignore[arg-type]
+            limit=limit,
+            offset=offset,
+            source_path=str(path),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No se pudo construir preview: {e}",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Resumen de dataset para la pestaña "Datos" (/datos/resumen)
 # ---------------------------------------------------------------------------
 
@@ -506,18 +564,25 @@ def get_dataset_sentimientos(
     """
     try:
         df = load_labeled_dataset(dataset_id)
+        return build_sentimientos_resumen(df, dataset_id)
+
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
             detail=f"No se encontró dataset etiquetado (BETO/teacher) para '{dataset_id}'",
         )
+
     except KeyError as e:
-        # Falta la columna de sentimiento esperada
-        raise HTTPException(status_code=400, detail=str(e))
+        # Falta una columna esperada (p.ej. sentimiento, docente, asignatura, etc.)
+        detail = e.args[0] if e.args else str(e)
+        raise HTTPException(status_code=422, detail=str(detail))
+
+    except ValueError as e:
+        # Dataset existe pero su contenido/forma no es compatible con el resumen
+        raise HTTPException(status_code=422, detail=str(e))
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error al leer dataset etiquetado '{dataset_id}': {e}",
+            detail=f"Error inesperado al construir resumen de sentimientos para '{dataset_id}': {e}",
         )
-
-    return build_sentimientos_resumen(df, dataset_id)

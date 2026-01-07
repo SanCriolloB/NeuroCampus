@@ -430,7 +430,13 @@ export async function uploadWithProgress(
         } catch {
           // Si falla el parseo del body, nos quedamos con el mensaje base.
         }
-        reject(new Error(msg));
+        const err: any = new Error(msg);
+        err.response = {
+          status: xhr.status,
+          statusText: xhr.statusText,
+          body: xhr.responseText,
+        };
+        reject(err);
       }
     };
 

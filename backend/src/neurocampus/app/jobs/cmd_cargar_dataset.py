@@ -179,6 +179,7 @@ def main():
     s = s.mask(s_lower.isin({"nan", "none", "null"}), "")
     df[text_col] = s
     df = df[df[text_col].str.len() > 0].copy()
+    df = df.reset_index(drop=True)
 
     # seleccionar columnas de calificación
     califs = _select_calif_cols(df, args)
@@ -189,7 +190,7 @@ def main():
     out = pd.DataFrame()
     out["comentario"] = df[text_col].astype(str).values
     for i, c in enumerate(califs, start=1):
-        out[f"calif_{i}"] = pd.to_numeric(df[c], errors="coerce")
+        out[f"calif_{i}"] = pd.to_numeric(df[c], errors="coerce").to_numpy()
 
     # etiqueta humana (si existiera)
     for cand in ["y","label","sentimiento","y_sentimiento","target"]:
@@ -206,7 +207,7 @@ def main():
             key = _normalize(m)
             if key in norm_map:
                 col_orig = norm_map[key]
-                out[m] = df[col_orig].astype(str)  # conserva con el nombre solicitado
+                out[m] = df[col_orig].astype(str).to_numpy()  # conserva con el nombre solicitado
                 meta_kept.append(m)
     # preservar metadatos (mapeo normalizado)
     meta_kept = []

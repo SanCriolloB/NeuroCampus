@@ -174,7 +174,10 @@ def main():
         raise ValueError("No se encontró columna de comentario (ej: 'comentario'/'observaciones').")
 
     # normalizar texto y filtrar vacíos
-    df[text_col] = df[text_col].astype(str).fillna("").str.strip()
+    s = df[text_col].fillna("").astype(str).str.strip()
+    s_lower = s.str.lower()
+    s = s.mask(s_lower.isin({"nan", "none", "null"}), "")
+    df[text_col] = s
     df = df[df[text_col].str.len() > 0].copy()
 
     # seleccionar columnas de calificación
@@ -205,6 +208,32 @@ def main():
                 col_orig = norm_map[key]
                 out[m] = df[col_orig].astype(str)  # conserva con el nombre solicitado
                 meta_kept.append(m)
+    # preservar metadatos (mapeo normalizado)
+    meta_kept = []
+    want = []
+
+    # 1) metadatos por defecto necesarios para la UI (Fase 4)
+    default_meta = [
+        "id", "profesor", "materia", "asignatura",
+        "codigo_materia", "grupo", "cedula_profesor",
+    ]
+    want.extend(default_meta)
+
+    # 2) metadatos solicitados por parámetro (si vienen)
+    if args.meta_list:
+        want.extend([w.strip() for w in args.meta_list.split(",") if w.strip()])
+
+    # única lista sin duplicados manteniendo orden
+    seen = set()
+    want = [x for x in want if not (x.lower() in seen or seen.add(x.lower()))]
+
+    norm_map = {_normalize(c): c for c in df.columns}
+    for m in want:
+        key = _normalize(m)
+        if key in norm_map:
+            col_orig = norm_map[key]
+            out[m] = df[col_orig].astype(str)
+            meta_kept.append(m)
 
     Path(args.dst).parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(args.dst, index=False)

@@ -67,7 +67,7 @@ def main():
     ap.add_argument("--neu-min", type=float, default=0.75)
     ap.add_argument("--beto-mode", choices=["probs", "simple"], default="probs",
                     help="probs: devuelve p_neg/p_neu/p_pos; simple: pipeline HF con top-1.")
-    ap.add_argument("--min-tokens", type=int, default=3,
+    ap.add_argument("--min-tokens", type=int, default=1,
                     help="Tokens mínimos (lemmas) para considerar que hay texto.")
     ap.add_argument("--text-feats", choices=["none", "tfidf_lsa"], default="none",
                     help="Generación de embeddings clásicos para texto.")
@@ -151,6 +151,9 @@ def main():
 
     # 3.1) Mantener filas sin texto si se pide
     if args.keep_empty_text:
+        df.loc[mask_no_text, "p_neg"] = 0.0
+        df.loc[mask_no_text, "p_neu"] = 1.0
+        df.loc[mask_no_text, "p_pos"] = 0.0
         df.loc[mask_no_text, "sentiment_label_teacher"] = "neu"
         df.loc[mask_no_text, "sentiment_conf"] = 1.0
         df.loc[mask_no_text, "accepted_by_teacher"] = 1

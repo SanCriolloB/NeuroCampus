@@ -178,7 +178,10 @@ def main():
     s_lower = s.str.lower()
     s = s.mask(s_lower.isin({"nan", "none", "null"}), "")
     df[text_col] = s
-    df = df[df[text_col].str.len() > 0].copy()
+    # NO filtrar; solo marcar
+    df["has_text"] = (df[text_col].str.len() > 0).astype(int)
+
+    # reset index para evitar alineación
     df = df.reset_index(drop=True)
 
     # seleccionar columnas de calificación
@@ -188,7 +191,9 @@ def main():
 
     # construir salida estándar
     out = pd.DataFrame()
-    out["comentario"] = df[text_col].astype(str).values
+    out["comentario"] = df[text_col].astype(str).to_numpy()
+    out["has_text"] = df["has_text"].astype(int).to_numpy()
+    
     for i, c in enumerate(califs, start=1):
         out[f"calif_{i}"] = pd.to_numeric(df[c], errors="coerce").to_numpy()
 

@@ -106,18 +106,36 @@ def _detect_fecha_col(df: pd.DataFrame) -> Optional[str]:
 
 
 def _detect_docente_col(df: pd.DataFrame) -> Optional[str]:
-    candidates = ["docente", "nombre_docente", "nombre_profesor", "nombre_prof"]
-    for col in candidates:
-        if col in df.columns:
-            return col
+    candidates = [
+        # inglés
+        "teacher",
+        # español
+        "docente", "profesor", "profesora",
+        # variantes
+        "nombre_docente", "nombre_profesor", "nombre_prof",
+    ]
+
+    cols_norm = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        key = str(cand).strip().lower()
+        if key in cols_norm:
+            return cols_norm[key]
     return None
 
 
 def _detect_asignatura_col(df: pd.DataFrame) -> Optional[str]:
-    candidates = ["asignatura", "materia", "codigo_materia", "nombre_materia"]
-    for col in candidates:
-        if col in df.columns:
-            return col
+    candidates = [
+        "subject",
+        "asignatura", "materia",
+        "codigo_materia", "cod_materia",
+        "nombre_materia", "nombre_asignatura",
+    ]
+
+    cols_norm = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        key = str(cand).strip().lower()
+        if key in cols_norm:
+            return cols_norm[key]
     return None
 
 

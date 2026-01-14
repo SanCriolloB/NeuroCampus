@@ -107,7 +107,7 @@ class BetoPreprocRequest(BaseModel):
     dataset: str
     text_col: Optional[str] = None   # Ej: "Sugerencias" o None → auto
     keep_empty_text: bool = True     # Mantener filas sin texto como neutrales
-
+    min_tokens: int = 1
 
 class BetoPreprocMeta(BaseModel):
     """Subset de campos interesantes del .meta.json generado por el job CLI."""
@@ -182,18 +182,17 @@ def _run_beto_job(job_id: str) -> None:
             subprocess.run(cmd_norm, check=True)
 
         # 2) Ejecutar BETO sobre el parquet normalizado
+        min_tokens = int(job.get("min_tokens", 1))
+
         cmd_beto = [
             sys.executable,
             "-m",
             "neurocampus.app.jobs.cmd_preprocesar_beto",
-            "--in",
-            src,
-            "--out",
-            dst,
-            "--text-col",
-            text_col,
-            "--beto-mode",
-            "probs",
+            "--in", src,
+            "--out", dst,
+            "--text-col", text_col,
+            "--beto-mode", "probs",
+            "--min-tokens", str(min_tokens),
         ]
         if keep_empty_text:
             cmd_beto.append("--keep-empty-text")
@@ -314,6 +313,7 @@ def launch_beto_preproc(req: BetoPreprocRequest, background: BackgroundTasks) ->
         "error": None,
         "text_col": req.text_col,
         "keep_empty_text": req.keep_empty_text,
+        "min_tokens": req.min_tokens,
         # Campos del puente datasets/ → data/processed/
         "raw_src": str(raw_src) if raw_src is not None else None,
         "needs_cargar_dataset": needs_cargar_dataset,

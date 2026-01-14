@@ -102,10 +102,10 @@ export function DataTab() {
 
   // Cuando BETO termina, refrescamos sentimientos
   useEffect(() => {
-    if (betoJob.job?.status === "done" && datasetForQueries) {
-      void sentimientos.refetch();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  if (betoJob.job?.status !== "done" || !datasetForQueries) return;
+
+  // Reintenta si el backend devuelve 404 temporal justo al finalizar BETO
+  void sentimientos.refetch({ retryOn404: true, maxAttempts: 15, delayMs: 2000 });
   }, [betoJob.job?.status, datasetForQueries]);
 
   const previewRows = useMemo(() => {
@@ -183,10 +183,13 @@ export function DataTab() {
 
         up = await upload.run(file, periodo, true);
       }
-
+      
       // 3) Setear contexto global (clave para cross-tab futuro)
+
+      const datasetId = String(up?.dataset_id ?? periodo).trim();
+
       setAppFilters({
-        activeDatasetId: up.dataset_id ?? periodo,
+        activeDatasetId: datasetId,
         activePeriodo: periodo,
         programa,
       });
@@ -196,12 +199,13 @@ export function DataTab() {
       // 4) Si el usuario pidió sentimientos, lanzar BETO (si aplica) y/o pedir sentimientos
       if (runSentiment) {
         try {
-          const job = await jobsApi.launchBetoPreproc(periodo);
+          const job = await jobsApi.launchBetoPreproc(datasetId);
           setBetoJobId(job.id);
         } catch {
-          // Si el job no existe en backend, igual intentamos leer /datos/sentimientos
-          await sentimientos.refetch();
-        }
+        // Si no se pudo lanzar el job, intentamos leer sentimientos existentes.
+        // No bloqueamos el flujo; si aún no existen, el hook/efecto manejará el estado.
+        void sentimientos.refetch(); 
+      }
       }
 
       // 5) Refrescar resumen

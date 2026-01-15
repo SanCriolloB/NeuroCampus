@@ -1,5 +1,8 @@
-artifacts/
-data/
+/.artifacts/   # si aplica en tu repo (si no existe, omite)
+/artifacts/
+/data/
+/datasets/
+/jobs/preproc_beto/*.json
 *.parquet
 *.pt
 *.pkl

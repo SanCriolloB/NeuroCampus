@@ -58,3 +58,6 @@ __pycache__/
 backend/.venv/
 *.joblib
 =2.12.1
+
+# Jobs runtime outputs
+jobs/preproc_beto/*.json

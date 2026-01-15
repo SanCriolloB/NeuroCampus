@@ -5,9 +5,9 @@ import type { DatasetSentimientos } from "@/types/neurocampus";
 import { errMsg } from "./_utils";
 
 type RefetchOpts = {
-  retryOn404?: boolean;
-  maxAttempts?: number; // total de intentos (incluye el primero)
-  delayMs?: number;
+  retryOn404?: true; // reintenta si recibe 404
+  maxAttempts?: 20; // total de intentos (incluye el primero)
+  delayMs?: 2000; // demora entre intentos
 };
 
 function sleep(ms: number) {

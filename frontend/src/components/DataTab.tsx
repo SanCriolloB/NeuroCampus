@@ -163,16 +163,17 @@ export function DataTab() {
   const kpiRows = resumen.data?.n_rows ?? validate.data?.n_rows ?? 1000;
   const kpiCols = resumen.data?.n_cols ?? validate.data?.n_cols ?? 15;
   const kpiTeachers = resumen.data?.n_docentes ?? 45;
-
+  
+  const hasDataset = Boolean(datasetForQueries);
   const sentimentDistribution =
-    (sentimientos.data && mapGlobalSentiment(sentimientos.data).length)
+    hasDataset && sentimientos.data
       ? mapGlobalSentiment(sentimientos.data)
-      : DEFAULT_SENTIMENT_DISTRIBUTION;
+      : []; // sin mock
 
   const sentimentByTeacher =
-    (sentimientos.data && mapTeacherSentiment(sentimientos.data).length)
+    hasDataset && sentimientos.data
       ? mapTeacherSentiment(sentimientos.data)
-      : DEFAULT_SENTIMENT_BY_TEACHER;
+      : []; // sin mock
 
   function openFilePicker() {
     fileInputRef.current?.click();

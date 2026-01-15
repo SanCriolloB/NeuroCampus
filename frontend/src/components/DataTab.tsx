@@ -96,17 +96,62 @@ export function DataTab() {
   const sentimientos = useDatasetSentimientos(datasetForQueries);
   const betoJob = useBetoPreprocJob(betoJobId);
 
+  // Mantener el último estado accesible dentro del loop de polling (evita cierres "stale")
+  const sentimientosDataRef = useRef<any>(null);
+  const sentimientosErrorRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    sentimientosDataRef.current = sentimientos.data;
+  }, [sentimientos.data]);
+
+  useEffect(() => {
+    sentimientosErrorRef.current = sentimientos.error;
+  }, [sentimientos.error]);
+
+  function sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
   useEffect(() => {
     if (activeDatasetId) setDataLoaded(true);
   }, [activeDatasetId]);
 
-  // Cuando BETO termina, refrescamos sentimientos
+  // Cuando BETO termina, refrescamos sentimientos con retry (porque puede dar 404 por unos segundos)
   useEffect(() => {
-    if (betoJob.job?.status === "done" && datasetForQueries) {
-      void sentimientos.refetch();
-    }
+    if (!datasetForQueries) return;
+    if (betoJob.job?.status !== "done") return;
+
+    let cancelled = false;
+
+    const pollSentimientosUntilReady = async () => {
+      // 20 intentos * 1500ms = ~30s (ajustable)
+      for (let attempt = 0; attempt < 20 && !cancelled; attempt++) {
+        await sentimientos.refetch();
+
+        // Espera corta para que React aplique setState del hook
+        await sleep(1500);
+
+        // Si ya tenemos data del dataset actual, paramos
+        const dsid = sentimientosDataRef.current?.dataset_id;
+        if (dsid && dsid === datasetForQueries) return;
+
+        // Si el error ya NO es 404, no vale la pena seguir reintentando a ciegas
+        const err = sentimientosErrorRef.current ?? "";
+        const is404 = /404|Not Found/i.test(err);
+        if (err && !is404) return;
+      }
+    };
+
+    // Refresca resumen también cuando termina BETO (para sincronizar KPIs si cambió algo)
+    void resumen.refetch();
+    void pollSentimientosUntilReady();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [betoJob.job?.status, datasetForQueries]);
+
 
   const previewRows = useMemo(() => {
     const mapped = mapSampleRowsToPreview(validate.data?.sample);
@@ -118,16 +163,17 @@ export function DataTab() {
   const kpiRows = resumen.data?.n_rows ?? validate.data?.n_rows ?? 1000;
   const kpiCols = resumen.data?.n_cols ?? validate.data?.n_cols ?? 15;
   const kpiTeachers = resumen.data?.n_docentes ?? 45;
-
+  
+  const hasDataset = Boolean(datasetForQueries);
   const sentimentDistribution =
-    (sentimientos.data && mapGlobalSentiment(sentimientos.data).length)
+    hasDataset && sentimientos.data
       ? mapGlobalSentiment(sentimientos.data)
-      : DEFAULT_SENTIMENT_DISTRIBUTION;
+      : []; // sin mock
 
   const sentimentByTeacher =
-    (sentimientos.data && mapTeacherSentiment(sentimientos.data).length)
+    hasDataset && sentimientos.data
       ? mapTeacherSentiment(sentimientos.data)
-      : DEFAULT_SENTIMENT_BY_TEACHER;
+      : []; // sin mock
 
   function openFilePicker() {
     fileInputRef.current?.click();
@@ -183,10 +229,13 @@ export function DataTab() {
 
         up = await upload.run(file, periodo, true);
       }
-
+      
       // 3) Setear contexto global (clave para cross-tab futuro)
+
+      const datasetId = String(up?.dataset_id ?? periodo).trim();
+
       setAppFilters({
-        activeDatasetId: up.dataset_id ?? periodo,
+        activeDatasetId: datasetId,
         activePeriodo: periodo,
         programa,
       });
@@ -196,11 +245,12 @@ export function DataTab() {
       // 4) Si el usuario pidió sentimientos, lanzar BETO (si aplica) y/o pedir sentimientos
       if (runSentiment) {
         try {
-          const job = await jobsApi.launchBetoPreproc(periodo);
+          const job = await jobsApi.launchBetoPreproc(datasetId);
           setBetoJobId(job.id);
         } catch {
-          // Si el job no existe en backend, igual intentamos leer /datos/sentimientos
-          await sentimientos.refetch();
+        // Si no se pudo lanzar el job, intentamos leer sentimientos existentes.
+        // No bloqueamos el flujo; si aún no existen, el hook/efecto manejará el estado.
+        void sentimientos.refetch(); 
         }
       }
 

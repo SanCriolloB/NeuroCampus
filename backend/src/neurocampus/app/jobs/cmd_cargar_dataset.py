@@ -197,6 +197,11 @@ def main():
     for i, c in enumerate(califs, start=1):
         out[f"calif_{i}"] = pd.to_numeric(df[c], errors="coerce").to_numpy()
 
+    # rating promedio (0..50) usando todas las calif disponibles
+    calif_out = [c for c in out.columns if c.startswith("calif_")]
+    if calif_out:
+        out["rating"] = out[calif_out].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+
     # etiqueta humana (si existiera)
     for cand in ["y","label","sentimiento","y_sentimiento","target"]:
         if cand in df.columns:

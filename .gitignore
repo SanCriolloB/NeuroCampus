@@ -1,5 +1,8 @@
-artifacts/
-data/
+/.artifacts/   # si aplica en tu repo (si no existe, omite)
+/artifacts/
+/data/
+/datasets/
+/jobs/preproc_beto/*.json
 *.parquet
 *.pt
 *.pkl
@@ -58,3 +61,6 @@ __pycache__/
 backend/.venv/
 *.joblib
 =2.12.1
+
+# Jobs locales (estado/polling)
+jobs/preproc_beto/*.json

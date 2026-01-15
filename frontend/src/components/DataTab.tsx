@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  BarChart,
-  Bar,
   PieChart,
   Pie,
   Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
 } from "recharts";
 import { Card } from "./ui/card";
@@ -19,6 +13,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Checkbox } from "./ui/checkbox";
 import { Progress } from "./ui/progress";
 import { Upload, CheckCircle2 } from "lucide-react";
+
+import TeacherSentimentChart from "./TeacherSentimentChart";
 
 import { useAppFilters, setAppFilters } from "@/state/appFilters.store";
 
@@ -36,20 +32,6 @@ import {
   rowsReadValidFromValidation,
   UiPreviewRow,
 } from "@/features/datos/mappers";
-
-const DEFAULT_SENTIMENT_DISTRIBUTION = [
-  { name: "Positive", value: 450, percentage: 45 },
-  { name: "Neutral", value: 350, percentage: 35 },
-  { name: "Negative", value: 200, percentage: 20 },
-];
-
-const DEFAULT_SENTIMENT_BY_TEACHER = [
-  { teacher: "Dr. García", positive: 45, neutral: 35, negative: 20 },
-  { teacher: "Prof. Martínez", positive: 40, neutral: 40, negative: 20 },
-  { teacher: "Dr. López", positive: 50, neutral: 30, negative: 20 },
-  { teacher: "Prof. Rodríguez", positive: 35, neutral: 45, negative: 20 },
-  { teacher: "Dr. Fernández", positive: 42, neutral: 38, negative: 20 },
-];
 
 const DEFAULT_SAMPLE_DATA: UiPreviewRow[] = [
   { id: 1, teacher: "Dr. García", subject: "Calculus I", rating: 4.5, comment: "Excellent methodology" },
@@ -174,6 +156,17 @@ export function DataTab() {
     hasDataset && sentimientos.data
       ? mapTeacherSentiment(sentimientos.data)
       : []; // sin mock
+  
+  const teacherChartData = useMemo(() => {
+    return (sentimentByTeacher as any[]).map((t: any) => {
+      const pos = Number(t.pos ?? t.positive ?? 0);
+      const neu = Number(t.neu ?? t.neutral ?? 0);
+      const neg = Number(t.neg ?? t.negative ?? 0);
+      const total = Number(t.total ?? (pos + neu + neg));
+
+      return { teacher: String(t.teacher ?? ""), pos, neu, neg, total };
+    });
+  }, [sentimentByTeacher]);
 
   function openFilePicker() {
     fileInputRef.current?.click();
@@ -501,24 +494,16 @@ export function DataTab() {
             </Card>
 
             {/* Sentiment by Teacher */}
-            <Card className="bg-[#1a1f2e] border-gray-800 p-6 col-span-2">
-              <h4 className="text-white mb-4">Sentiment Distribution by Teacher</h4>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={sentimentByTeacher}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis dataKey="teacher" stroke="#9CA3AF" />
-                  <YAxis stroke="#9CA3AF" />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#1a1f2e", border: "1px solid #374151" }}
-                    labelStyle={{ color: "#fff" }}
-                  />
-                  <Legend />
-                  <Bar dataKey="positive" stackId="a" fill={COLORS.positive} name="Positive" />
-                  <Bar dataKey="neutral" stackId="a" fill={COLORS.neutral} name="Neutral" />
-                  <Bar dataKey="negative" stackId="a" fill={COLORS.negative} name="Negative" />
-                </BarChart>
-              </ResponsiveContainer>
-            </Card>
+            <TeacherSentimentChart
+              title="Sentiment Distribution by Teacher"
+              data={teacherChartData}
+              isLoading={Boolean(
+                runSentiment &&
+                  (betoJob.job?.status === "running" || sentimientos.loading)
+              )}
+              error={sentimientos.error ? String(sentimientos.error) : null}
+              resetKey={datasetForQueries ?? undefined}
+            />
           </div>
 
           {/* Errores no intrusivos (sin romper layout) */}

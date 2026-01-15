@@ -62,5 +62,5 @@ backend/.venv/
 *.joblib
 =2.12.1
 
-# Jobs runtime outputs
+# Jobs locales (estado/polling)
 jobs/preproc_beto/*.json

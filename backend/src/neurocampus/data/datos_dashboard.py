@@ -324,15 +324,13 @@ def build_sentimientos_resumen(df: pd.DataFrame, dataset_id: str) -> DatasetSent
     # - accepted_by_teacher: existe en tu parquet etiquetado (gating del teacher)
     mask = pd.Series(True, index=df.index)
 
-    if "has_text" in df.columns:
-        mask &= df["has_text"].fillna(False).astype(bool)
-
+    # Mantén el gating de teacher si existe
     if "accepted_by_teacher" in df.columns:
-        acc = df["accepted_by_teacher"].fillna(False).astype(bool)
-        if bool(acc.any()):
-            mask &= acc
+        mask = mask & df["accepted_by_teacher"].fillna(0).astype(int).astype(bool)
 
-    df = df.loc[mask].copy()
+    # NO filtramos por has_text:
+    # - si keep_empty_text=true, esas filas ya vienen como sentiment=neu y accepted=1 (según tu job meta)
+    df = df[mask].copy()
 
     # 2) Resolver columna de sentimiento (hard label). Preferimos teacher.
     sentiment_col = _detect_sentiment_col(df)
@@ -341,7 +339,6 @@ def build_sentimientos_resumen(df: pd.DataFrame, dataset_id: str) -> DatasetSent
     y = (
         df[sentiment_col]
         .astype("string")
-        .fillna("")
         .str.strip()
         .str.lower()
     )

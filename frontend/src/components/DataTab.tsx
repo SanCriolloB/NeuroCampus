@@ -96,17 +96,62 @@ export function DataTab() {
   const sentimientos = useDatasetSentimientos(datasetForQueries);
   const betoJob = useBetoPreprocJob(betoJobId);
 
+  // Mantener el último estado accesible dentro del loop de polling (evita cierres "stale")
+  const sentimientosDataRef = useRef<any>(null);
+  const sentimientosErrorRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    sentimientosDataRef.current = sentimientos.data;
+  }, [sentimientos.data]);
+
+  useEffect(() => {
+    sentimientosErrorRef.current = sentimientos.error;
+  }, [sentimientos.error]);
+
+  function sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
   useEffect(() => {
     if (activeDatasetId) setDataLoaded(true);
   }, [activeDatasetId]);
 
-  // Cuando BETO termina, refrescamos sentimientos
+  // Cuando BETO termina, refrescamos sentimientos con retry (porque puede dar 404 por unos segundos)
   useEffect(() => {
-  if (betoJob.job?.status !== "done" || !datasetForQueries) return;
+    if (!datasetForQueries) return;
+    if (betoJob.job?.status !== "done") return;
 
-  // Reintenta si el backend devuelve 404 temporal justo al finalizar BETO
-  void sentimientos.refetch({ retryOn404: true, maxAttempts: 15, delayMs: 2000 });
+    let cancelled = false;
+
+    const pollSentimientosUntilReady = async () => {
+      // 20 intentos * 1500ms = ~30s (ajustable)
+      for (let attempt = 0; attempt < 20 && !cancelled; attempt++) {
+        await sentimientos.refetch();
+
+        // Espera corta para que React aplique setState del hook
+        await sleep(1500);
+
+        // Si ya tenemos data del dataset actual, paramos
+        const dsid = sentimientosDataRef.current?.dataset_id;
+        if (dsid && dsid === datasetForQueries) return;
+
+        // Si el error ya NO es 404, no vale la pena seguir reintentando a ciegas
+        const err = sentimientosErrorRef.current ?? "";
+        const is404 = /404|Not Found/i.test(err);
+        if (err && !is404) return;
+      }
+    };
+
+    // Refresca resumen también cuando termina BETO (para sincronizar KPIs si cambió algo)
+    void resumen.refetch();
+    void pollSentimientosUntilReady();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [betoJob.job?.status, datasetForQueries]);
+
 
   const previewRows = useMemo(() => {
     const mapped = mapSampleRowsToPreview(validate.data?.sample);
@@ -205,7 +250,7 @@ export function DataTab() {
         // Si no se pudo lanzar el job, intentamos leer sentimientos existentes.
         // No bloqueamos el flujo; si aún no existen, el hook/efecto manejará el estado.
         void sentimientos.refetch(); 
-      }
+        }
       }
 
       // 5) Refrescar resumen

@@ -45,6 +45,12 @@ JOBS_ROOT = Path(os.getenv("NC_JOBS_DIR", BASE_DIR / "jobs"))
 BETO_JOBS_DIR = JOBS_ROOT / "preproc_beto"
 BETO_JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Meta columnas a conservar si existen en el dataset crudo (datasets/)
+DEFAULT_META_LIST = (
+    "id,profesor,docente,teacher,"
+    "materia,asignatura,subject,"
+    "codigo_materia,grupo,cedula_profesor"
+)
 
 def _now_iso() -> str:
     """Devuelve timestamp ISO básico en UTC."""
@@ -86,6 +92,21 @@ def _list_jobs() -> list[dict]:
             continue
     return jobs
 
+
+def _processed_missing_docente_cols(processed_path: Path) -> bool:
+    """
+    True si el parquet procesado NO tiene columnas para agrupar por docente.
+    Usamos una lectura liviana de schema si hay pyarrow.
+    """
+    try:
+        import pyarrow.parquet as pq
+        cols = set(pq.ParquetFile(processed_path).schema.names)
+    except Exception:
+        import pandas as pd
+        cols = set(pd.read_parquet(processed_path, engine="auto").columns)
+
+    # Candidatos mínimos para poder agrupar por docente
+    return not any(c in cols for c in ("profesor", "docente", "teacher"))
 
 # ---------------------------------------------------------------------------
 # Modelos Pydantic para requests/responses
@@ -178,6 +199,8 @@ def _run_beto_job(job_id: str) -> None:
                 job["raw_src"],
                 "--out",
                 src,
+                "--meta-list",
+                DEFAULT_META_LIST,
             ]
             subprocess.run(cmd_norm, check=True)
 
@@ -230,7 +253,6 @@ def _run_beto_job(job_id: str) -> None:
 
     _save_job(job)
 
-
 # ---------------------------------------------------------------------------
 # Endpoints públicos del router /jobs
 # ---------------------------------------------------------------------------
@@ -271,18 +293,19 @@ def launch_beto_preproc(req: BetoPreprocRequest, background: BackgroundTasks) ->
     needs_cargar_dataset = False
     raw_src: Optional[Path] = None
 
-    if not processed_path.exists():
-        # No hay dataset normalizado todavía → intentamos hacer el puente desde datasets/
-        DATASETS_DIR.mkdir(parents=True, exist_ok=True)
-        raw_parquet = DATASETS_DIR / f"{req.dataset}.parquet"
-        raw_csv = DATASETS_DIR / f"{req.dataset}.csv"
+    # Intentamos ubicar el dataset crudo SIEMPRE (sirve para "upgrade" del processed)
+    DATASETS_DIR.mkdir(parents=True, exist_ok=True)
+    raw_parquet = DATASETS_DIR / f"{req.dataset}.parquet"
+    raw_csv = DATASETS_DIR / f"{req.dataset}.csv"
 
-        if raw_parquet.exists():
-            raw_src = raw_parquet
-        elif raw_csv.exists():
-            raw_src = raw_csv
-        else:
-            # No hay ni procesado ni crudo → no podemos seguir
+    if raw_parquet.exists():
+        raw_src = raw_parquet
+    elif raw_csv.exists():
+        raw_src = raw_csv
+
+    if not processed_path.exists():
+        # No hay dataset normalizado todavía → hay que normalizar sí o sí
+        if raw_src is None:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -291,8 +314,12 @@ def launch_beto_preproc(req: BetoPreprocRequest, background: BackgroundTasks) ->
                     f"genera el procesado manualmente."
                 ),
             )
-
         needs_cargar_dataset = True
+    else:
+        # Hay processed, pero puede estar incompleto (sin profesor/docente/teacher)
+        # Si existe raw, lo podemos regenerar correctamente.
+        if raw_src is not None and _processed_missing_docente_cols(processed_path):
+            needs_cargar_dataset = True
 
     # Salida etiquetada por BETO
     DATA_LABELED_DIR.mkdir(parents=True, exist_ok=True)

@@ -47,12 +47,25 @@ const COLORS = {
   negative: "#EF4444",
 };
 
+function buildPeriodOptions(startYear = 2020, endYear = 2050) {
+  const out: string[] = [];
+  for (let y = startYear; y <= endYear; y++) {
+    for (let s = 1; s <= 3; s++) out.push(`${y}-${s}`);
+  }
+  // UX: más reciente primero
+  return out.reverse();
+}
+
 export function DataTab() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Global filters (store)
-  const activePeriodo = useAppFilters((s) => s.activePeriodo) ?? "2025-1";
-  const programa = useAppFilters((s) => s.programa) ?? "Engineering";
+  const currentYear = new Date().getFullYear();
+  const safeYear = Math.min(Math.max(currentYear, 2020), 2050);
+  const defaultPeriodo = `${safeYear}-1`;
+
+  const activePeriodo = useAppFilters((s) => s.activePeriodo) ?? defaultPeriodo;
+  const periodOptions = useMemo(() => buildPeriodOptions(2020, 2050), []);
   const activeDatasetId = useAppFilters((s) => s.activeDatasetId);
 
   // UI local state (mantiene la dinámica del prototipo)
@@ -168,6 +181,21 @@ export function DataTab() {
     });
   }, [sentimentByTeacher]);
 
+  const handlePeriodoChange = (newPeriodo: string) => {
+    // Mantener alineados "periodo" y "datasetId" para que las queries cambien
+    setAppFilters({
+      activePeriodo: newPeriodo,
+      activeDatasetId: newPeriodo,
+      // Como en el plan se elimina el selector de programa, dejamos programa en null
+      // (si todavía no lo has eliminado del store, esto evita que quede un valor viejo)
+      programa: null,
+    });
+
+    // Reset de UI local para evitar estados pegados al cambiar de dataset
+    setErrorMsg(null);
+    setBetoJobId(null);
+  };
+
   function openFilePicker() {
     fileInputRef.current?.click();
   }
@@ -189,7 +217,7 @@ export function DataTab() {
 
     try {
       // 1) Validación previa (no cambia UI)
-      const validateId = (datasetName.trim() || activePeriodo).trim();
+      const validateId = activePeriodo.trim();
       const v = await validate.run(file, validateId);
 
       // Si el backend marca ok=false o hay errores severos, detenemos.
@@ -228,9 +256,9 @@ export function DataTab() {
       const datasetId = String(up?.dataset_id ?? periodo).trim();
 
       setAppFilters({
-        activeDatasetId: datasetId,
+        activeDatasetId: up.dataset_id ?? periodo,
         activePeriodo: periodo,
-        programa,
+        programa: null,
       });
 
       setDataLoaded(true);
@@ -255,7 +283,7 @@ export function DataTab() {
       setIsProcessing(false);
     }
   }
-
+  
   return (
     <div className="p-8 space-y-6">
       {/* Header */}
@@ -317,32 +345,17 @@ export function DataTab() {
                 <label className="block text-sm text-gray-400 mb-2">Semester</label>
                 <Select
                   value={activePeriodo}
-                  onValueChange={(v) => setAppFilters({ activePeriodo: v })}
+                  onValueChange={handlePeriodoChange}
                 >
                   <SelectTrigger className="bg-[#0f1419] border-gray-700">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    <SelectItem value="2025-1">2025-1</SelectItem>
-                    <SelectItem value="2024-2">2024-2</SelectItem>
-                    <SelectItem value="2024-1">2024-1</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">Program</label>
-                <Select
-                  value={programa}
-                  onValueChange={(v) => setAppFilters({ programa: v })}
-                >
-                  <SelectTrigger className="bg-[#0f1419] border-gray-700">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    <SelectItem value="Engineering">Engineering</SelectItem>
-                    <SelectItem value="Business">Business</SelectItem>
-                    <SelectItem value="Medicine">Medicine</SelectItem>
+                      {periodOptions.map((p) => (
+                        <SelectItem key={p} value={p}>
+                          {p}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               </div>

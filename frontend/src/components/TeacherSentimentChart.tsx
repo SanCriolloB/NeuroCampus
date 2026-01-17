@@ -80,30 +80,33 @@ export default function TeacherSentimentChart({
 
   // Normalize and sort data
   const sortedData = useMemo(() => {
-    const normalized = data.map(t => ({
-      ...t,
-      total: t.total || (t.pos + t.neu + t.neg),
-    }));
+    const normalized = data.map((t: any) => {
+      const pos = Number(t.pos ?? t.positive ?? 0);
+      const neu = Number(t.neu ?? t.neutral ?? 0);
+      const neg = Number(t.neg ?? t.negative ?? 0);
+      const total = Number(t.total ?? (pos + neu + neg)) || 0;
+
+      return {
+        teacher: String(t.teacher ?? ""),
+        pos,
+        neu,
+        neg,
+        total,
+      };
+    });
+
+    const safeDiv = (a: number, b: number) => (b > 0 ? a / b : 0);
 
     return [...normalized].sort((a, b) => {
       switch (sortKey) {
-        case 'total':
+        case "total":
           return b.total - a.total;
-        case 'negPercentage': {
-          const bn = b.total ? (b.neg / b.total) : 0;
-          const an = a.total ? (a.neg / a.total) : 0;
-          return bn - an;
-        }
-        case 'posPercentage': {
-          const bp = b.total ? (b.pos / b.total) : 0;
-          const ap = a.total ? (a.pos / a.total) : 0;
-          return bp - ap;
-        }
-        case 'netScore': {
-          const bs = b.total ? ((b.pos - b.neg) / b.total) : 0;
-          const as = a.total ? ((a.pos - a.neg) / a.total) : 0;
-          return bs - as;
-        }
+        case "negPercentage":
+          return safeDiv(b.neg, b.total) - safeDiv(a.neg, a.total);
+        case "posPercentage":
+          return safeDiv(b.pos, b.total) - safeDiv(a.pos, a.total);
+        case "netScore":
+          return safeDiv(b.pos - b.neg, b.total) - safeDiv(a.pos - a.neg, a.total);
         default:
           return 0;
       }

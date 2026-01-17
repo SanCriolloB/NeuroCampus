@@ -43,7 +43,7 @@ const DEFAULT_SAMPLE_DATA: UiPreviewRow[] = [
 
 const COLORS = {
   positive: "#10B981",
-  neutral: "#F59E0B",
+  neutral: "#6B7280",
   negative: "#EF4444",
 };
 

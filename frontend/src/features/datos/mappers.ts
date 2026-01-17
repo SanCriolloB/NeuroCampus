@@ -25,6 +25,15 @@ function asNumber(v: any): number | string {
   return "";
 }
 
+function normLabel(raw: unknown): "pos" | "neu" | "neg" | null {
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (s === "pos" || s === "positive" || s === "positivo") return "pos";
+  if (s === "neu" || s === "neutral" || s === "neutro") return "neu";
+  if (s === "neg" || s === "negative" || s === "negativo") return "neg";
+  return null;
+}
+
 export function mapSampleRowsToPreview(sample?: Array<Record<string, any>>): UiPreviewRow[] {
   if (!Array.isArray(sample) || sample.length === 0) return [];
 
@@ -89,19 +98,61 @@ export function mapGlobalSentiment(ds: DatasetSentimientos | null | undefined) {
   }));
 }
 
-export function mapTeacherSentiment(ds: DatasetSentimientos | null | undefined) {
-  if (!ds) return [];
-  const byTeacher = ds.por_docente ?? [];
+export function mapTeacherSentiment(api: any): Array<{
+  teacher: string;
+  pos: number;
+  neu: number;
+  neg: number;
+  total: number;
+}> {
+  const rows = Array.isArray(api?.por_docente) ? api.por_docente : [];
 
-  return byTeacher.slice(0, 10).map((t) => {
-    const counts = new Map((t.counts ?? []).map((c) => [c.label, c.count]));
-    return {
-      teacher: t.group,
-      positive: counts.get("pos") ?? 0,
-      neutral: counts.get("neu") ?? 0,
-      negative: counts.get("neg") ?? 0,
-    };
-  });
+  return rows
+    .map((r: any) => {
+      const teacher = String(r?.docente ?? r?.teacher ?? r?.profesor ?? "").trim();
+      if (!teacher) return null;
+
+      // Caso A: backend ya manda campos pos/neu/neg
+      const posA = r?.pos;
+      const neuA = r?.neu;
+      const negA = r?.neg;
+
+      if (
+        typeof posA === "number" &&
+        typeof neuA === "number" &&
+        typeof negA === "number"
+      ) {
+        const total = Number(r?.total ?? (posA + neuA + negA));
+        return { teacher, pos: posA, neu: neuA, neg: negA, total };
+      }
+
+      // Caso B: backend manda "counts" como lista [{label,count,proportion}]
+      const counts = Array.isArray(r?.counts) ? r.counts : [];
+
+      let pos = 0;
+      let neu = 0;
+      let neg = 0;
+
+      for (const c of counts) {
+        const label = normLabel(c?.label);
+        const count = Number(c?.count ?? 0);
+        if (!Number.isFinite(count)) continue;
+
+        if (label === "pos") pos += count;
+        if (label === "neu") neu += count;
+        if (label === "neg") neg += count;
+      }
+
+      const total = Number(r?.total ?? (pos + neu + neg));
+      return { teacher, pos, neu, neg, total };
+    })
+    .filter(Boolean) as Array<{
+      teacher: string;
+      pos: number;
+      neu: number;
+      neg: number;
+      total: number;
+    }>;
 }
 
 export function rowsReadValidFromValidation(v: ValidarResp | null | undefined) {

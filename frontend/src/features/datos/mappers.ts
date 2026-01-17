@@ -65,6 +65,9 @@ const rating =
       "score", "SCORE",
       "promedio", "PROMEDIO",
       "calificacion_final", "CALIFICACION_FINAL",
+      "calif_promedio", "CALIF_PROMEDIO",
+      "calif_1", "CALIF_1",
+      "pregunta_1", "PREGUNTA_1",
     ]),
   ) || "—";
 
@@ -72,6 +75,7 @@ const comment =
   pick(row, [
     "comment", "Comment",
     "comentario", "Comentario", "COMENTARIO",
+    "observaciones", "OBSERVACIONES",
     "observacion", "Observacion", "OBSERVACION",
     "feedback", "FEEDBACK",
     "opinion", "OPINION",
@@ -109,7 +113,7 @@ export function mapTeacherSentiment(api: any): Array<{
 
   return rows
     .map((r: any) => {
-      const teacher = String(r?.docente ?? r?.teacher ?? r?.profesor ?? "").trim();
+      const teacher = String(r?.docente ?? r?.teacher ?? r?.profesor ?? r?.group ?? "").trim();
       if (!teacher) return null;
 
       // Caso A: backend ya manda campos pos/neu/neg

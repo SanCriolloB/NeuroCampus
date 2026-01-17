@@ -509,7 +509,7 @@ export function DataTab() {
             {/* Sentiment by Teacher */}
             <TeacherSentimentChart
               title="Sentiment Distribution by Teacher"
-              data={teacherChartData}
+              data={sentimentByTeacher}
               isLoading={Boolean(
                 runSentiment &&
                   (betoJob.job?.status === "running" || sentimientos.loading)

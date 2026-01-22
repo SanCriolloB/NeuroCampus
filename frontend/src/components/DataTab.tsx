@@ -182,18 +182,20 @@ export function DataTab() {
   }, [sentimentByTeacher]);
 
   const handlePeriodoChange = (newPeriodo: string) => {
+    const periodo = String(newPeriodo).trim();
+
     // Mantener alineados "periodo" y "datasetId" para que las queries cambien
     setAppFilters({
-      activePeriodo: newPeriodo,
-      activeDatasetId: newPeriodo,
-      // Como en el plan se elimina el selector de programa, dejamos programa en null
-      // (si todavía no lo has eliminado del store, esto evita que quede un valor viejo)
-      programa: null,
+      activePeriodo: periodo,
+      activeDatasetId: periodo,
     });
 
     // Reset de UI local para evitar estados pegados al cambiar de dataset
     setErrorMsg(null);
     setBetoJobId(null);
+
+    // Opcional pero recomendado: fuerza que el panel muestre queries inmediatamente
+    setDataLoaded(true);
   };
 
   function openFilePicker() {
@@ -258,7 +260,6 @@ export function DataTab() {
       setAppFilters({
         activeDatasetId: up.dataset_id ?? periodo,
         activePeriodo: periodo,
-        programa: null,
       });
 
       setDataLoaded(true);
@@ -343,19 +344,17 @@ export function DataTab() {
 
               <div>
                 <label className="block text-sm text-gray-400 mb-2">Semester</label>
-                <Select
-                  value={activePeriodo}
-                  onValueChange={handlePeriodoChange}
-                >
+                <Select value={activePeriodo} onValueChange={handlePeriodoChange}>
                   <SelectTrigger className="bg-[#0f1419] border-gray-700">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                      {periodOptions.map((p) => (
-                        <SelectItem key={p} value={p}>
-                          {p}
-                        </SelectItem>
-                      ))}
+
+                  <SelectContent className="bg-[#1a1f2e] border-gray-700 max-h-60 overflow-y-auto">
+                    {periodOptions.map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {p}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

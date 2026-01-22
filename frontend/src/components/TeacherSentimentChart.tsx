@@ -397,7 +397,13 @@ export default function TeacherSentimentChart({
             <YAxis
               stroke="#9CA3AF"
               domain={displayMode === "percentage" ? [0, 100] : [0, "dataMax"]}
-              tickFormatter={displayMode === "percentage" ? (v) => `${v}%` : undefined}
+              ticks={displayMode === "percentage" ? [0, 30, 60, 100] : undefined}
+              allowDecimals={false}
+              tickFormatter={(v) => {
+                const n = Number(v);
+                if (displayMode === "percentage") return `${Math.round(n)}%`;
+                return Number.isFinite(n) ? n.toLocaleString() : String(v);
+              }}
             />
             <Tooltip content={<CustomTooltip />} />
             <Legend />

@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  BarChart,
-  Bar,
   PieChart,
   Pie,
   Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
 } from "recharts";
 import { Card } from "./ui/card";
@@ -19,6 +13,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Checkbox } from "./ui/checkbox";
 import { Progress } from "./ui/progress";
 import { Upload, CheckCircle2 } from "lucide-react";
+
+import TeacherSentimentChart from "./TeacherSentimentChart";
 
 import { useAppFilters, setAppFilters } from "@/state/appFilters.store";
 
@@ -37,20 +33,6 @@ import {
   UiPreviewRow,
 } from "@/features/datos/mappers";
 
-const DEFAULT_SENTIMENT_DISTRIBUTION = [
-  { name: "Positive", value: 450, percentage: 45 },
-  { name: "Neutral", value: 350, percentage: 35 },
-  { name: "Negative", value: 200, percentage: 20 },
-];
-
-const DEFAULT_SENTIMENT_BY_TEACHER = [
-  { teacher: "Dr. García", positive: 45, neutral: 35, negative: 20 },
-  { teacher: "Prof. Martínez", positive: 40, neutral: 40, negative: 20 },
-  { teacher: "Dr. López", positive: 50, neutral: 30, negative: 20 },
-  { teacher: "Prof. Rodríguez", positive: 35, neutral: 45, negative: 20 },
-  { teacher: "Dr. Fernández", positive: 42, neutral: 38, negative: 20 },
-];
-
 const DEFAULT_SAMPLE_DATA: UiPreviewRow[] = [
   { id: 1, teacher: "Dr. García", subject: "Calculus I", rating: 4.5, comment: "Excellent methodology" },
   { id: 2, teacher: "Prof. Martínez", subject: "Physics II", rating: 4.2, comment: "Clear explanations" },
@@ -61,16 +43,29 @@ const DEFAULT_SAMPLE_DATA: UiPreviewRow[] = [
 
 const COLORS = {
   positive: "#10B981",
-  neutral: "#F59E0B",
+  neutral: "#6B7280",
   negative: "#EF4444",
 };
+
+function buildPeriodOptions(startYear = 2020, endYear = 2050) {
+  const out: string[] = [];
+  for (let y = startYear; y <= endYear; y++) {
+    for (let s = 1; s <= 3; s++) out.push(`${y}-${s}`);
+  }
+  // UX: más reciente primero
+  return out.reverse();
+}
 
 export function DataTab() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Global filters (store)
-  const activePeriodo = useAppFilters((s) => s.activePeriodo) ?? "2025-1";
-  const programa = useAppFilters((s) => s.programa) ?? "Engineering";
+  const currentYear = new Date().getFullYear();
+  const safeYear = Math.min(Math.max(currentYear, 2020), 2050);
+  const defaultPeriodo = `${safeYear}-1`;
+
+  const activePeriodo = useAppFilters((s) => s.activePeriodo) ?? defaultPeriodo;
+  const periodOptions = useMemo(() => buildPeriodOptions(2020, 2050), []);
   const activeDatasetId = useAppFilters((s) => s.activeDatasetId);
 
   // UI local state (mantiene la dinámica del prototipo)
@@ -174,6 +169,34 @@ export function DataTab() {
     hasDataset && sentimientos.data
       ? mapTeacherSentiment(sentimientos.data)
       : []; // sin mock
+  
+  const teacherChartData = useMemo(() => {
+    return (sentimentByTeacher as any[]).map((t: any) => {
+      const pos = Number(t.pos ?? t.positive ?? 0);
+      const neu = Number(t.neu ?? t.neutral ?? 0);
+      const neg = Number(t.neg ?? t.negative ?? 0);
+      const total = Number(t.total ?? (pos + neu + neg));
+
+      return { teacher: String(t.teacher ?? ""), pos, neu, neg, total };
+    });
+  }, [sentimentByTeacher]);
+
+  const handlePeriodoChange = (newPeriodo: string) => {
+    const periodo = String(newPeriodo).trim();
+
+    // Mantener alineados "periodo" y "datasetId" para que las queries cambien
+    setAppFilters({
+      activePeriodo: periodo,
+      activeDatasetId: periodo,
+    });
+
+    // Reset de UI local para evitar estados pegados al cambiar de dataset
+    setErrorMsg(null);
+    setBetoJobId(null);
+
+    // Opcional pero recomendado: fuerza que el panel muestre queries inmediatamente
+    setDataLoaded(true);
+  };
 
   function openFilePicker() {
     fileInputRef.current?.click();
@@ -196,7 +219,7 @@ export function DataTab() {
 
     try {
       // 1) Validación previa (no cambia UI)
-      const validateId = (datasetName.trim() || activePeriodo).trim();
+      const validateId = activePeriodo.trim();
       const v = await validate.run(file, validateId);
 
       // Si el backend marca ok=false o hay errores severos, detenemos.
@@ -235,9 +258,8 @@ export function DataTab() {
       const datasetId = String(up?.dataset_id ?? periodo).trim();
 
       setAppFilters({
-        activeDatasetId: datasetId,
+        activeDatasetId: up.dataset_id ?? periodo,
         activePeriodo: periodo,
-        programa,
       });
 
       setDataLoaded(true);
@@ -262,7 +284,7 @@ export function DataTab() {
       setIsProcessing(false);
     }
   }
-
+  
   return (
     <div className="p-8 space-y-6">
       {/* Header */}
@@ -322,34 +344,17 @@ export function DataTab() {
 
               <div>
                 <label className="block text-sm text-gray-400 mb-2">Semester</label>
-                <Select
-                  value={activePeriodo}
-                  onValueChange={(v) => setAppFilters({ activePeriodo: v })}
-                >
+                <Select value={activePeriodo} onValueChange={handlePeriodoChange}>
                   <SelectTrigger className="bg-[#0f1419] border-gray-700">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    <SelectItem value="2025-1">2025-1</SelectItem>
-                    <SelectItem value="2024-2">2024-2</SelectItem>
-                    <SelectItem value="2024-1">2024-1</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
 
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">Program</label>
-                <Select
-                  value={programa}
-                  onValueChange={(v) => setAppFilters({ programa: v })}
-                >
-                  <SelectTrigger className="bg-[#0f1419] border-gray-700">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    <SelectItem value="Engineering">Engineering</SelectItem>
-                    <SelectItem value="Business">Business</SelectItem>
-                    <SelectItem value="Medicine">Medicine</SelectItem>
+                  <SelectContent className="bg-[#1a1f2e] border-gray-700 max-h-60 overflow-y-auto">
+                    {periodOptions.map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {p}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -501,24 +506,16 @@ export function DataTab() {
             </Card>
 
             {/* Sentiment by Teacher */}
-            <Card className="bg-[#1a1f2e] border-gray-800 p-6 col-span-2">
-              <h4 className="text-white mb-4">Sentiment Distribution by Teacher</h4>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={sentimentByTeacher}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis dataKey="teacher" stroke="#9CA3AF" />
-                  <YAxis stroke="#9CA3AF" />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#1a1f2e", border: "1px solid #374151" }}
-                    labelStyle={{ color: "#fff" }}
-                  />
-                  <Legend />
-                  <Bar dataKey="positive" stackId="a" fill={COLORS.positive} name="Positive" />
-                  <Bar dataKey="neutral" stackId="a" fill={COLORS.neutral} name="Neutral" />
-                  <Bar dataKey="negative" stackId="a" fill={COLORS.negative} name="Negative" />
-                </BarChart>
-              </ResponsiveContainer>
-            </Card>
+            <TeacherSentimentChart
+              title="Sentiment Distribution by Teacher"
+              data={sentimentByTeacher}
+              isLoading={Boolean(
+                runSentiment &&
+                  (betoJob.job?.status === "running" || sentimientos.loading)
+              )}
+              error={sentimientos.error ? String(sentimientos.error) : null}
+              resetKey={datasetForQueries ?? undefined}
+            />
           </div>
 
           {/* Errores no intrusivos (sin romper layout) */}

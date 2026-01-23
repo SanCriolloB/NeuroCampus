@@ -33,7 +33,10 @@ except Exception:
         )
 
 # NUEVO: utilidades para inspeccionar runs y campeón desde artifacts/
-from ...utils.runs_io import list_runs, load_run_details, load_current_champion
+from ...utils.runs_io import list_runs, load_run_details, load_current_champion, load_dataset_champion
+
+from ...data.datos_dashboard import resolve_labeled_path
+from ...utils.runs_io import build_run_id, save_run, maybe_update_champion
 
 router = APIRouter()
 
@@ -184,17 +187,33 @@ def _strip_localfs(uri: str) -> str:
 
 def _resolve_data_path(req: EntrenarRequest) -> str:
     """
-    Determina la ruta al dataset a usar:
-    - Si viene req.data_ref, la usa (admite esquema localfs://).
-    - Si no, intenta 'historico/unificado.parquet' (Día 5 A).
+    Determina la ruta al dataset a usar.
+
+    Orden de prioridad:
+    1) Si viene req.data_ref, se usa (admite localfs://).
+    2) Si viene req.periodo_actual, se intenta usar el parquet etiquetado:
+         data/labeled/<periodo_actual>_beto.parquet
+         data/labeled/<periodo_actual>_teacher.parquet
+       (misma heurística que usa /datos/sentimientos).
+    3) Fallback: historico/unificado.parquet (si existe).
     """
     if getattr(req, "data_ref", None):
         p = _strip_localfs(req.data_ref)  # type: ignore[arg-type]
         return p
+
+    periodo = getattr(req, "periodo_actual", None)
+    if periodo:
+        try:
+            return str(resolve_labeled_path(str(periodo)))
+        except Exception:
+            # Si no existe labeled para ese periodo, seguimos al fallback
+            pass
+
     hist = Path("historico") / "unificado.parquet"
     if hist.exists():
         return str(hist)
-    raise HTTPException(status_code=400, detail="No hay data_ref ni histórico unificado disponible.")
+
+    raise HTTPException(status_code=400, detail="No hay data_ref, ni labeled del periodo_actual, ni histórico unificado.")
 
 
 def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
@@ -238,6 +257,49 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
 
     return str(tmp_ref)
 
+def _persist_training_artifacts(job_id: str, req: EntrenarRequest, selected_ref: str, st: dict[str, Any]) -> str:
+    """
+    Persiste artifacts del entrenamiento cuando finaliza en estado 'completed'.
+
+    Escribe:
+      - artifacts/runs/<run_id>/metrics.json
+      - artifacts/champions/<dataset_id>/<model_name>/metrics.json
+      - artifacts/champions/<dataset_id>/champion.json (si el run promueve campeón)
+
+    Retorna:
+      run_id generado.
+    """
+    params = (st.get("params") or {}) if isinstance(st.get("params"), dict) else {}
+    dataset_id = str(params.get("periodo_actual") or getattr(req, "periodo_actual", None) or "unknown")
+    model_name = str(getattr(req, "modelo", None) or st.get("model") or "rbm_general")
+
+    run_id = build_run_id(dataset_id=dataset_id, model_name=model_name, job_id=job_id)
+
+    final_metrics = st.get("metrics") if isinstance(st.get("metrics"), dict) else {}
+    history = st.get("history") if isinstance(st.get("history"), list) else []
+
+    # Guardamos data_ref usado realmente
+    data_ref = selected_ref
+
+    save_run(
+        run_id=run_id,
+        job_id=job_id,
+        dataset_id=dataset_id,
+        model_name=model_name,
+        data_ref=data_ref,
+        params=params,
+        final_metrics=final_metrics,
+        history=history,
+    )
+
+    maybe_update_champion(
+        dataset_id=dataset_id,
+        model_name=model_name,
+        metrics={**final_metrics, "model_name": model_name, "dataset_id": dataset_id},
+        source_run_id=run_id,
+    )
+
+    return run_id
 
 def _run_training(job_id: str, req: EntrenarRequest):
     # Elige estrategia
@@ -263,7 +325,16 @@ def _run_training(job_id: str, req: EntrenarRequest):
     st = _ESTADOS.get(job_id, {})
     st.update(out)
     _ESTADOS[job_id] = st
-
+    # Persistir a artifacts si completó correctamente
+    if st.get("status") == "completed":
+        try:
+            run_id = _persist_training_artifacts(job_id, req, selected_ref, st)
+            st["run_id"] = run_id  # útil para debug/posible UI futura
+            _ESTADOS[job_id] = st
+        except Exception as e:
+            # No rompemos el flujo si falla persistencia, pero lo registramos
+            st["persist_error"] = str(e)
+            _ESTADOS[job_id] = st
 
 @router.post("/entrenar", response_model=EntrenarResponse)
 def entrenar(req: EntrenarRequest, bg: BackgroundTasks):
@@ -385,7 +456,16 @@ def get_champion(
       - dataset_id / dataset / periodo (opcional): selecciona champion del dataset
     """
     ds = dataset_id or dataset or periodo
-    champ = load_current_champion(model_name=model_name, dataset_id=ds)
+
+    # Si el usuario pide el champion “del dataset” y no especifica modelo,
+    # devolvemos el campeón real (champion.json o mejor score).
+    if ds and not model_name:
+        champ = load_dataset_champion(ds)
+    else:
+        # Si especifica model_name, respetamos el contrato actual:
+        # champions/<dataset>/<model_name>/metrics.json (o legacy)
+        champ = load_current_champion(model_name=model_name, dataset_id=ds)
+
     if not champ:
         raise HTTPException(status_code=404, detail="No hay campeón registrado")
     return ChampionInfo(**champ)

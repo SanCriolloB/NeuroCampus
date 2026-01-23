@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
-from ..schemas.modelos import EntrenarRequest, EntrenarResponse, EstadoResponse
+from ..schemas.modelos import (
+    EntrenarRequest, EntrenarResponse, EstadoResponse,
+    RunSummary, RunDetails, ChampionInfo,
+)
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
 from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
@@ -314,47 +316,42 @@ def estado(job_id: str):
 # NUEVO: Endpoints para listar runs y consultar campeón (Flujo 3)
 # ---------------------------------------------------------------------------
 
-class RunSummary(BaseModel):
-    run_id: str
-    model_name: str
-    created_at: str
-    metrics: Dict[str, Any]
-
-
-class RunDetails(BaseModel):
-    run_id: str
-    metrics: Dict[str, Any]
-
-
-class ChampionInfo(BaseModel):
-    model_name: str
-    metrics: Dict[str, Any]
-    path: str
-
-
 @router.get(
     "/runs",
     response_model=list[RunSummary],
     summary="Lista runs de entrenamiento/auditoría de modelos",
 )
-def get_runs(model_name: Optional[str] = None) -> list[RunSummary]:
+def get_runs(
+    model_name: Optional[str] = None,
+    dataset: Optional[str] = None,
+    dataset_id: Optional[str] = None,
+    periodo: Optional[str] = None,
+) -> list[RunSummary]:
     """
     Devuelve un resumen de los runs encontrados en artifacts/runs.
-    Puede filtrarse por nombre de modelo (ej: model_name=rbm).
+
+    Filtros:
+      - model_name: ej 'rbm', 'rbm_general'
+      - dataset_id / dataset / periodo: filtra por dataset asociado al run
+
+    Compatibilidad:
+      - Si no envías filtros, retorna todos los runs disponibles (como antes).
     """
-    runs = list_runs(model_name=model_name)
+    ds = dataset_id or dataset or periodo
+    runs = list_runs(model_name=model_name, dataset_id=ds)
     return [RunSummary(**r) for r in runs]
 
 
 @router.get(
     "/runs/{run_id}",
     response_model=RunDetails,
-    summary="Detalles completos de un run (incluye histórico si está en metrics.json)",
+    summary="Detalles completos de un run (incluye config si existe)",
 )
 def get_run_details(run_id: str) -> RunDetails:
     """
-    Devuelve los detalles de un run concreto, leyendo metrics.json
-    desde artifacts/runs/<run_id>/.
+    Devuelve detalles completos de un run leyendo:
+      - artifacts/runs/<run_id>/metrics.json (obligatorio)
+      - artifacts/runs/<run_id>/config.snapshot.yaml o config.yaml (opcional)
     """
     details = load_run_details(run_id)
     if not details:
@@ -367,14 +364,28 @@ def get_run_details(run_id: str) -> RunDetails:
     response_model=ChampionInfo,
     summary="Devuelve info del modelo campeón actual (para dashboard/predicciones)",
 )
-def get_champion(model_name: Optional[str] = None) -> ChampionInfo:
+def get_champion(
+    model_name: Optional[str] = None,
+    dataset: Optional[str] = None,
+    dataset_id: Optional[str] = None,
+    periodo: Optional[str] = None,
+) -> ChampionInfo:
     """
     Devuelve el modelo campeón (champion) actual.
 
-    - Si se indica model_name, busca bajo artifacts/champions/<model_name>/metrics.json.
-    - Si no, devuelve el primer campeón encontrado bajo artifacts/champions/*.
+    Soporta:
+      - Champions por dataset:
+        artifacts/champions/<dataset_id>/<model_name>/metrics.json
+
+      - Champions legacy por modelo:
+        artifacts/champions/<model_name>/metrics.json
+
+    Parámetros:
+      - model_name (opcional): filtra por tipo de modelo
+      - dataset_id / dataset / periodo (opcional): selecciona champion del dataset
     """
-    champ = load_current_champion(model_name=model_name)
+    ds = dataset_id or dataset or periodo
+    champ = load_current_champion(model_name=model_name, dataset_id=ds)
     if not champ:
         raise HTTPException(status_code=404, detail="No hay campeón registrado")
     return ChampionInfo(**champ)

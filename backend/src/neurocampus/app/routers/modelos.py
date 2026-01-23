@@ -302,39 +302,37 @@ def _persist_training_artifacts(job_id: str, req: EntrenarRequest, selected_ref:
     return run_id
 
 def _run_training(job_id: str, req: EntrenarRequest):
-    # Elige estrategia
-    estrategia = RBMGeneral() if req.modelo == "rbm_general" else RBMRestringida()
-    tpl = PlantillaEntrenamiento(estrategia)
+    """
+    Ejecuta el entrenamiento en background.
 
-    # Asegurar wiring de observabilidad para este job antes de correr
-    _wire_job_observers(job_id)
+    IMPORTANTE:
+    - Cualquier excepción debe marcar el job como 'failed' y registrar 'error'
+      para que el frontend detenga el polling.
+    """
+    try:
+        estrategia = RBMGeneral() if req.modelo == "rbm_general" else RBMRestringida()
+        tpl = PlantillaEntrenamiento(estrategia)
 
-    # NUEVO: preparar subconjunto seleccionado según metodología
-    selected_ref = _prepare_selected_data(req, job_id)
+        _wire_job_observers(job_id)
 
-    # Ejecuta entrenamiento (emite training.* que recogerán los handlers)
-    out = tpl.run(
-        selected_ref,  # <-- usar subconjunto
-        req.epochs,
-        {**(_normalize_hparams(req.hparams)), "job_id": job_id},
-        model_name=req.modelo,
-    )
+        selected_ref = _prepare_selected_data(req, job_id)
 
-    # Consolidar estado final (por si el template devolvió info adicional)
-    # Nota: out = {"job_id", "status", "metrics", "history?"} según plantilla
-    st = _ESTADOS.get(job_id, {})
-    st.update(out)
-    _ESTADOS[job_id] = st
-    # Persistir a artifacts si completó correctamente
-    if st.get("status") == "completed":
-        try:
-            run_id = _persist_training_artifacts(job_id, req, selected_ref, st)
-            st["run_id"] = run_id  # útil para debug/posible UI futura
-            _ESTADOS[job_id] = st
-        except Exception as e:
-            # No rompemos el flujo si falla persistencia, pero lo registramos
-            st["persist_error"] = str(e)
-            _ESTADOS[job_id] = st
+        out = tpl.run(
+            selected_ref,
+            req.epochs,
+            {**(_normalize_hparams(req.hparams)), "job_id": job_id},
+            model_name=req.modelo,
+        )
+
+        st = _ESTADOS.get(job_id, {})
+        st.update(out)
+        _ESTADOS[job_id] = st
+
+    except Exception as e:
+        st = _ESTADOS.get(job_id) or {"job_id": job_id, "metrics": {}, "history": []}
+        st["status"] = "failed"
+        st["error"] = str(e)
+        _ESTADOS[job_id] = st
 
 @router.post("/entrenar", response_model=EntrenarResponse)
 def entrenar(req: EntrenarRequest, bg: BackgroundTasks):

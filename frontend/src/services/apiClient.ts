@@ -85,7 +85,15 @@ async function request<T = unknown>(
 
   // Construir headers sin mutar los entrantes
   const baseHeaders: Record<string, string> = {};
-  if (!isForm) baseHeaders["Content-Type"] = "application/json";
+
+  // Evitar preflight (OPTIONS) en GET/DELETE sin body:
+  // Solo seteamos Content-Type cuando realmente enviamos JSON.
+  const shouldSendJsonContentType =
+    !isForm &&
+    (method === "POST" || method === "PUT" || method === "PATCH" || (method === "DELETE" && body !== undefined));
+
+  if (shouldSendJsonContentType) baseHeaders["Content-Type"] = "application/json";
+  // Añadir X-Correlation-Id si no viene en headers
   const cid = correlationIdFrom(init);
   if (cid) baseHeaders["X-Correlation-Id"] = cid;
 

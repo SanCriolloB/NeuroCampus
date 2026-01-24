@@ -94,8 +94,24 @@ async function request<T = unknown>(
 
   if (shouldSendJsonContentType) baseHeaders["Content-Type"] = "application/json";
   // Añadir X-Correlation-Id si no viene en headers
-  const cid = correlationIdFrom(init);
-  if (cid) baseHeaders["X-Correlation-Id"] = cid;
+  // X-Correlation-Id:
+  // - Si el caller ya lo pasó, lo respetamos.
+  // - Para evitar preflight en GET/DELETE sin body, solo lo adjuntamos en:
+  //   POST/PUT/PATCH o DELETE con body.
+  const initHeaders = (init?.headers || {}) as Record<string, string>;
+  const existingCid = initHeaders["X-Correlation-Id"] || initHeaders["x-correlation-id"];
+
+  const shouldAttachCid =
+    Boolean(existingCid) ||
+    method === "POST" ||
+    method === "PUT" ||
+    method === "PATCH" ||
+    (method === "DELETE" && body !== undefined);
+
+  if (shouldAttachCid) {
+    const cid = existingCid || correlationIdFrom(init);
+    if (cid) baseHeaders["X-Correlation-Id"] = cid;
+  }
 
   let res: Response;
   try {

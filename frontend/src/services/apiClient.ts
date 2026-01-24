@@ -85,9 +85,33 @@ async function request<T = unknown>(
 
   // Construir headers sin mutar los entrantes
   const baseHeaders: Record<string, string> = {};
-  if (!isForm) baseHeaders["Content-Type"] = "application/json";
-  const cid = correlationIdFrom(init);
-  if (cid) baseHeaders["X-Correlation-Id"] = cid;
+
+  // Evitar preflight (OPTIONS) en GET/DELETE sin body:
+  // Solo seteamos Content-Type cuando realmente enviamos JSON.
+  const shouldSendJsonContentType =
+    !isForm &&
+    (method === "POST" || method === "PUT" || method === "PATCH" || (method === "DELETE" && body !== undefined));
+
+  if (shouldSendJsonContentType) baseHeaders["Content-Type"] = "application/json";
+  // Añadir X-Correlation-Id si no viene en headers
+  // X-Correlation-Id:
+  // - Si el caller ya lo pasó, lo respetamos.
+  // - Para evitar preflight en GET/DELETE sin body, solo lo adjuntamos en:
+  //   POST/PUT/PATCH o DELETE con body.
+  const initHeaders = (init?.headers || {}) as Record<string, string>;
+  const existingCid = initHeaders["X-Correlation-Id"] || initHeaders["x-correlation-id"];
+
+  const shouldAttachCid =
+    Boolean(existingCid) ||
+    method === "POST" ||
+    method === "PUT" ||
+    method === "PATCH" ||
+    (method === "DELETE" && body !== undefined);
+
+  if (shouldAttachCid) {
+    const cid = existingCid || correlationIdFrom(init);
+    if (cid) baseHeaders["X-Correlation-Id"] = cid;
+  }
 
   let res: Response;
   try {

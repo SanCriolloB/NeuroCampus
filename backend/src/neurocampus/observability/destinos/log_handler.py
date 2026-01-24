@@ -13,6 +13,7 @@ Idempotente con _WIRED para evitar duplicar suscripciones en entornos con --relo
 import logging
 from typing import Tuple
 from ..bus_eventos import BUS, Evento  # import relativo al paquete neurocampus.observability
+from ..logging_context import set_correlation_id, clear_correlation_id
 
 # Logger de eventos (puedes unificar con tu config dictConfig)
 logger = logging.getLogger("neurocampus.events")
@@ -49,12 +50,19 @@ _PREDICTION_TOPICS: Tuple[str, ...] = (
 def _to_log(evt: Evento) -> None:
     """
     Handler que escribe el evento en logs.
-    - Usa 'extra={"correlation_id": ...}' para integrarse con formatters que
-      incluyan %(correlation_id)s (compatibles con middleware/contexto CID).
-    - El mensaje incluye el nombre del evento y el payload serializado.
-    """
-    logger.info("%s %s", evt.name, evt.payload, extra={"correlation_id": evt.correlation_id})
 
+    Nota:
+    - NO usamos extra={"correlation_id": ...} porque ya existe un LogRecordFactory
+      instalado (install_logrecord_factory) que inyecta correlation_id a cada record.
+      Python logging lanza error si intentas sobrescribir un atributo existente.
+    - En su lugar, seteamos el correlation_id en el ContextVar para que el formatter
+      lo imprima correctamente.
+    """
+    try:
+        set_correlation_id(evt.correlation_id)
+        logger.info("%s %s", evt.name, evt.payload)
+    finally:
+        clear_correlation_id()
 
 def wire_logging_destination() -> None:
     """

@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
-from ..schemas.modelos import EntrenarRequest, EntrenarResponse, EstadoResponse
+from ..schemas.modelos import (
+    EntrenarRequest, EntrenarResponse, EstadoResponse,
+    RunSummary, RunDetails, ChampionInfo,
+)
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
 from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
@@ -31,7 +33,10 @@ except Exception:
         )
 
 # NUEVO: utilidades para inspeccionar runs y campeón desde artifacts/
-from ...utils.runs_io import list_runs, load_run_details, load_current_champion
+from ...utils.runs_io import list_runs, load_run_details, load_current_champion, load_dataset_champion
+
+from ...data.datos_dashboard import resolve_labeled_path
+from ...utils.runs_io import build_run_id, save_run, maybe_update_champion
 
 router = APIRouter()
 
@@ -182,17 +187,33 @@ def _strip_localfs(uri: str) -> str:
 
 def _resolve_data_path(req: EntrenarRequest) -> str:
     """
-    Determina la ruta al dataset a usar:
-    - Si viene req.data_ref, la usa (admite esquema localfs://).
-    - Si no, intenta 'historico/unificado.parquet' (Día 5 A).
+    Determina la ruta al dataset a usar.
+
+    Orden de prioridad:
+    1) Si viene req.data_ref, se usa (admite localfs://).
+    2) Si viene req.periodo_actual, se intenta usar el parquet etiquetado:
+         data/labeled/<periodo_actual>_beto.parquet
+         data/labeled/<periodo_actual>_teacher.parquet
+       (misma heurística que usa /datos/sentimientos).
+    3) Fallback: historico/unificado.parquet (si existe).
     """
     if getattr(req, "data_ref", None):
         p = _strip_localfs(req.data_ref)  # type: ignore[arg-type]
         return p
+
+    periodo = getattr(req, "periodo_actual", None)
+    if periodo:
+        try:
+            return str(resolve_labeled_path(str(periodo)))
+        except Exception:
+            # Si no existe labeled para ese periodo, seguimos al fallback
+            pass
+
     hist = Path("historico") / "unificado.parquet"
     if hist.exists():
         return str(hist)
-    raise HTTPException(status_code=400, detail="No hay data_ref ni histórico unificado disponible.")
+
+    raise HTTPException(status_code=400, detail="No hay data_ref, ni labeled del periodo_actual, ni histórico unificado.")
 
 
 def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
@@ -236,32 +257,82 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
 
     return str(tmp_ref)
 
+def _persist_training_artifacts(job_id: str, req: EntrenarRequest, selected_ref: str, st: dict[str, Any]) -> str:
+    """
+    Persiste artifacts del entrenamiento cuando finaliza en estado 'completed'.
 
-def _run_training(job_id: str, req: EntrenarRequest):
-    # Elige estrategia
-    estrategia = RBMGeneral() if req.modelo == "rbm_general" else RBMRestringida()
-    tpl = PlantillaEntrenamiento(estrategia)
+    Escribe:
+      - artifacts/runs/<run_id>/metrics.json
+      - artifacts/champions/<dataset_id>/<model_name>/metrics.json
+      - artifacts/champions/<dataset_id>/champion.json (si el run promueve campeón)
 
-    # Asegurar wiring de observabilidad para este job antes de correr
-    _wire_job_observers(job_id)
+    Retorna:
+      run_id generado.
+    """
+    params = (st.get("params") or {}) if isinstance(st.get("params"), dict) else {}
+    dataset_id = str(params.get("periodo_actual") or getattr(req, "periodo_actual", None) or "unknown")
+    model_name = str(getattr(req, "modelo", None) or st.get("model") or "rbm_general")
 
-    # NUEVO: preparar subconjunto seleccionado según metodología
-    selected_ref = _prepare_selected_data(req, job_id)
+    run_id = build_run_id(dataset_id=dataset_id, model_name=model_name, job_id=job_id)
 
-    # Ejecuta entrenamiento (emite training.* que recogerán los handlers)
-    out = tpl.run(
-        selected_ref,  # <-- usar subconjunto
-        req.epochs,
-        {**(_normalize_hparams(req.hparams)), "job_id": job_id},
-        model_name=req.modelo,
+    final_metrics = st.get("metrics") if isinstance(st.get("metrics"), dict) else {}
+    history = st.get("history") if isinstance(st.get("history"), list) else []
+
+    # Guardamos data_ref usado realmente
+    data_ref = selected_ref
+
+    save_run(
+        run_id=run_id,
+        job_id=job_id,
+        dataset_id=dataset_id,
+        model_name=model_name,
+        data_ref=data_ref,
+        params=params,
+        final_metrics=final_metrics,
+        history=history,
     )
 
-    # Consolidar estado final (por si el template devolvió info adicional)
-    # Nota: out = {"job_id", "status", "metrics", "history?"} según plantilla
-    st = _ESTADOS.get(job_id, {})
-    st.update(out)
-    _ESTADOS[job_id] = st
+    maybe_update_champion(
+        dataset_id=dataset_id,
+        model_name=model_name,
+        metrics={**final_metrics, "model_name": model_name, "dataset_id": dataset_id},
+        source_run_id=run_id,
+    )
 
+    return run_id
+
+def _run_training(job_id: str, req: EntrenarRequest):
+    """
+    Ejecuta el entrenamiento en background.
+
+    IMPORTANTE:
+    - Cualquier excepción debe marcar el job como 'failed' y registrar 'error'
+      para que el frontend detenga el polling.
+    """
+    try:
+        estrategia = RBMGeneral() if req.modelo == "rbm_general" else RBMRestringida()
+        tpl = PlantillaEntrenamiento(estrategia)
+
+        _wire_job_observers(job_id)
+
+        selected_ref = _prepare_selected_data(req, job_id)
+
+        out = tpl.run(
+            selected_ref,
+            req.epochs,
+            {**(_normalize_hparams(req.hparams)), "job_id": job_id},
+            model_name=req.modelo,
+        )
+
+        st = _ESTADOS.get(job_id, {})
+        st.update(out)
+        _ESTADOS[job_id] = st
+
+    except Exception as e:
+        st = _ESTADOS.get(job_id) or {"job_id": job_id, "metrics": {}, "history": []}
+        st["status"] = "failed"
+        st["error"] = str(e)
+        _ESTADOS[job_id] = st
 
 @router.post("/entrenar", response_model=EntrenarResponse)
 def entrenar(req: EntrenarRequest, bg: BackgroundTasks):
@@ -314,47 +385,42 @@ def estado(job_id: str):
 # NUEVO: Endpoints para listar runs y consultar campeón (Flujo 3)
 # ---------------------------------------------------------------------------
 
-class RunSummary(BaseModel):
-    run_id: str
-    model_name: str
-    created_at: str
-    metrics: Dict[str, Any]
-
-
-class RunDetails(BaseModel):
-    run_id: str
-    metrics: Dict[str, Any]
-
-
-class ChampionInfo(BaseModel):
-    model_name: str
-    metrics: Dict[str, Any]
-    path: str
-
-
 @router.get(
     "/runs",
     response_model=list[RunSummary],
     summary="Lista runs de entrenamiento/auditoría de modelos",
 )
-def get_runs(model_name: Optional[str] = None) -> list[RunSummary]:
+def get_runs(
+    model_name: Optional[str] = None,
+    dataset: Optional[str] = None,
+    dataset_id: Optional[str] = None,
+    periodo: Optional[str] = None,
+) -> list[RunSummary]:
     """
     Devuelve un resumen de los runs encontrados en artifacts/runs.
-    Puede filtrarse por nombre de modelo (ej: model_name=rbm).
+
+    Filtros:
+      - model_name: ej 'rbm', 'rbm_general'
+      - dataset_id / dataset / periodo: filtra por dataset asociado al run
+
+    Compatibilidad:
+      - Si no envías filtros, retorna todos los runs disponibles (como antes).
     """
-    runs = list_runs(model_name=model_name)
+    ds = dataset_id or dataset or periodo
+    runs = list_runs(model_name=model_name, dataset_id=ds)
     return [RunSummary(**r) for r in runs]
 
 
 @router.get(
     "/runs/{run_id}",
     response_model=RunDetails,
-    summary="Detalles completos de un run (incluye histórico si está en metrics.json)",
+    summary="Detalles completos de un run (incluye config si existe)",
 )
 def get_run_details(run_id: str) -> RunDetails:
     """
-    Devuelve los detalles de un run concreto, leyendo metrics.json
-    desde artifacts/runs/<run_id>/.
+    Devuelve detalles completos de un run leyendo:
+      - artifacts/runs/<run_id>/metrics.json (obligatorio)
+      - artifacts/runs/<run_id>/config.snapshot.yaml o config.yaml (opcional)
     """
     details = load_run_details(run_id)
     if not details:
@@ -367,14 +433,37 @@ def get_run_details(run_id: str) -> RunDetails:
     response_model=ChampionInfo,
     summary="Devuelve info del modelo campeón actual (para dashboard/predicciones)",
 )
-def get_champion(model_name: Optional[str] = None) -> ChampionInfo:
+def get_champion(
+    model_name: Optional[str] = None,
+    dataset: Optional[str] = None,
+    dataset_id: Optional[str] = None,
+    periodo: Optional[str] = None,
+) -> ChampionInfo:
     """
     Devuelve el modelo campeón (champion) actual.
 
-    - Si se indica model_name, busca bajo artifacts/champions/<model_name>/metrics.json.
-    - Si no, devuelve el primer campeón encontrado bajo artifacts/champions/*.
+    Soporta:
+      - Champions por dataset:
+        artifacts/champions/<dataset_id>/<model_name>/metrics.json
+
+      - Champions legacy por modelo:
+        artifacts/champions/<model_name>/metrics.json
+
+    Parámetros:
+      - model_name (opcional): filtra por tipo de modelo
+      - dataset_id / dataset / periodo (opcional): selecciona champion del dataset
     """
-    champ = load_current_champion(model_name=model_name)
+    ds = dataset_id or dataset or periodo
+
+    # Si el usuario pide el champion “del dataset” y no especifica modelo,
+    # devolvemos el campeón real (champion.json o mejor score).
+    if ds and not model_name:
+        champ = load_dataset_champion(ds)
+    else:
+        # Si especifica model_name, respetamos el contrato actual:
+        # champions/<dataset>/<model_name>/metrics.json (o legacy)
+        champ = load_current_champion(model_name=model_name, dataset_id=ds)
+
     if not champ:
         raise HTTPException(status_code=404, detail="No hay campeón registrado")
     return ChampionInfo(**champ)

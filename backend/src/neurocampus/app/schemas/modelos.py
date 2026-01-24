@@ -75,3 +75,51 @@ class EstadoResponse(BaseModel):
     status: str  # running|completed|failed|unknown
     metrics: Dict[str, float] = {}
     history: List[EpochItem] = []
+
+class RunSummary(BaseModel):
+    """
+    Resumen ligero de un run para listados.
+
+    Campos:
+      - run_id: nombre del directorio dentro de artifacts/runs
+      - model_name: nombre lógico del modelo asociado (rbm, rbm_general, etc.)
+      - dataset_id: dataset asociado al run si fue registrado o inferible
+      - created_at: ISO8601 (UTC) derivado de mtime del directorio
+      - metrics: subset de métricas principales (accuracy, f1, etc.)
+    """
+    run_id: str
+    model_name: str
+    dataset_id: Optional[str] = None
+    created_at: str
+    metrics: Dict[str, Any] = {}
+
+
+class RunDetails(BaseModel):
+    """
+    Detalle completo de un run.
+
+    Incluye:
+      - metrics: contenido completo de metrics.json
+      - config: contenido de config.snapshot.yaml o config.yaml (si existe)
+      - artifact_path: ruta absoluta o relativa al directorio del run (para depuración)
+    """
+    run_id: str
+    dataset_id: Optional[str] = None
+    metrics: Dict[str, Any]
+    config: Optional[Dict[str, Any]] = None
+    artifact_path: Optional[str] = None
+
+
+class ChampionInfo(BaseModel):
+    """
+    Información del modelo campeón (champion) para consumo por Predicciones/Dashboard.
+
+    - model_name: nombre del modelo campeón
+    - dataset_id: dataset asociado (si aplica)
+    - metrics: métricas registradas del champion
+    - path: ruta del directorio campeón en artifacts/champions
+    """
+    model_name: str
+    dataset_id: Optional[str] = None
+    metrics: Dict[str, Any]
+    path: str

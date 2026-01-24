@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
@@ -7,14 +7,52 @@ import { Input } from './ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Badge } from './ui/badge';
 import { Play, Award } from 'lucide-react';
+import { listRuns, getChampion, RunSummary, ChampionInfo, entrenar, estado } from '../services/modelos';
+import { setAppFilters, useAppFilters } from '../state/appFilters.store';
 
-const modelComparison = [
-  { model: 'BM', accuracy: 0.82, f1: 0.79, precision: 0.81, recall: 0.78, time: 145 },
-  { model: 'RBM', accuracy: 0.85, f1: 0.83, precision: 0.84, recall: 0.82, time: 132 },
-  { model: 'DBM', accuracy: 0.89, f1: 0.87, precision: 0.88, recall: 0.86, time: 168 },
-  { model: 'BM Pure', accuracy: 0.80, f1: 0.77, precision: 0.79, recall: 0.76, time: 138 },
-  { model: 'RBM Pure', accuracy: 0.83, f1: 0.81, precision: 0.82, recall: 0.80, time: 125 },
-];
+/**
+ * Mapeo UI (maqueta) -> dataset_id real del backend.
+ *
+ * IMPORTANTE:
+ * - La maqueta usa valores "dataset1"/"dataset2" en el Select.
+ * - En producción usamos activeDatasetId (ej: "2025-1" / "2024-2").
+ * - Este mapping mantiene UI 1:1 sin cambiar labels del Select.
+ */
+const DATASET_OPTIONS = [
+  { key: 'dataset1', datasetId: '2025-1', label: 'Evaluations_2025_1' },
+  { key: 'dataset2', datasetId: '2024-2', label: 'Evaluations_2024_2' },
+] as const;
+
+type DatasetKey = typeof DATASET_OPTIONS[number]['key'];
+
+/** Formatea porcentaje sin romper si viene undefined/null. */
+function fmtPct(x?: number | null) {
+  if (x === null || x === undefined) return '—';
+  return `${(x * 100).toFixed(1)}%`;
+}
+
+/** Formatea número sin romper si viene undefined/null. */
+function fmtNum(x?: number | null, suffix = '') {
+  if (x === null || x === undefined) return '—';
+  return `${x}${suffix}`;
+}
+
+/**
+ * Convierte un model_name del backend a etiqueta legible,
+ * manteniendo estilo del UI sin tocar layout.
+ */
+function prettyModelName(modelName: string) {
+  const raw = String(modelName || '').trim();
+  if (!raw) return '—';
+  return raw
+    .split(/[_\s]+/g)
+    .map((t) => {
+      const low = t.toLowerCase();
+      if (low === 'rbm' || low === 'dbm' || low === 'bm') return low.toUpperCase();
+      return low.charAt(0).toUpperCase() + low.slice(1);
+    })
+    .join(' ');
+}
 
 const trainingLoss = [
   { epoch: 1, train: 0.65, validation: 0.68 },
@@ -60,15 +98,201 @@ export function ModelsTab() {
   const [isTraining, setIsTraining] = useState(false);
   const [selectedModel, setSelectedModel] = useState('DBM');
   const [viewMode, setViewMode] = useState<'comparison' | 'details'>('comparison');
+  const [epochs, setEpochs] = useState(10);
+  const [batchSize, setBatchSize] = useState(32);
+  const [learningRate, setLearningRate] = useState(0.001);
+  /**
+   * Dataset activo proveniente del store global (mismo que usa DataTab).
+   * Ej: "2024-2" / "2025-1".
+   */
+  const activeDatasetId = useAppFilters((s) => s.activeDatasetId);
 
-  const handleTrainModels = () => {
+  /**
+   * Traduce el dataset_id real al key del Select de la maqueta (dataset1/dataset2).
+   * Esto permite un Select controlado sin cambiar UI.
+   */
+  const datasetKey: DatasetKey = useMemo(() => {
+    const found = DATASET_OPTIONS.find((d) => d.datasetId === activeDatasetId);
+    return (found?.key ?? 'dataset1') as DatasetKey;
+  }, [activeDatasetId]);
+
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [champion, setChampion] = useState<ChampionInfo | null>(null);
+
+    /**
+     * Cambia dataset desde ModelsTab sin romper consistencia:
+     * actualiza activeDatasetId y activePeriodo en el store.
+     */
+    const handleDatasetChange = (key: string) => {
+      const opt = DATASET_OPTIONS.find((d) => d.key === key);
+      const datasetId = opt?.datasetId ?? '2025-1';
+      setAppFilters({ activeDatasetId: datasetId, activePeriodo: datasetId });
+    };
+
+    /**
+     * Carga runs y champion cada vez que cambia el dataset activo.
+     * - Runs: si no hay artifacts, retorna [] (esperado).
+     * - Champion: 404 se interpreta como "no hay champion aún".
+     */
+    useEffect(() => {
+      // Normalizamos null -> undefined para cumplir tipo (string | undefined)
+      const ds = activeDatasetId ?? undefined;
+
+      if (!ds) {
+        setRuns([]);
+        setChampion(null);
+        return;
+      }
+
+      let cancelled = false;
+
+      async function load() {
+        try {
+          const data = await listRuns({ dataset_id: ds });
+          if (!cancelled) setRuns(data || []);
+        } catch (e: any) {
+          console.error('[ModelsTab] Error cargando runs:', e);
+          if (!cancelled) setRuns([]);
+        }
+
+        try {
+          const champ = await getChampion({ dataset_id: ds });
+          if (!cancelled) setChampion(champ);
+        } catch (e: any) {
+          const status = e?.response?.status;
+          if (status === 404) {
+            if (!cancelled) setChampion(null);
+          } else {
+            console.error('[ModelsTab] Error cargando champion:', e);
+            if (!cancelled) setChampion(null);
+          }
+        }
+      }
+
+      load();
+      return () => {
+        cancelled = true;
+      };
+    }, [activeDatasetId]);
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /**
+   * Espera un job consultando /modelos/estado/<job_id>.
+   * Termina si status = completed/failed/unknown o por timeout defensivo.
+   */
+  async function waitJob(jobId: string) {
+    for (let i = 0; i < 1200; i++) { // ~20 min defensivo
+      const st = await estado(jobId);
+      if (st.status === 'completed' || st.status === 'failed' || st.status === 'unknown') return st;
+      await sleep(1000);
+    }
+    return await estado(jobId);
+  }
+
+  const handleTrainModels = async () => {
+    // Normalizamos null -> undefined
+    const ds = activeDatasetId ?? undefined;
+    if (!ds) return;
+
     setIsTraining(true);
-    setTimeout(() => setIsTraining(false), 3000);
+
+    try {
+      // Entrenamiento secuencial (evita saturación y mantiene trazabilidad simple)
+      const models: Array<'rbm_general' | 'rbm_restringida'> = ['rbm_general', 'rbm_restringida'];
+
+      for (const m of models) {
+        const resp = await entrenar({
+          modelo: m,
+          epochs,
+          metodologia: 'periodo_actual',
+          periodo_actual: ds,
+          hparams: {
+            lr: learningRate,
+            batch_size: batchSize,
+          },
+        });
+
+        await waitJob(resp.job_id);
+      }
+
+      // Refrescar runs/champion al finalizar (sin depender del useEffect)
+      const data = await listRuns({ dataset_id: ds });
+      setRuns(data || []);
+
+      try {
+        const champ = await getChampion({ dataset_id: ds });
+        setChampion(champ);
+      } catch {
+        setChampion(null);
+      }
+    } catch (e) {
+      console.error('[ModelsTab] Error entrenando modelos:', e);
+    } finally {
+      setIsTraining(false);
+    }
   };
 
-  const bestModel = modelComparison.reduce((best, current) => 
-    current.accuracy > best.accuracy ? current : best
-  );
+  /**
+     * Model comparison derivado desde runs reales.
+     * Regla: mostramos el último run por model_name.
+     */
+    const modelComparison = useMemo(() => {
+      const ds = activeDatasetId ?? undefined;
+
+      // Defensa: si por alguna razón vinieran runs sin dataset_id, no los filtramos.
+      const filtered = ds ? runs.filter((r) => !r.dataset_id || r.dataset_id === ds) : runs;
+
+      // Orden por created_at desc (si existe)
+      const sorted = [...filtered].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+      // Último run por modelo
+      const byModel = new Map<string, RunSummary>();
+      for (const r of sorted) {
+        if (!byModel.has(r.model_name)) byModel.set(r.model_name, r);
+      }
+
+      return Array.from(byModel.values()).map((r) => {
+        const m = r.metrics || {};
+        return {
+          model: prettyModelName(r.model_name),
+          accuracy: m.accuracy,
+          f1: (m.f1_macro ?? m.f1),
+          precision: m.precision,
+          recall: m.recall,
+          time: (m.time_sec ?? m.train_time_sec),
+        };
+      });
+    }, [runs, activeDatasetId]);
+
+    /**
+     * bestModel:
+     * - Si hay champion, lo priorizamos (cuando exista).
+     * - Si no hay champion, tomamos el mayor accuracy entre modelComparison.
+     */
+    const bestModel = useMemo(() => {
+      if (champion?.metrics) {
+        const m = champion.metrics || {};
+        return {
+          model: prettyModelName(champion.model_name),
+          accuracy: m.accuracy ?? 0,
+          f1: (m.f1_macro ?? m.f1 ?? 0),
+          precision: m.precision ?? 0,
+          recall: m.recall ?? 0,
+          time: (m.time_sec ?? m.train_time_sec ?? 0),
+        };
+      }
+
+      if (!modelComparison.length) {
+        return { model: '—', accuracy: 0, f1: 0, precision: 0, recall: 0, time: 0 };
+      }
+
+      return modelComparison.reduce((best, current) => {
+        const a = current.accuracy ?? -1;
+        const b = best.accuracy ?? -1;
+        return a > b ? current : best;
+      });
+    }, [modelComparison, champion]);
 
   return (
     <div className="p-8 space-y-6">
@@ -94,7 +318,7 @@ export function ModelsTab() {
         <div className="grid grid-cols-4 gap-4">
           <div>
             <label className="block text-sm text-gray-400 mb-2">Dataset</label>
-            <Select defaultValue="dataset1">
+            <Select value={datasetKey} onValueChange={handleDatasetChange}>
               <SelectTrigger className="bg-[#0f1419] border-gray-700">
                 <SelectValue />
               </SelectTrigger>
@@ -108,7 +332,14 @@ export function ModelsTab() {
             <label className="block text-sm text-gray-400 mb-2">Epochs</label>
             <Input
               type="number"
-              defaultValue="10"
+              value={epochs}
+              min={1}
+              step={1}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v)) return;
+                setEpochs(v);
+              }}
               className="bg-[#0f1419] border-gray-700"
             />
           </div>
@@ -116,7 +347,14 @@ export function ModelsTab() {
             <label className="block text-sm text-gray-400 mb-2">Batch Size</label>
             <Input
               type="number"
-              defaultValue="32"
+              value={batchSize}
+              min={1}
+              step={1}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v)) return;
+                setBatchSize(v);
+              }}
               className="bg-[#0f1419] border-gray-700"
             />
           </div>
@@ -124,8 +362,14 @@ export function ModelsTab() {
             <label className="block text-sm text-gray-400 mb-2">Learning Rate</label>
             <Input
               type="number"
-              step="0.001"
-              defaultValue="0.001"
+              value={learningRate}
+              min={0}
+              step={0.001}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v)) return;
+                setLearningRate(v);
+              }}
               className="bg-[#0f1419] border-gray-700"
             />
           </div>
@@ -174,11 +418,11 @@ export function ModelsTab() {
                             </Badge>
                           )}
                         </td>
-                        <td className="text-gray-300 py-3 px-4">{(model.accuracy * 100).toFixed(1)}%</td>
-                        <td className="text-gray-300 py-3 px-4">{(model.f1 * 100).toFixed(1)}%</td>
-                        <td className="text-gray-300 py-3 px-4">{(model.precision * 100).toFixed(1)}%</td>
-                        <td className="text-gray-300 py-3 px-4">{(model.recall * 100).toFixed(1)}%</td>
-                        <td className="text-gray-300 py-3 px-4">{model.time}s</td>
+                        <td className="text-gray-300 py-3 px-4">{fmtPct(model.accuracy)}</td>
+                        <td className="text-gray-300 py-3 px-4">{fmtPct(model.f1)}</td>
+                        <td className="text-gray-300 py-3 px-4">{fmtPct(model.precision)}</td>
+                        <td className="text-gray-300 py-3 px-4">{fmtPct(model.recall)}</td>
+                        <td className="text-gray-300 py-3 px-4">{fmtNum(model.time, 's')}</td>
                       </tr>
                     );
                   })}
@@ -198,7 +442,7 @@ export function ModelsTab() {
                 <Tooltip
                   contentStyle={{ backgroundColor: '#1a1f2e', border: '1px solid #374151' }}
                   labelStyle={{ color: '#fff' }}
-                  formatter={(value: number) => `${(value * 100).toFixed(1)}%`}
+                  formatter={(value: any) => (typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '—')}
                 />
                 <Bar dataKey="accuracy" fill="#3B82F6" name="Accuracy" />
                 <Bar dataKey="f1" fill="#06B6D4" name="F1 Score" />
@@ -214,9 +458,9 @@ export function ModelsTab() {
               <div>
                 <h3 className="text-white mb-2">Selected Model: {bestModel.model}</h3>
                 <p className="text-gray-300">
-                  Accuracy: {(bestModel.accuracy * 100).toFixed(1)}% • 
-                  F1 Score: {(bestModel.f1 * 100).toFixed(1)}% • 
-                  Training Time: {bestModel.time}s
+                  Accuracy: {fmtPct(bestModel.accuracy)} •  
+                  F1 Score: {fmtPct(bestModel.f1)} • 
+                  Training Time: {fmtNum(bestModel.time, 's')}
                 </p>
               </div>
               <Award className="w-12 h-12 text-blue-400" />

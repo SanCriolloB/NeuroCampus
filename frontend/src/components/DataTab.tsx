@@ -23,6 +23,8 @@ import { useUploadDataset } from "@/features/datos/hooks/useUploadDataset";
 import { useDatasetResumen } from "@/features/datos/hooks/useDatasetResumen";
 import { useDatasetSentimientos } from "@/features/datos/hooks/useDatasetSentimientos";
 import { useBetoPreprocJob } from "@/features/datos/hooks/useBetoPreprocJob";
+import { useDataUnifyJob } from "@/features/datos/hooks/useDataUnifyJob";
+import { useFeaturesPrepareJob } from "@/features/datos/hooks/useFeaturesPrepareJob";
 import { jobsApi } from "@/features/datos/api";
 
 import {
@@ -74,11 +76,17 @@ export function DataTab() {
   const [applyPreprocessing, setApplyPreprocessing] = useState(true);
   const [runSentiment, setRunSentiment] = useState(true);
 
+  // Flags del pipeline "Datos" (sin cambiar UI/estilos)
+  const [generateTfidf, setGenerateTfidf] = useState(true);
+  const [emptyAsNoText, setEmptyAsNoText] = useState(true);
+
   const [datasetName, setDatasetName] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const [betoJobId, setBetoJobId] = useState<string | null>(null);
+  const [unifyJobId, setUnifyJobId] = useState<string | null>(null);
+  const [featuresJobId, setFeaturesJobId] = useState<string | null>(null);
 
   // Hooks de backend
   const validate = useValidateDataset();
@@ -90,6 +98,8 @@ export function DataTab() {
   const resumen = useDatasetResumen(datasetForQueries);
   const sentimientos = useDatasetSentimientos(datasetForQueries);
   const betoJob = useBetoPreprocJob(betoJobId);
+  const unifyJob = useDataUnifyJob(unifyJobId);
+  const featuresJob = useFeaturesPrepareJob(featuresJobId);
 
   // Mantener el último estado accesible dentro del loop de polling (evita cierres "stale")
   const sentimientosDataRef = useRef<any>(null);
@@ -193,6 +203,8 @@ export function DataTab() {
     // Reset de UI local para evitar estados pegados al cambiar de dataset
     setErrorMsg(null);
     setBetoJobId(null);
+    setUnifyJobId(null);
+    setFeaturesJobId(null);
 
     // Opcional pero recomendado: fuerza que el panel muestre queries inmediatamente
     setDataLoaded(true);
@@ -267,12 +279,19 @@ export function DataTab() {
       // 4) Si el usuario pidió sentimientos, lanzar BETO (si aplica) y/o pedir sentimientos
       if (runSentiment) {
         try {
-          const job = await jobsApi.launchBetoPreproc(datasetId);
+          const job = await jobsApi.launchBetoPreproc(datasetId, {
+            text_feats: generateTfidf ? "tfidf_lsa" : "none",
+            empty_text_policy: emptyAsNoText ? "zero" : "neutral",
+            // mantener filas sin texto, pero NO contarlas como neutrales si empty_text_policy="zero"
+            keep_empty_text: true,
+            min_tokens: 1,
+          });
+
           setBetoJobId(job.id);
         } catch {
-        // Si no se pudo lanzar el job, intentamos leer sentimientos existentes.
-        // No bloqueamos el flujo; si aún no existen, el hook/efecto manejará el estado.
-        void sentimientos.refetch(); 
+          // Si no se pudo lanzar el job, intentamos leer sentimientos existentes.
+          // No bloqueamos el flujo; si aún no existen, el hook/efecto manejará el estado.
+          void sentimientos.refetch();
         }
       }
 
@@ -285,6 +304,41 @@ export function DataTab() {
     }
   }
   
+  async function handleRunUnify(mode: "acumulado" | "acumulado_labeled") {
+    setErrorMsg(null);
+
+    if (!datasetForQueries) {
+      setErrorMsg("Load a dataset first.");
+      return;
+    }
+
+    try {
+      const job = await jobsApi.launchDataUnify({ mode });
+      setUnifyJobId(job.id);
+    } catch (e) {
+      setErrorMsg((e as Error)?.message ?? "Unify job failed.");
+    }
+  }
+
+  async function handlePrepareFeatures() {
+    setErrorMsg(null);
+
+    if (!datasetForQueries) {
+      setErrorMsg("Load a dataset first.");
+      return;
+    }
+
+    try {
+      const job = await jobsApi.launchFeaturesPrepare({
+        dataset_id: datasetForQueries,
+      });
+      setFeaturesJobId(job.id);
+    } catch (e) {
+      setErrorMsg((e as Error)?.message ?? "Feature-pack job failed.");
+    }
+  }
+
+
   return (
     <div className="p-8 space-y-6">
       {/* Header */}
@@ -375,6 +429,31 @@ export function DataTab() {
                   />
                   <label className="text-sm text-gray-400">Run sentiment analysis (BETO)</label>
                 </div>
+
+                {/* Opciones BETO (solo si está activo) */}
+                {runSentiment && (
+                  <div className="space-y-3 pl-6">
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        checked={generateTfidf}
+                        onCheckedChange={(checked) => setGenerateTfidf(checked as boolean)}
+                      />
+                      <label className="text-sm text-gray-400">
+                        Generate TF-IDF+LSA embeddings (64)
+                      </label>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        checked={emptyAsNoText}
+                        onCheckedChange={(checked) => setEmptyAsNoText(checked as boolean)}
+                      />
+                      <label className="text-sm text-gray-400">
+                        Treat empty comments as NO_TEXT
+                      </label>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <Button
@@ -413,6 +492,128 @@ export function DataTab() {
               )}
             </div>
           </Card>
+          {/* Data Artifacts (Unify + Feature-pack) */}
+          <Card className="bg-[#1a1f2e] border-gray-800 p-6">
+            <h3 className="text-white mb-4">Data Artifacts</h3>
+
+            {!datasetForQueries ? (
+              <p className="text-sm text-gray-400">Load a dataset to enable artifact generation.</p>
+            ) : (
+              <div className="space-y-4">
+                {/* BETO meta (si existe) */}
+                <div className="bg-[#0f1419] p-4 rounded-lg">
+                  <p className="text-gray-400 text-sm">BETO</p>
+
+                  <div className="mt-2 space-y-1 text-sm">
+                    <p className="text-gray-300">
+                      Status:{" "}
+                      <span className="text-white">
+                        {betoJob.job?.status ?? "not started"}
+                      </span>
+                    </p>
+
+                    {betoJob.job?.meta && (
+                      <>
+                        <p className="text-gray-300">
+                          Text coverage:{" "}
+                          <span className="text-white">
+                            {(Number(betoJob.job.meta.text_coverage ?? 0) * 100).toFixed(1)}%
+                          </span>
+                        </p>
+                        <p className="text-gray-300">
+                          Accepted:{" "}
+                          <span className="text-white">
+                            {Number(betoJob.job.meta.accepted_count ?? 0).toLocaleString()}
+                          </span>
+                        </p>
+                        <p className="text-gray-300">
+                          text_feats:{" "}
+                          <span className="text-white">
+                            {String(betoJob.job.meta.text_feats ?? "none")}
+                          </span>
+                        </p>
+                        <p className="text-gray-300">
+                          empty_text_policy:{" "}
+                          <span className="text-white">
+                            {String(betoJob.job.meta.empty_text_policy ?? "neutral")}
+                          </span>
+                        </p>
+                      </>
+                    )}
+
+                    <p className="text-gray-500">
+                      Output: <span className="text-gray-400">data/labeled/{datasetForQueries}_beto.parquet</span>
+                    </p>
+                  </div>
+                </div>
+
+                {/* Unificación */}
+                <div className="space-y-2">
+                  <p className="text-gray-400 text-sm">Unification (historico/*)</p>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <Button
+                      className="w-full bg-blue-600 hover:bg-blue-700"
+                      onClick={() => void handleRunUnify("acumulado")}
+                      disabled={unifyJob.job?.status === "running"}
+                    >
+                      Unify History
+                    </Button>
+
+                    <Button
+                      className="w-full bg-blue-600 hover:bg-blue-700"
+                      onClick={() => void handleRunUnify("acumulado_labeled")}
+                      disabled={unifyJob.job?.status === "running"}
+                    >
+                      Unify Labeled
+                    </Button>
+                  </div>
+
+                  {unifyJob.job?.status === "running" && (
+                    <p className="text-sm text-gray-400">Running unification…</p>
+                  )}
+                  {unifyJob.job?.status === "failed" && (
+                    <p className="text-sm text-red-400">
+                      Unify failed: {unifyJob.job?.error ?? "unknown"}
+                    </p>
+                  )}
+                  {unifyJob.job?.status === "done" && (
+                    <p className="text-sm text-green-400">
+                      Done: {unifyJob.job?.out_uri ?? "historico/*"}
+                    </p>
+                  )}
+                </div>
+
+                {/* Feature-pack */}
+                <div className="space-y-2">
+                  <p className="text-gray-400 text-sm">Feature-pack (artifacts/features/*)</p>
+
+                  <Button
+                    className="w-full bg-blue-600 hover:bg-blue-700"
+                    onClick={() => void handlePrepareFeatures()}
+                    disabled={featuresJob.job?.status === "running"}
+                  >
+                    Prepare Feature Pack
+                  </Button>
+
+                  {featuresJob.job?.status === "running" && (
+                    <p className="text-sm text-gray-400">Preparing feature-pack…</p>
+                  )}
+                  {featuresJob.job?.status === "failed" && (
+                    <p className="text-sm text-red-400">
+                      Feature-pack failed: {featuresJob.job?.error ?? "unknown"}
+                    </p>
+                  )}
+                  {featuresJob.job?.status === "done" && (
+                    <p className="text-sm text-green-400">
+                      Done: artifacts/features/{datasetForQueries}/train_matrix.parquet
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </Card>
+
         </div>
 
         {/* Right Column - Data Preview */}

@@ -1,97 +1,132 @@
 # backend/src/neurocampus/data/strategies/unificacion.py
 from __future__ import annotations
+
+"""Estrategia de unificación histórica.
+
+Este módulo pertenece al dominio **Datos** y su responsabilidad es crear
+artefactos históricos reproducibles en disco, para consumo posterior por la
+pestaña **Modelos**.
+
+Cambios clave (DataTab)
+-----------------------
+- Soporta el layout actualizado: `datasets/<periodo>.parquet|csv|xlsx` (archivo plano)
+  en lugar del layout anterior por carpeta `datasets/<periodo>/data.*`.
+- Mantiene compatibilidad retroactiva con el layout por carpeta.
+- Puede unificar tanto datasets "raw/processed" como datasets ya etiquetados
+  (BETO) para producir `historico/unificado_labeled.parquet`.
+"""
+
 from typing import List, Optional, Dict, Any, Tuple
 import re
 from pathlib import Path
 
-# Adapter de almacenamiento (localfs://, etc.)
+import pandas as pd
+
 from ..adapters.almacen_adapter import AlmacenAdapter
-
-# Lectura multi-formato y helpers de DF (con las firmas reales de tus adapters)
-from ..adapters.formato_adapter import read_file            # (fileobj, filename) -> DataFrame/like
-from ..adapters.dataframe_adapter import as_df              # (obj) -> DF normalizado al engine
-
-import pandas as pd                                         # escritura parquet, manipulación tabular
-
-# Normalización/validación usada en D2–D4
+from ..adapters.formato_adapter import read_file
+from ..adapters.dataframe_adapter import as_df
 from ..chain.validadores import normalizar_encabezados
 
-# ---------------------------------------------------------------------------
-
 DEDUP_KEYS = ["periodo", "codigo_materia", "grupo", "cedula_profesor"]
-PERIODO_RE = re.compile(r"^\d{4}-(1|2)$")  # AAAA-SEM (e.g., 2024-1, 2024-2)
+PERIODO_RE = re.compile(r"^\d{4}-(1|2|3)$")
+
 
 class UnificacionStrategy:
-    """
-    Unifica datasets históricos bajo tres metodologías:
-      - PeriodoActual: último periodo disponible
-      - Acumulado: concat + dedupe
-      - Ventana: últimos N periodos o rango [desde,hasta]
-    Salidas en /historico como .parquet (columnas normalizadas).
-    """
+    """Unifica datasets históricos y genera artefactos en /historico."""
 
     def __init__(self, base_uri: str = "localfs://."):
         self.store = AlmacenAdapter(base_uri)
 
-    # -------- Descubrimiento de periodos --------
     def listar_periodos(self, prefix: str = "datasets/") -> List[str]:
-        """
-        Lista carpetas de la forma AAAA-SEM dentro de datasets/.
-        Se basa en self.store.ls(prefix) que devuelve rutas (strings).
+        """Lista periodos disponibles desde datasets/.
+
+        Soporta:
+        - layout nuevo: datasets/<periodo>.parquet|csv|xlsx
+        - layout viejo: datasets/<periodo>/data.parquet|csv|xlsx
         """
         items = self.store.ls(prefix)
-        periodos: List[str] = []
+        found: List[str] = []
+
         for it in items:
-            name = Path(it).name  # último segmento de la ruta
+            p = Path(it)
+            name = p.name
+
             if PERIODO_RE.match(name):
-                periodos.append(name)
-        periodos.sort()
-        return periodos
+                found.append(name)
+                continue
 
-    # -------- Lectura y normalización por período --------
-    def _leer_periodo(self, periodo: str) -> pd.DataFrame:
-        """
-        Lee el dataset de un período dado priorizando parquet > csv > xlsx.
-        - Usa read_file(fileobj, filename) del formato_adapter
-        - Convierte a DF del engine vía as_df y, si no es pandas, lo pasa a pandas
-        - Normaliza encabezados y asegura columna 'periodo'
-        """
-        folder = f"datasets/{periodo}"
-        candidatos = ("data.parquet", "data.csv", "data.xlsx")
+            if p.suffix.lower() in {".parquet", ".csv", ".xlsx"}:
+                stem = p.stem
+                if PERIODO_RE.match(stem):
+                    found.append(stem)
 
-        for candidate in candidatos:
-            uri = f"{folder}/{candidate}"
+        return sorted(set(found))
+
+    def _resolve_dataset_uri(self, periodo: str) -> str:
+        """Resuelve la URI del dataset crudo (datasets/) para un periodo."""
+        flat = [
+            f"datasets/{periodo}.parquet",
+            f"datasets/{periodo}.csv",
+            f"datasets/{periodo}.xlsx",
+        ]
+        for uri in flat:
             if self.store.exists(uri):
-                # Abrimos en binario; el adapter de formatos decide cómo leer según 'filename'
-                mode = "rb"
-                with self.store.open(uri, mode) as fh:
-                    df_like = read_file(fh, uri)   # adapter decide por extensión
-                pdf = as_df(df_like)
+                return uri
 
-                # Si el engine subyacente no es pandas (p.ej. polars), convertir a pandas
-                if hasattr(pdf, "to_pandas"):
-                    try:
-                        pdf = pdf.to_pandas()
-                    except Exception:
-                        # Si to_pandas falla por cualquier razón, forzamos a DataFrame
-                        pdf = pd.DataFrame(pdf)
+        folder = f"datasets/{periodo}"
+        legacy = (f"{folder}/data.parquet", f"{folder}/data.csv", f"{folder}/data.xlsx")
+        for uri in legacy:
+            if self.store.exists(uri):
+                return uri
 
-                # Normalización de encabezados (D2–D4)
-                pdf.columns = normalizar_encabezados(list(pdf.columns))
+        raise FileNotFoundError(f"No se encontró dataset para periodo {periodo} en datasets/")
 
-                # Asegurar 'periodo'
-                if "periodo" not in pdf.columns:
-                    pdf["periodo"] = periodo
+    def _resolve_labeled_uri(self, periodo: str) -> str:
+        """Resuelve la URI del dataset etiquetado (data/labeled) para un periodo."""
+        candidates = [
+            f"data/labeled/{periodo}_beto.parquet",
+            f"data/labeled/{periodo}_teacher.parquet",
+            f"data/labeled/{periodo}_beto.csv",
+            f"data/labeled/{periodo}_teacher.csv",
+        ]
+        for uri in candidates:
+            if self.store.exists(uri):
+                return uri
+        raise FileNotFoundError(f"No se encontró labeled para periodo {periodo} en data/labeled/")
 
-                return pdf
+    def _read_any(self, uri: str) -> pd.DataFrame:
+        """Lee cualquier archivo (csv/xlsx/parquet) usando adapters y lo convierte a pandas."""
+        with self.store.open(uri, "rb") as fh:
+            df_like = read_file(fh, uri)
+        pdf = as_df(df_like)
 
-        raise FileNotFoundError(f"No se encontró dataset para periodo {periodo} en {folder}/")
+        if hasattr(pdf, "to_pandas"):
+            try:
+                pdf = pdf.to_pandas()
+            except Exception:
+                pdf = pd.DataFrame(pdf)
 
-    # -------- Utilitarios --------
+        pdf.columns = normalizar_encabezados(list(pdf.columns))
+        return pdf
+
+    def _leer_periodo(self, periodo: str) -> pd.DataFrame:
+        """Lee dataset crudo de un periodo y asegura columna periodo."""
+        uri = self._resolve_dataset_uri(periodo)
+        pdf = self._read_any(uri)
+        if "periodo" not in pdf.columns:
+            pdf["periodo"] = periodo
+        return pdf
+
+    def _leer_labeled_periodo(self, periodo: str) -> pd.DataFrame:
+        """Lee dataset etiquetado de un periodo y asegura columna periodo."""
+        uri = self._resolve_labeled_uri(periodo)
+        pdf = self._read_any(uri)
+        if "periodo" not in pdf.columns:
+            pdf["periodo"] = periodo
+        return pdf
+
     def _dedupe_concat(self, frames: List[pd.DataFrame]) -> pd.DataFrame:
-        """
-        Concatena y elimina duplicados por claves canónicas cuando existan.
-        """
+        """Concatena y elimina duplicados por claves canónicas cuando existan."""
         if not frames:
             raise ValueError("No hay frames para unificar")
         big = pd.concat(frames, ignore_index=True, copy=False)
@@ -103,21 +138,15 @@ class UnificacionStrategy:
         return big
 
     def _write_parquet(self, df: pd.DataFrame, out_uri: str) -> None:
-        """
-        Escribe en parquet usando el file handle del store. Se abre en 'wb'.
-        """
+        """Escribe parquet usando el store."""
         parent = str(Path(out_uri).parent).replace("\\", "/")
         if parent and parent not in ("", "."):
             self.store.makedirs(parent)
         with self.store.open(out_uri, "wb") as out_fh:
             df.to_parquet(out_fh, index=False)
 
-    # -------- Metodologías --------
     def periodo_actual(self) -> Tuple[str, Dict[str, Any]]:
-        """
-        Toma el último período (lexicográficamente mayor), normaliza y escribe
-        historico/periodo_actual/<AAAA-SEM>.parquet
-        """
+        """Último periodo lexicográfico → historico/periodo_actual/<periodo>.parquet"""
         periodos = self.listar_periodos()
         if not periodos:
             raise RuntimeError("No hay periodos en datasets/")
@@ -126,35 +155,25 @@ class UnificacionStrategy:
 
         out_uri = f"historico/periodo_actual/{ultimo}.parquet"
         self._write_parquet(pdf, out_uri)
-
         return out_uri, {"periodo": ultimo, "rows": int(len(pdf))}
 
     def acumulado(self) -> Tuple[str, Dict[str, Any]]:
-        """
-        Concatena todos los períodos disponibles, deduplica y escribe
-        historico/unificado.parquet
-        """
+        """Concatena todos los periodos → historico/unificado.parquet"""
         periodos = self.listar_periodos()
         frames = [self._leer_periodo(p) for p in periodos]
         pdf = self._dedupe_concat(frames)
 
         out_uri = "historico/unificado.parquet"
         self._write_parquet(pdf, out_uri)
-
         return out_uri, {"periodos": len(frames), "rows": int(len(pdf))}
 
     def ventana(
         self,
         ultimos: Optional[int] = None,
         desde: Optional[str] = None,
-        hasta: Optional[str] = None
+        hasta: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
-        """
-        Toma una ventana temporal por:
-          - 'ultimos' N periodos, o
-          - rango inclusivo [desde, hasta] (strings AAAA-SEM).
-        Escribe historico/ventanas/unificado_<desde>_<hasta>.parquet
-        """
+        """Unifica una ventana de periodos → historico/ventanas/unificado_<tag>.parquet"""
         periodos = self.listar_periodos()
         if ultimos:
             sel = periodos[-ultimos:]
@@ -169,5 +188,28 @@ class UnificacionStrategy:
         tag = f"{sel[0]}_{sel[-1]}" if sel else "vacia"
         out_uri = f"historico/ventanas/unificado_{tag}.parquet"
         self._write_parquet(pdf, out_uri)
-
         return out_uri, {"periodos": sel, "rows": int(len(pdf))}
+
+    def acumulado_labeled(self) -> Tuple[str, Dict[str, Any]]:
+        """Unifica labeled disponibles → historico/unificado_labeled.parquet"""
+        periodos = self.listar_periodos()
+        frames: List[pd.DataFrame] = []
+        skipped: List[str] = []
+
+        for p in periodos:
+            try:
+                frames.append(self._leer_labeled_periodo(p))
+            except FileNotFoundError:
+                skipped.append(p)
+
+        if not frames:
+            raise RuntimeError(
+                "No hay datasets etiquetados para unificar. "
+                "Asegúrate de correr BETO al menos en un periodo."
+            )
+
+        pdf = self._dedupe_concat(frames)
+        out_uri = "historico/unificado_labeled.parquet"
+        self._write_parquet(pdf, out_uri)
+
+        return out_uri, {"periodos": len(frames), "rows": int(len(pdf)), "skipped": skipped}

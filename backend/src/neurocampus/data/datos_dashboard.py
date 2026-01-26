@@ -317,25 +317,44 @@ def _detect_sentiment_col(df: pd.DataFrame) -> str:
 
 
 def build_sentimientos_resumen(df: pd.DataFrame, dataset_id: str) -> DatasetSentimientosResponse:
+    """Construye la distribución de sentimientos para la pestaña *Datos*.
+
+    Regla clave (anti-sesgo)
+    ------------------------
+    Las filas sin texto (NO_TEXT) **no** deben inflar el conteo de `neu`.
+
+    Por ello se filtran usando:
+    - `has_text == 1` cuando la columna existe (contrato del pipeline), y como
+      fallback defensivo:
+    - `sentiment_label_teacher != "no_text"` si esa columna está presente.
+
+    Además, si existe `accepted_by_teacher`, se aplica como gating (solo filas
+    aceptadas por el teacher contribuyen a la distribución).
+    """
+
     df = df.copy()
 
-    # 1) Filtrado robusto de filas válidas (alineado con pipeline BETO)
-    # - has_text: existe en tu parquet etiquetado
-    # - accepted_by_teacher: existe en tu parquet etiquetado (gating del teacher)
     mask = pd.Series(True, index=df.index)
 
-    # Mantén el gating de teacher si existe
-    if "accepted_by_teacher" in df.columns:
-        mask = mask & df["accepted_by_teacher"].fillna(0).astype(int).astype(bool)
+    if "has_text" in df.columns:
+        mask &= df["has_text"].fillna(0).astype(int).astype(bool)
+    elif "sentiment_label_teacher" in df.columns:
+        mask &= (
+            df["sentiment_label_teacher"]
+            .astype("string")
+            .fillna("")
+            .str.strip()
+            .str.lower()
+            .ne("no_text")
+        )
 
-    # NO filtramos por has_text:
-    # - si keep_empty_text=true, esas filas ya vienen como sentiment=neu y accepted=1 (según tu job meta)
+    if "accepted_by_teacher" in df.columns:
+        mask &= df["accepted_by_teacher"].fillna(0).astype(int).astype(bool)
+
     df = df[mask].copy()
 
-    # 2) Resolver columna de sentimiento (hard label). Preferimos teacher.
     sentiment_col = _detect_sentiment_col(df)
 
-    # 3) Normalización defensiva de labels (neg/neu/pos)
     y = (
         df[sentiment_col]
         .astype("string")
@@ -354,13 +373,10 @@ def build_sentimientos_resumen(df: pd.DataFrame, dataset_id: str) -> DatasetSent
             por_asignatura=[],
         )
 
-
-    # global
     global_counts = _mk_breakdown(
         df[sentiment_col].astype("string").str.strip().str.lower().value_counts()
     )
 
-    # por docente
     por_docente: List[SentimentByGroup] = []
     docente_col = _detect_docente_col(df)
     if docente_col:
@@ -373,7 +389,6 @@ def build_sentimientos_resumen(df: pd.DataFrame, dataset_id: str) -> DatasetSent
                 )
             )
 
-    # por asignatura
     por_asignatura: List[SentimentByGroup] = []
     asignatura_col = _detect_asignatura_col(df)
     if asignatura_col:
@@ -393,6 +408,7 @@ def build_sentimientos_resumen(df: pd.DataFrame, dataset_id: str) -> DatasetSent
         por_docente=por_docente,
         por_asignatura=por_asignatura,
     )
+
 # ---------------------------------------------------------------------------
 # Preview tabular para UI (/datos/preview)
 # ---------------------------------------------------------------------------

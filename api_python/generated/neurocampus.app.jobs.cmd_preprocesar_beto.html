@@ -53,7 +53,10 @@
 <li class="toctree-l2"><a class="reference internal" href="../modelos.html">Modelos BM / RBM / DBM</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../jobs.html">Jobs y orquestación</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="neurocampus.app.jobs.cmd_train_rbm_manual.html">neurocampus.app.jobs.cmd_train_rbm_manual</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">neurocampus.app.jobs.cmd_preprocesar_beto</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">neurocampus.app.jobs.cmd_preprocesar_beto</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#cambios-clave-datatab-datos">Cambios clave (DataTab / Datos)</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="neurocampus.app.jobs.cmd_train_dbm_manual.html">neurocampus.app.jobs.cmd_train_dbm_manual</a></li>
 </ul>
 </li>
@@ -90,14 +93,41 @@
              
   <section id="module-neurocampus.app.jobs.cmd_preprocesar_beto">
 <span id="neurocampus-app-jobs-cmd-preprocesar-beto"></span><h1>neurocampus.app.jobs.cmd_preprocesar_beto<a class="headerlink" href="#module-neurocampus.app.jobs.cmd_preprocesar_beto" title="Link to this heading"></a></h1>
+<p>neurocampus.app.jobs.cmd_preprocesar_beto</p>
+<p>Job CLI para:
+- ejecutar BETO (sentiment) sobre texto lematizado
+- opcionalmente generar embeddings TF-IDF + LSA (64 dims) -&gt; feat_t_1..feat_t_64
+- persistir dataset etiquetado y meta.json (auditoría)</p>
+<section id="cambios-clave-datatab-datos">
+<h2>Cambios clave (DataTab / Datos)<a class="headerlink" href="#cambios-clave-datatab-datos" title="Link to this heading"></a></h2>
+<ol class="arabic">
+<li><p>Añade <cite>–empty-text-policy</cite> para controlar comentarios vacíos:</p>
+<ul class="simple">
+<li><p>neutral (legacy): texto vacío se etiqueta como neutral (p_neu=1, accepted=1)</p></li>
+<li><p>zero (recomendado): texto vacío se etiqueta como NO_TEXT
+(p_neg=p_neu=p_pos=0, accepted=0, label=no_text)</p></li>
+</ul>
+</li>
+<li><p>Mantiene compatibilidad con <cite>–keep-empty-text</cite>:
+- si <cite>–empty-text-policy</cite> no se envía:</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>neutral si keep_empty_text=True</p></li>
+<li><p>zero si keep_empty_text=False</p></li>
+</ul>
+</div></blockquote>
+</li>
+<li><p>Si se generan embeddings TF-IDF+LSA, siempre se fuerza vector 0 en filas sin texto.</p></li>
+</ol>
 <p class="rubric">Functions</p>
 <table class="autosummary longtable docutils align-default">
 <tbody>
 <tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">main</span></code>()</p></td>
-<td><p></p></td>
+<td><p>CLI entrypoint.</p></td>
 </tr>
 </tbody>
 </table>
+</section>
 </section>
 
 

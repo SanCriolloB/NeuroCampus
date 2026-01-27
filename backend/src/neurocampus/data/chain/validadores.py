@@ -12,6 +12,7 @@ from ..adapters.almacen_adapter import AlmacenAdapter
 from ..adapters.formato_adapter import read_file            # (fileobj, filename) -> DataFrame/like
 from ..adapters.dataframe_adapter import as_df              # (obj) -> DF normalizado al engine
 from ..strategies.unificacion import UnificacionStrategy as _UnificacionStrategy
+from ..utils.headers import normalizar_encabezados as _normalizar_encabezados
 
 import pandas as pd                                         # escritura parquet, manipulación tabular
 
@@ -61,24 +62,14 @@ def _slug(s: str) -> str:
     s = s.replace(" ", "_")
     return s
 
-def normalizar_encabezados(cols: List[str]) -> List[str]:
+def normalizar_encabezados(cols):
     """
-    Normaliza encabezados:
-      - lower + sin acentos
-      - elimina puntuación salvo ':' (para 'Sugerencias:')
-      - espacios→'_' y colapsa '_'
-      - aplica mapa de sinónimos → nombre canónico
+    Wrapper retrocompatible.
+
+    Delegamos a `neurocampus.data.utils.headers.normalizar_encabezados`
+    para evitar dependencias cruzadas con estrategias/jobs.
     """
-    norm: List[str] = []
-    for c in cols:
-        s = _slug(c)
-        # reintentar variantes con/ sin '_' final
-        s2 = s.rstrip("_")
-        canon = _CANON_MAP.get(s, _CANON_MAP.get(s2, s))
-        # Regla especial: si termina en '_' quítalo
-        canon = canon.rstrip("_")
-        norm.append(canon)
-    return norm
+    return _normalizar_encabezados(cols)
 
 # ---------------------------------------------------------------------------
 

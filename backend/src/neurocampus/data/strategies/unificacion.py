@@ -39,36 +39,34 @@ class UnificacionStrategy:
         """
         Inicializa el store para leer/escribir artefactos del pipeline.
 
-        Problema real que resuelve:
+        Problema que resuelve:
         - En jobs/background tasks el CWD puede NO ser la raíz del repo.
-        - Si alguien pasa `base_uri="localfs://."`, AlmacenAdapter apunta al CWD,
-        y listados como `data/labeled/` quedan vacíos → Unify falla con
-        "No hay datasets etiquetados...".
+        - Si se pasa `base_uri="localfs://."`, el store apunta al CWD (p.ej. /backend),
+        y `data/labeled/` queda “vacío” aunque exista en la raíz del repo.
 
         Solución:
-        - Detectar la raíz del repo de forma robusta (por presencia de carpetas
-        `data/` y `datasets/`).
-        - Si base_uri es None o apunta a "." → usar raíz del repo.
-        - Si base_uri fue provisto pero NO contiene `data/` ni `datasets/`,
-        se hace fallback automático a la raíz del repo.
+        - Detectar la raíz del repo de forma robusta.
+        - Si `base_uri` es None o es `localfs://.` → forzar raíz del repo.
+        - Si `base_uri` apunta a un sitio que no tiene `data/` ni `datasets/`,
+        aplicar fallback automático a la raíz del repo.
         """
         project_root = self._find_project_root()
 
-        def _is_dot_uri(u: str) -> bool:
+        def _is_dot_uri(u: str | None) -> bool:
             u = (u or "").strip()
             return u in ("localfs://.", "localfs://./", "localfs://")
 
-        # Normalización de base_uri
         if base_uri is None or _is_dot_uri(base_uri):
             base_uri = f"localfs://{project_root.as_posix()}"
 
         store = AlmacenAdapter(base_uri)
 
-        # Fallback: si el base_dir no ve carpetas esperadas, cambiar a raíz repo.
+        # Fallback defensivo: si no vemos estructura del proyecto, usar raíz repo.
         if (not store.exists("data")) and (not store.exists("datasets")):
             store = AlmacenAdapter(f"localfs://{project_root.as_posix()}")
 
         self.store = store
+
 
     @staticmethod
     def _find_project_root() -> Path:
@@ -77,16 +75,14 @@ class UnificacionStrategy:
 
         Criterio:
         - Un directorio que contenga `data/` y `datasets/`.
-        - Si no se encuentra, hace fallback al esquema de parents[5].
+        - Si no se encuentra, fallback al layout estándar (parents[5]).
         """
         here = Path(__file__).resolve()
         for p in here.parents:
             if (p / "data").exists() and (p / "datasets").exists():
                 return p
-
-        # Fallback compatible con el layout estándar:
-        # .../backend/src/neurocampus/data/strategies/unificacion.py -> parents[5] ≈ raíz repo
         return here.parents[5]
+
     
     # ----------------------------
     # Listing helpers
@@ -95,10 +91,7 @@ class UnificacionStrategy:
     def _ls_variants(self, prefix: str) -> list[str]:
         """
         Lista un prefix intentando variantes con y sin trailing slash.
-
-        Esto evita diferencias entre llamadas tipo:
-        - "data/labeled"
-        - "data/labeled/"
+        Evita inconsistencias entre adapters.
         """
         pref = prefix.strip()
         candidates = {pref, pref.rstrip("/"), pref.rstrip("\\")}
@@ -110,9 +103,10 @@ class UnificacionStrategy:
                 out.extend(self.store.ls(c))
             except Exception:
                 continue
+
         # dedupe manteniendo orden
         seen = set()
-        uniq = []
+        uniq: list[str] = []
         for x in out:
             if x not in seen:
                 seen.add(x)

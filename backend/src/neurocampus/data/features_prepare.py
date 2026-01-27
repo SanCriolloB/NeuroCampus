@@ -1,325 +1,191 @@
 # backend/src/neurocampus/data/features_prepare.py
-"""neurocampus.data.features_prepare
+"""
+Feature-pack builder para NeuroCampus (pestaña Datos).
 
-Este módulo construye el **feature-pack** persistente para el entrenamiento de modelos.
+Genera artefactos persistentes:
+- artifacts/features/<dataset_id>/train_matrix.parquet
+- teacher_index.json, materia_index.json, bins.json, meta.json
 
-Motivación
-----------
-En NeuroCampus, el dataset etiquetado (BETO/teacher) debe permanecer lo más "crudo"
-posible: probabilidades, flags de aceptación y (opcional) embeddings de texto.
-Los artefactos derivados como one-hot/hashing, bins e índices deben vivir en un
-directorio de *features* por dataset_id para que:
-
-- sean reproducibles;
-- no "contaminen" los datos etiquetados;
-- puedan versionarse/rehacerse sin reprocesar BETO;
-- el entrenamiento consuma una matriz lista para modelos.
-
-Artefactos esperados
---------------------
-Dentro de ``artifacts/features/<dataset_id>/``:
-
-- ``train_matrix.parquet``
-- ``teacher_index.json``
-- ``materia_index.json``
-- ``bins.json``
-
-Este módulo está pensado para ser invocado desde un job (/jobs/data/features/prepare)
-o desde un CLI propio en el futuro.
+Diseño:
+- El "labeled" (BETO + embeddings) se mantiene sin one-hot/bins.
+- El feature-pack agrega representación (bins/índices/one-hot) fuera del labeled.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
-import hashlib
-import json
-import re
-import unicodedata
+from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 
 
-BASE_DIR = Path(__file__).resolve().parents[4]  # <repo_root>
-_WS_RE = re.compile(r"\s+")
-
-
-def _ensure_dir(p: Path) -> Path:
-    """Crea el directorio (parents=True) si no existe y devuelve el mismo Path."""
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def normalize_key(value: Any) -> str:
-    """Normaliza una llave textual para crear índices estables.
-
-    - Convierte a string.
-    - Quita acentos.
-    - Baja a minúsculas.
-    - Colapsa espacios.
-    - Devuelve "" si es nulo.
-    """
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return ""
-    s = str(value).strip()
-    if not s:
-        return ""
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = s.lower()
-    s = _WS_RE.sub(" ", s).strip()
-    return s
-
-
-def _build_index(values: Sequence[str]) -> Dict[str, int]:
-    """Construye un mapping valor->id con orden determinista."""
-    uniq = sorted({v for v in values if v != ""})
-    return {v: i for i, v in enumerate(uniq)}
-
-
-def _hash_bucket(s: str, dim: int) -> int:
-    """Hash estable (md5) para asignar un string a un bucket [0, dim)."""
-    h = hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
-    return int(h, 16) % dim
-
-
-def _encode_onehot_or_hash(
-    series: pd.Series,
-    *,
-    prefix: str,
-    max_onehot: int = 200,
-    hash_dim: int = 128,
-    include_na: bool = True,
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Codifica una serie categórica.
-
-    Estrategia:
-    - Si la cardinalidad <= max_onehot: one-hot con ``pd.get_dummies``.
-    - Si no: feature hashing a ``hash_dim`` columnas.
-
-    Devuelve (df_features, meta)
-    """
-    s = series.fillna("").astype(str)
-    uniq = s.nunique(dropna=False)
-
-    if uniq <= max_onehot:
-        d = pd.get_dummies(
-            s if include_na else s.replace({"": np.nan}),
-            prefix=prefix,
-            dummy_na=include_na,
-        )
-        meta = {"kind": "onehot", "unique": int(uniq), "n_features": int(d.shape[1])}
-        return d.astype(np.float32), meta
-
-    # Hashing
-    X = np.zeros((len(s), hash_dim), dtype=np.float32)
-    for i, v in enumerate(s.tolist()):
-        if not v and not include_na:
-            continue
-        b = _hash_bucket(v or "<NA>", hash_dim)
-        X[i, b] = 1.0
-
-    cols = [f"{prefix}_h_{i}" for i in range(hash_dim)]
-    meta = {"kind": "hash", "unique": int(uniq), "hash_dim": int(hash_dim), "n_features": int(hash_dim)}
-    return pd.DataFrame(X, columns=cols), meta
-
-
-def _find_calif_cols(df: pd.DataFrame, n: int = 10) -> List[str]:
-    """Identifica columnas de calificación (calif_*, pregunta_*, p*)."""
-    for base in ("calif_", "pregunta_"):
-        cols = [f"{base}{i}" for i in range(1, n + 1)]
-        if all(c in df.columns for c in cols):
-            return cols
-
-    cols = [f"p{i}" for i in range(1, n + 1)]
-    if all(c in df.columns for c in cols):
-        return cols
-
-    pat = re.compile(r"^(calif|pregunta)_?(\d+)$", re.IGNORECASE)
-    candidates: List[Tuple[int, str]] = []
-    for c in df.columns:
-        m = pat.match(str(c))
-        if m:
-            num = int(m.group(2))
-            if 1 <= num <= n:
-                candidates.append((num, c))
-    if candidates:
-        candidates.sort(key=lambda t: t[0])
-        return [c for _, c in candidates[:n]]
-
-    return []
-
-
-def _scale_to_50(x: pd.Series) -> pd.Series:
-    """Asegura escala 0..50 (si max<=5.5 asume 0..5 y multiplica por 10)."""
-    s = pd.to_numeric(x, errors="coerce")
-    mx = float(np.nanmax(s.to_numpy())) if len(s) else float("nan")
-    if np.isfinite(mx) and mx <= 5.5:
-        return s * 10.0
-    return s
-
-
-def _compute_bins(
-    df: pd.DataFrame,
-    cols: List[str],
-    *,
-    n_bins: int = 5,
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Crea bins por columna (quantiles) y devuelve (df_bins, bins_json)."""
-    bins_json: Dict[str, Any] = {"n_bins": n_bins, "cols": {}}
-    out = pd.DataFrame(index=df.index)
-
-    for c in cols:
-        s = pd.to_numeric(df[c], errors="coerce")
-        valid = s.dropna()
-        if valid.empty:
-            edges = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0][: n_bins + 1]
-        else:
-            try:
-                qs = np.linspace(0, 1, n_bins + 1)
-                edges = np.unique(np.quantile(valid.to_numpy(), qs)).tolist()
-                if len(edges) < n_bins + 1:
-                    edges = np.linspace(float(valid.min()), float(valid.max()), n_bins + 1).tolist()
-            except Exception:
-                edges = np.linspace(float(valid.min()), float(valid.max()), n_bins + 1).tolist()
-
-        edges = [float(e) for e in edges]
-        if len(edges) < 2 or not all(edges[i] < edges[i + 1] for i in range(len(edges) - 1)):
-            edges = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0][: n_bins + 1]
-
-        out[f"{c}_bin"] = pd.cut(s, bins=edges, labels=False, include_lowest=True).astype("Int64")
-        bins_json["cols"][c] = {"edges": edges}
-
-    return out, bins_json
-
-
 @dataclass(frozen=True)
-class FeaturePackResult:
-    """Resultado de la preparación de feature-pack (para meta de jobs/UI)."""
+class FeaturePackConfig:
+    """Configuración estable para bins/representación."""
+    score_bins: Tuple[int, ...] = (0, 10, 20, 30, 40, 50)
+    score_q_labels: Tuple[int, ...] = (0, 1, 2, 3, 4)
 
-    dataset_id: str
-    out_dir: Path
-    train_matrix_path: Path
-    n_rows: int
-    n_features: int
-    teacher_encoding: Dict[str, Any]
-    materia_encoding: Dict[str, Any]
-    bins: Dict[str, Any]
+
+def _ensure_dir(p: Path) -> None:
+    """Crea el directorio si no existe."""
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def _pick_first(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """Devuelve la primera columna existente dentro de candidates."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _detect_teacher_col(df: pd.DataFrame) -> Optional[str]:
+    """Detecta columna de docente/profesor."""
+    return _pick_first(df, ["cedula_profesor", "docente", "profesor", "teacher", "id_docente"])
+
+
+def _detect_materia_col(df: pd.DataFrame) -> Optional[str]:
+    """Detecta columna de materia/asignatura."""
+    return _pick_first(df, ["codigo_materia", "materia", "asignatura", "subject", "id_materia"])
+
+
+def _detect_score_col(df: pd.DataFrame) -> Optional[str]:
+    """Detecta columna score/rating 0..50."""
+    return _pick_first(df, ["rating", "score_0_50", "calificacion", "score"])
+
+
+def _build_index(values: pd.Series) -> Dict[str, int]:
+    """Mapping estable string->int (ordenado)."""
+    uniq = sorted({str(v).strip() for v in values.fillna("").astype(str).tolist() if str(v).strip()})
+    return {k: i for i, k in enumerate(uniq)}
+
+
+def _apply_score_bins(df: pd.DataFrame, score_col: str, cfg: FeaturePackConfig) -> pd.DataFrame:
+    """Crea score_0_50, score_q y one-hot score_q_*."""
+    out = df.copy()
+    score = pd.to_numeric(out[score_col], errors="coerce").fillna(0.0).clip(0.0, 50.0)
+    out["score_0_50"] = score
+
+    bins = list(cfg.score_bins)
+    labels = list(cfg.score_q_labels)
+
+    out["score_q"] = pd.cut(out["score_0_50"], bins=bins, include_lowest=True, right=True, labels=labels)
+    out["score_q"] = out["score_q"].astype("Int64").fillna(0)
+
+    for q in labels:
+        out[f"score_q_{q}"] = (out["score_q"] == q).astype(int)
+
+    return out
 
 
 def prepare_feature_pack(
     *,
+    base_dir: Path,
     dataset_id: str,
-    labeled_path: Path,
-    out_dir: Optional[Path] = None,
-    max_onehot: int = 200,
-    teacher_hash_dim: int = 128,
-    materia_hash_dim: int = 128,
-    include_bins: bool = True,
-    n_bins: int = 5,
-    use_accepted_only: bool = False,
-) -> FeaturePackResult:
-    """Construye y persiste la matriz de entrenamiento (feature-pack).
-
-    Parameters
-    ----------
-    dataset_id:
-        Identificador lógico del dataset (p.ej., "2025-1" o "historico").
-
-    labeled_path:
-        Ruta al parquet etiquetado (BETO). Ej:
-        - data/labeled/<periodo>_beto.parquet
-        - historico/unificado_labeled.parquet
-
-    use_accepted_only:
-        Si True, filtra a filas con ``accepted_by_teacher==1`` y ``has_text==1``.
+    input_uri: str,
+    output_dir: str,
+    cfg: FeaturePackConfig = FeaturePackConfig(),
+) -> Dict[str, str]:
     """
-    if out_dir is None:
-        out_dir = BASE_DIR / "artifacts" / "features" / str(dataset_id)
-    out_dir = _ensure_dir(out_dir)
+    Genera feature-pack desde un parquet/csv etiquetado.
 
-    if not labeled_path.exists():
-        raise FileNotFoundError(f"No existe labeled_path: {labeled_path}")
+    Args:
+        base_dir: raíz del proyecto.
+        dataset_id: periodo o id lógico.
+        input_uri: ruta relativa (ej. 'data/labeled/2024-2_beto.parquet' o 'historico/unificado_labeled.parquet')
+        output_dir: ruta relativa/absoluta (ej. 'artifacts/features/2024-2')
+        cfg: bins estables.
 
-    df = pd.read_parquet(labeled_path)
-    if df.empty:
-        raise ValueError(f"El dataset etiquetado está vacío: {labeled_path}")
+    Returns:
+        dict con rutas relativas a artefactos generados.
+    """
+    out_dir = Path(output_dir)
+    if not out_dir.is_absolute():
+        out_dir = (base_dir / out_dir).resolve()
+    _ensure_dir(out_dir)
 
-    calif_cols = _find_calif_cols(df, n=10)
-    if not calif_cols:
-        raise ValueError(
-            "No se encontraron columnas de calificación (calif_1..10 o pregunta_1..10)."
-        )
+    inp = (base_dir / input_uri).resolve()
+    if not inp.exists():
+        raise FileNotFoundError(f"Input no existe: {inp}")
 
-    for c in calif_cols:
-        df[c] = _scale_to_50(df[c])
+    if inp.suffix.lower() == ".parquet":
+        df = pd.read_parquet(inp)
+    elif inp.suffix.lower() == ".csv":
+        df = pd.read_csv(inp)
+    else:
+        raise ValueError(f"Formato no soportado: {inp.suffix}")
 
-    df["score_q"] = df[calif_cols].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+    teacher_col = _detect_teacher_col(df)
+    materia_col = _detect_materia_col(df)
+    score_col = _detect_score_col(df)
 
-    if "has_text" not in df.columns:
-        df["has_text"] = 0
-    if "accepted_by_teacher" not in df.columns:
-        df["accepted_by_teacher"] = 0
+    if teacher_col is None:
+        raise ValueError("No se detectó columna de docente (ej: cedula_profesor/docente/profesor).")
+    if materia_col is None:
+        raise ValueError("No se detectó columna de materia (ej: codigo_materia/materia/asignatura).")
+    if score_col is None:
+        raise ValueError("No se detectó columna score/rating (ej: rating/score_0_50).")
 
-    df["has_text"] = pd.to_numeric(df["has_text"], errors="coerce").fillna(0).astype(int)
-    df["accepted_by_teacher"] = pd.to_numeric(df["accepted_by_teacher"], errors="coerce").fillna(0).astype(int)
+    teacher_index = _build_index(df[teacher_col])
+    materia_index = _build_index(df[materia_col])
 
-    if use_accepted_only:
-        df = df[(df["has_text"] == 1) & (df["accepted_by_teacher"] == 1)].copy()
+    df["teacher_id"] = df[teacher_col].fillna("").astype(str).map(lambda x: teacher_index.get(str(x).strip(), -1))
+    df["materia_id"] = df[materia_col].fillna("").astype(str).map(lambda x: materia_index.get(str(x).strip(), -1))
 
-    teacher_col = next((c for c in ("docente", "profesor", "teacher") if c in df.columns), None)
-    materia_col = next((c for c in ("materia", "asignatura", "subject", "codigo_materia") if c in df.columns), None)
+    df = _apply_score_bins(df, score_col=score_col, cfg=cfg)
 
-    df["teacher_key"] = df[teacher_col].map(normalize_key) if teacher_col else ""
-    df["materia_key"] = df[materia_col].map(normalize_key) if materia_col else ""
+    text_feat_cols = [c for c in df.columns if c.startswith("feat_t_")]
+    sentiment_cols = [c for c in ["p_neg", "p_neu", "p_pos", "sentiment_conf"] if c in df.columns]
+    one_hot_cols = [c for c in df.columns if c.startswith("score_q_")]
 
-    teacher_index = _build_index(df["teacher_key"].tolist())
-    materia_index = _build_index(df["materia_key"].tolist())
-    df["teacher_id"] = df["teacher_key"].map(lambda v: teacher_index.get(v, -1)).astype(int)
-    df["materia_id"] = df["materia_key"].map(lambda v: materia_index.get(v, -1)).astype(int)
+    base_cols = [c for c in ["periodo", "teacher_id", "materia_id", "score_0_50", "score_q"] if c in df.columns]
+    extra_cols = [c for c in ["accepted_by_teacher", "sentiment_label_teacher"] if c in df.columns]
 
-    numeric_parts: List[pd.DataFrame] = []
+    keep_cols = base_cols + extra_cols + sentiment_cols + text_feat_cols + one_hot_cols
+    train = df[keep_cols].copy()
 
-    base_numeric = df[calif_cols + ["score_q"]].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-    numeric_parts.append(base_numeric.astype(np.float32))
-
-    p_cols = [c for c in ("p_neg", "p_neu", "p_pos") if c in df.columns]
-    if p_cols:
-        numeric_parts.append(df[p_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).astype(np.float32))
-
-    embed_cols = sorted(
-        [c for c in df.columns if isinstance(c, str) and c.startswith("feat_t_")],
-        key=lambda c: int(re.findall(r"\d+", c)[0]) if re.findall(r"\d+", c) else 10**9,
-    )
-    if embed_cols:
-        numeric_parts.append(df[embed_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).astype(np.float32))
-
-    teacher_feats, teacher_meta = _encode_onehot_or_hash(
-        df["teacher_key"], prefix="teacher", max_onehot=max_onehot, hash_dim=teacher_hash_dim, include_na=True
-    )
-    materia_feats, materia_meta = _encode_onehot_or_hash(
-        df["materia_key"], prefix="materia", max_onehot=max_onehot, hash_dim=materia_hash_dim, include_na=True
-    )
-
-    bins_json: Dict[str, Any] = {"enabled": False}
-    bins_df = pd.DataFrame(index=df.index)
-    if include_bins:
-        bins_df, bins_json_cols = _compute_bins(df, calif_cols, n_bins=n_bins)
-        bins_json = {"enabled": True, **bins_json_cols}
-
-    id_cols = [c for c in ("id", "periodo", "codigo_materia", "grupo", "cedula_profesor") if c in df.columns]
-    id_part = df[id_cols].copy() if id_cols else pd.DataFrame(index=df.index)
-    id_part["teacher_id"] = df["teacher_id"].astype(int)
-    id_part["materia_id"] = df["materia_id"].astype(int)
-    id_part["has_text"] = df["has_text"].astype(int)
-    id_part["accepted_by_teacher"] = df["accepted_by_teacher"].astype(int)
-
-    X = pd.concat([id_part] + numeric_parts + [teacher_feats, materia_feats, bins_df], axis=1, copy=False)
-
-    train_matrix_path = out_dir / "train_matrix.parquet"
-    X.to_parquet(train_matrix_path, index=False)
+    train_path = out_dir / "train_matrix.parquet"
+    train.to_parquet(train_path, index=False)
 
     (out_dir / "teacher_index.json").write_text(json.dumps(teacher_index, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "materia_index.json").write_text(json.dumps(materia_index, ensure_ascii=False, indent=2), encoding="utf-8")
-    (out_dir / "bins.json").write_text(json.dumps(bins_json, ensure_ascii=False, indent=2), encod
+    (out_dir / "bins.json").write_text(
+        json.dumps({"score_bins": list(cfg.score_bins), "score_q_labels": list(cfg.score_q_labels)}, indent=2),
+        encoding="utf-8",
+    )
+    (out_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "dataset_id": dataset_id,
+                "input_uri": input_uri,
+                "output_dir": str(out_dir),
+                "teacher_col": teacher_col,
+                "materia_col": materia_col,
+                "score_col": score_col,
+                "n_rows": int(len(train)),
+                "columns": train.columns.tolist(),
+                "text_feat_cols": text_feat_cols,
+                "sentiment_cols": sentiment_cols,
+                "one_hot_cols": one_hot_cols,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    def _rel(p: Path) -> str:
+        try:
+            return str(p.resolve().relative_to(base_dir.resolve())).replace("\\", "/")
+        except Exception:
+            return str(p)
+
+    return {
+        "train_matrix": _rel(train_path),
+        "teacher_index": _rel(out_dir / "teacher_index.json"),
+        "materia_index": _rel(out_dir / "materia_index.json"),
+        "bins": _rel(out_dir / "bins.json"),
+        "meta": _rel(out_dir / "meta.json"),
+    }

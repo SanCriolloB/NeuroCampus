@@ -7,17 +7,19 @@ Este módulo pertenece al dominio **Datos** y su responsabilidad es crear
 artefactos históricos reproducibles en disco, para consumo posterior por la
 pestaña **Modelos**.
 
-Cambios clave (DataTab)
------------------------
-- Soporta el layout actualizado: `datasets/<periodo>.parquet|csv|xlsx` (archivo plano)
-  en lugar del layout anterior por carpeta `datasets/<periodo>/data.*`.
-- Mantiene compatibilidad retroactiva con el layout por carpeta.
-- Puede unificar tanto datasets "raw/processed" como datasets ya etiquetados
-  (BETO) para producir `historico/unificado_labeled.parquet`.
+Soporta layouts:
+- Nuevo (archivo plano):
+  - datasets/<dataset_id>.parquet|csv|xlsx
+  - data/labeled/<dataset_id>_beto.parquet
+- Legacy (por carpeta):
+  - datasets/<dataset_id>/data.parquet|csv|xlsx
+
+Produce:
+- historico/unificado.parquet
+- historico/unificado_labeled.parquet
 """
 
-from typing import List, Optional, Dict, Any, Tuple
-import re
+from typing import List, Optional, Dict, Any, Tuple, Set
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +30,6 @@ from ..adapters.dataframe_adapter import as_df
 from ..chain.validadores import normalizar_encabezados
 
 DEDUP_KEYS = ["periodo", "codigo_materia", "grupo", "cedula_profesor"]
-PERIODO_RE = re.compile(r"^\d{4}-(1|2|3)$")
 
 
 class UnificacionStrategy:
@@ -37,65 +38,101 @@ class UnificacionStrategy:
     def __init__(self, base_uri: str = "localfs://."):
         self.store = AlmacenAdapter(base_uri)
 
-    def listar_periodos_labeled(self, labeled_dir: str = "data/labeled") -> list[str]:
+    # ----------------------------
+    # Listing helpers
+    # ----------------------------
+
+    def listar_datasets_raw(self, prefix: str = "datasets/") -> list[str]:
         """
-        Lista datasets etiquetados (layout nuevo):
-        - data/labeled/<dataset_id>_beto.parquet
-
-        Retorna dataset_id (por ejemplo: 2025-1, 2024-2, evaluaciones_2025, etc.)
+        Lista datasets disponibles en datasets/ soportando:
+        - datasets/<id>.parquet|csv|xlsx
+        - datasets/<id>/data.parquet|csv|xlsx (legacy)
         """
-        import re
-        from pathlib import Path
+        items = self.store.ls(prefix)
+        out: Set[str] = set()
 
-        p = Path(labeled_dir)
-        if not p.exists():
-            return []
+        for it in items:
+            name = Path(it).name
+            p = Path(name)
 
-        out: list[str] = []
-        for f in p.glob("*_beto.parquet"):
-            name = f.name
-            # si es periodo tipo 2025-1_beto.parquet
-            m = re.match(r"^(?P<id>.+)_beto\.parquet$", name)
-            if m:
-                out.append(m.group("id"))
+            # Caso archivo plano
+            if p.suffix.lower() in {".parquet", ".csv", ".xlsx"}:
+                out.add(p.stem)
+                continue
 
-        return sorted(set(out))
+            # Caso carpeta legacy
+            folder = f"{prefix.rstrip('/')}/{p.name}"
+            for fname in ("data.parquet", "data.csv", "data.xlsx"):
+                if self.store.exists(f"{folder}/{fname}"):
+                    out.add(p.name)
+                    break
 
+        return sorted(out)
 
-    def _resolve_dataset_uri(self, periodo: str) -> str:
-        """Resuelve la URI del dataset crudo (datasets/) para un periodo."""
+    def listar_datasets_labeled(self, prefix: str = "data/labeled/") -> list[str]:
+        """
+        Lista datasets etiquetados disponibles en data/labeled/:
+        - <id>_beto.parquet
+        - <id>_teacher.parquet (compat)
+        """
+        items = self.store.ls(prefix)
+        out: Set[str] = set()
+
+        for it in items:
+            name = Path(it).name
+            if name.endswith("_beto.parquet"):
+                out.add(name[: -len("_beto.parquet")])
+            elif name.endswith("_teacher.parquet"):
+                out.add(name[: -len("_teacher.parquet")])
+            elif name.endswith("_beto.csv"):
+                out.add(name[: -len("_beto.csv")])
+            elif name.endswith("_teacher.csv"):
+                out.add(name[: -len("_teacher.csv")])
+
+        return sorted(out)
+
+    # ----------------------------
+    # Resolve URIs
+    # ----------------------------
+
+    def _resolve_dataset_uri(self, dataset_id: str) -> str:
+        """Resuelve la URI del dataset crudo (datasets/) para un dataset_id."""
         flat = [
-            f"datasets/{periodo}.parquet",
-            f"datasets/{periodo}.csv",
-            f"datasets/{periodo}.xlsx",
+            f"datasets/{dataset_id}.parquet",
+            f"datasets/{dataset_id}.csv",
+            f"datasets/{dataset_id}.xlsx",
         ]
         for uri in flat:
             if self.store.exists(uri):
                 return uri
 
-        folder = f"datasets/{periodo}"
+        folder = f"datasets/{dataset_id}"
         legacy = (f"{folder}/data.parquet", f"{folder}/data.csv", f"{folder}/data.xlsx")
         for uri in legacy:
             if self.store.exists(uri):
                 return uri
 
-        raise FileNotFoundError(f"No se encontró dataset para periodo {periodo} en datasets/")
+        raise FileNotFoundError(f"No se encontró dataset {dataset_id} en datasets/")
 
-    def _resolve_labeled_uri(self, periodo: str) -> str:
-        """Resuelve la URI del dataset etiquetado (data/labeled) para un periodo."""
+    def _resolve_labeled_uri(self, dataset_id: str) -> str:
+        """Resuelve la URI del dataset etiquetado (data/labeled) para un dataset_id."""
         candidates = [
-            f"data/labeled/{periodo}_beto.parquet",
-            f"data/labeled/{periodo}_teacher.parquet",
-            f"data/labeled/{periodo}_beto.csv",
-            f"data/labeled/{periodo}_teacher.csv",
+            f"data/labeled/{dataset_id}_beto.parquet",
+            f"data/labeled/{dataset_id}_teacher.parquet",
+            f"data/labeled/{dataset_id}_beto.csv",
+            f"data/labeled/{dataset_id}_teacher.csv",
         ]
         for uri in candidates:
             if self.store.exists(uri):
                 return uri
-        raise FileNotFoundError(f"No se encontró labeled para periodo {periodo} en data/labeled/")
+        raise FileNotFoundError(f"No se encontró labeled para {dataset_id} en data/labeled/")
+
+    # ----------------------------
+    # Read/normalize
+    # ----------------------------
 
     def _read_any(self, uri: str) -> pd.DataFrame:
-        """Lee cualquier archivo (csv/xlsx/parquet) usando adapters y lo convierte a pandas."""
+        """Lee csv/xlsx/parquet usando adapters y lo convierte a pandas."""
         with self.store.open(uri, "rb") as fh:
             df_like = read_file(fh, uri)
         pdf = as_df(df_like)
@@ -109,21 +146,37 @@ class UnificacionStrategy:
         pdf.columns = normalizar_encabezados(list(pdf.columns))
         return pdf
 
-    def _leer_periodo(self, periodo: str) -> pd.DataFrame:
-        """Lee dataset crudo de un periodo y asegura columna periodo."""
-        uri = self._resolve_dataset_uri(periodo)
-        pdf = self._read_any(uri)
+    def _ensure_periodo(self, pdf: pd.DataFrame, dataset_id: str) -> pd.DataFrame:
+        """
+        Asegura que exista y sea válida la columna periodo por fila.
+        Corrige None/NaN/"None"/vacíos.
+        """
         if "periodo" not in pdf.columns:
-            pdf["periodo"] = periodo
+            pdf["periodo"] = dataset_id
+            return pdf
+
+        s = pdf["periodo"].astype("string")
+        s = s.fillna(dataset_id)
+        s = s.replace({"None": dataset_id, "nan": dataset_id, "NaN": dataset_id, "<NA>": dataset_id})
+        pdf["periodo"] = s
+        pdf.loc[pdf["periodo"].astype(str).str.strip().eq(""), "periodo"] = dataset_id
         return pdf
 
-    def _leer_labeled_periodo(self, periodo: str) -> pd.DataFrame:
-        """Lee dataset etiquetado de un periodo y asegura columna periodo."""
-        uri = self._resolve_labeled_uri(periodo)
+    def _leer_raw(self, dataset_id: str) -> pd.DataFrame:
+        """Lee dataset crudo/processed de un dataset_id y asegura periodo."""
+        uri = self._resolve_dataset_uri(dataset_id)
         pdf = self._read_any(uri)
-        if "periodo" not in pdf.columns:
-            pdf["periodo"] = periodo
-        return pdf
+        return self._ensure_periodo(pdf, dataset_id)
+
+    def _leer_labeled(self, dataset_id: str) -> pd.DataFrame:
+        """Lee labeled de un dataset_id y asegura periodo."""
+        uri = self._resolve_labeled_uri(dataset_id)
+        pdf = self._read_any(uri)
+        return self._ensure_periodo(pdf, dataset_id)
+
+    # ----------------------------
+    # Write helpers
+    # ----------------------------
 
     def _dedupe_concat(self, frames: List[pd.DataFrame]) -> pd.DataFrame:
         """Concatena y elimina duplicados por claves canónicas cuando existan."""
@@ -145,29 +198,33 @@ class UnificacionStrategy:
         with self.store.open(out_uri, "wb") as out_fh:
             df.to_parquet(out_fh, index=False)
 
+    # ----------------------------
+    # Public API
+    # ----------------------------
+
     def periodo_actual(self) -> Tuple[str, Dict[str, Any]]:
-        """Último periodo lexicográfico → historico/periodo_actual/<periodo>.parquet"""
-        periodos = self.listar_periodos_labeled()
-        if not periodos:
-            raise RuntimeError("No hay periodos en datasets/")
-        ultimo = periodos[-1]
-        pdf = self._leer_periodo(ultimo)
+        """Último dataset_id raw lexicográfico → historico/periodo_actual/<id>.parquet"""
+        ids = self.listar_datasets_raw()
+        if not ids:
+            raise RuntimeError("No hay datasets en datasets/")
+        ultimo = ids[-1]
+        pdf = self._leer_raw(ultimo)
 
         out_uri = f"historico/periodo_actual/{ultimo}.parquet"
         self._write_parquet(pdf, out_uri)
-        return out_uri, {"periodo": ultimo, "rows": int(len(pdf))}
+        return out_uri, {"dataset_id": ultimo, "rows": int(len(pdf))}
 
     def acumulado(self) -> Tuple[str, Dict[str, Any]]:
-        """Concatena todos los periodos → historico/unificado.parquet"""
-        periodos = self.listar_periodos_labeled()
-        if not periodos:
-            raise RuntimeError("No hay datasets etiquetados ...")
-        frames = [self._leer_periodo(p) for p in periodos]
+        """Concatena todos los datasets raw → historico/unificado.parquet"""
+        ids = self.listar_datasets_raw()
+        if not ids:
+            raise RuntimeError("No hay datasets en datasets/")
+        frames = [self._leer_raw(i) for i in ids]
         pdf = self._dedupe_concat(frames)
 
         out_uri = "historico/unificado.parquet"
         self._write_parquet(pdf, out_uri)
-        return out_uri, {"periodos": len(frames), "rows": int(len(pdf))}
+        return out_uri, {"datasets": ids, "rows": int(len(pdf))}
 
     def ventana(
         self,
@@ -175,34 +232,37 @@ class UnificacionStrategy:
         desde: Optional[str] = None,
         hasta: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
-        """Unifica una ventana de periodos → historico/ventanas/unificado_<tag>.parquet"""
-        periodos = self.listar_periodos_labeled()
+        """Unifica una ventana de datasets raw → historico/ventanas/unificado_<tag>.parquet"""
+        ids = self.listar_datasets_raw()
+        if not ids:
+            raise RuntimeError("No hay datasets en datasets/")
+
         if ultimos:
-            sel = periodos[-ultimos:]
+            sel = ids[-ultimos:]
         else:
             if not (desde and hasta):
                 raise ValueError("Se requiere 'ultimos' o bien ('desde' y 'hasta')")
-            sel = [p for p in periodos if desde <= p <= hasta]
+            sel = [i for i in ids if desde <= i <= hasta]
 
-        frames = [self._leer_periodo(p) for p in sel]
+        frames = [self._leer_raw(i) for i in sel]
         pdf = self._dedupe_concat(frames)
 
         tag = f"{sel[0]}_{sel[-1]}" if sel else "vacia"
         out_uri = f"historico/ventanas/unificado_{tag}.parquet"
         self._write_parquet(pdf, out_uri)
-        return out_uri, {"periodos": sel, "rows": int(len(pdf))}
+        return out_uri, {"datasets": sel, "rows": int(len(pdf))}
 
     def acumulado_labeled(self) -> Tuple[str, Dict[str, Any]]:
         """Unifica labeled disponibles → historico/unificado_labeled.parquet"""
-        periodos = self.listar_periodos_labeled()
+        ids = self.listar_datasets_labeled()
         frames: List[pd.DataFrame] = []
         skipped: List[str] = []
 
-        for p in periodos:
+        for i in ids:
             try:
-                frames.append(self._leer_labeled_periodo(p))
+                frames.append(self._leer_labeled(i))
             except FileNotFoundError:
-                skipped.append(p)
+                skipped.append(i)
 
         if not frames:
             raise RuntimeError(
@@ -214,4 +274,4 @@ class UnificacionStrategy:
         out_uri = "historico/unificado_labeled.parquet"
         self._write_parquet(pdf, out_uri)
 
-        return out_uri, {"periodos": len(frames), "rows": int(len(pdf)), "skipped": skipped}
+        return out_uri, {"datasets": ids, "rows": int(len(pdf)), "skipped": skipped}

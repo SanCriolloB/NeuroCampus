@@ -11,7 +11,7 @@ from ..adapters.almacen_adapter import AlmacenAdapter
 # Lectura multi-formato y helpers de DF (con las firmas reales de tus adapters)
 from ..adapters.formato_adapter import read_file            # (fileobj, filename) -> DataFrame/like
 from ..adapters.dataframe_adapter import as_df              # (obj) -> DF normalizado al engine
-
+from ..strategies.unificacion import UnificacionStrategy as _UnificacionStrategy
 
 import pandas as pd                                         # escritura parquet, manipulación tabular
 
@@ -85,32 +85,14 @@ def normalizar_encabezados(cols: List[str]) -> List[str]:
 DEDUP_KEYS = ["periodo", "codigo_materia", "grupo", "cedula_profesor"]
 PERIODO_RE = re.compile(r"^\d{4}-(1|2)$")  # AAAA-SEM (e.g., 2024-1, 2024-2)
 
-class UnificacionStrategy:
+class UnificacionStrategy(_UnificacionStrategy):
     """
-    Unifica datasets históricos bajo tres metodologías:
-      - PeriodoActual: último periodo disponible
-      - Acumulado: concat + dedupe
-      - Ventana: últimos N periodos o rango [desde,hasta]
-    Salidas en /historico como .parquet (columnas normalizadas).
+    Alias retrocompatible.
+
+    Esta clase existe porque históricamente se definió también en `chain/validadores.py`.
+    Para evitar divergencia, delega 100% a `data/strategies/unificacion.py`.
     """
-
-    def __init__(self, base_uri: str = "localfs://."):
-        self.store = AlmacenAdapter(base_uri)
-
-    # -------- Descubrimiento de periodos --------
-    def listar_periodos(self, prefix: str = "datasets/") -> List[str]:
-        """
-        Lista carpetas de la forma AAAA-SEM dentro de datasets/.
-        Se basa en self.store.ls(prefix) que devuelve rutas (strings).
-        """
-        items = self.store.ls(prefix)
-        periodos: List[str] = []
-        for it in items:
-            name = Path(it).name  # último segmento de la ruta
-            if PERIODO_RE.match(name):
-                periodos.append(name)
-        periodos.sort()
-        return periodos
+    pass
 
     # -------- Lectura y normalización por período --------
     def _leer_periodo(self, periodo: str) -> pd.DataFrame:

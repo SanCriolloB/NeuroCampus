@@ -318,38 +318,65 @@ class UnificacionStrategy:
         """
         Sanitiza columnas para que PyArrow pueda convertir el DataFrame a Parquet.
 
-        Problema típico:
-        - columnas dtype=object con mezcla de tipos (ej: bytes + int) → ArrowTypeError
+        Problema observado en histórico labeled:
+        - columnas dtype=object con mezcla de tipos (bytes + int) → ArrowTypeError
 
-        Regla:
-        - Forzar 'id' a texto si existe (es el caso más común del fallo).
-        - Para otras columnas object: si detectamos bytes o tipos complejos (dict/list/tuple/set),
-        convertimos toda la columna a texto.
+        Política:
+        1) Forzar a texto columnas "clave" del dominio (IDs/categorías) si existen.
+        Esto evita inconsistencias entre periodos (ej. codigo_materia int vs str/bytes).
+        2) Para otras columnas object: si detectamos bytes o tipos complejos, convertir a texto.
         """
         import pandas as pd
 
         out = df.copy()
 
-        # Caso crítico observado en tu error
-        if "id" in out.columns:
-            out["id"] = out["id"].map(self._to_text)
+        # Columnas clave que deben ser estables entre periodos
+        key_cols = [
+            "id",
+            "codigo_materia",
+            "grupo",
+            "cedula_profesor",
+            "docente",
+            "profesor",
+            "materia",
+            "asignatura",
+            "periodo",
+        ]
+        for c in key_cols:
+            if c in out.columns:
+                out[c] = out[c].map(self._to_text)
 
+        # Resto de columnas object: normalizar si hay bytes o estructuras complejas
         for col in out.columns:
             if out[col].dtype != "object":
                 continue
 
-            sample = out[col].dropna().head(200).tolist()
+            sample = out[col].dropna().head(300).tolist()
             if not sample:
                 continue
 
             has_bytes = any(isinstance(v, (bytes, bytearray, memoryview)) for v in sample)
             has_complex = any(isinstance(v, (dict, list, tuple, set)) for v in sample)
 
-            # Si hay tipos que Arrow suele rechazar o mezclar, normalizamos a texto
             if has_bytes or has_complex:
                 out[col] = out[col].map(self._to_text)
 
+        # Caso especial: algunos objetos pueden colarse como números en object.
+        # Si hay mezcla fuerte, convertir a texto completo para evitar ArrowTypeError.
+        for col in out.columns:
+            if out[col].dtype != "object":
+                continue
+            sample = out[col].dropna().head(300).tolist()
+            if not sample:
+                continue
+            types = {type(v) for v in sample}
+            # Si hay mezcla de num + str/bytes
+            numeric_types = (int, float)
+            if any(t in numeric_types for t in types) and (str in types or bytes in types):
+                out[col] = out[col].map(self._to_text)
+
         return out
+
 
 
     def _dedupe_concat(self, frames: List[pd.DataFrame]) -> pd.DataFrame:

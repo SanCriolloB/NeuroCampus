@@ -279,10 +279,15 @@ def main() -> None:
     if len(califs) > args.calif_n:
         califs = califs[: args.calif_n]
 
-    out = pd.DataFrame()
-    out["periodo"] = str(dataset_id)
+    # Importante: crear el DataFrame con el mismo índice del df para que
+    # las asignaciones escalares (como `periodo`) se propaguen a todas las filas.
+    out = pd.DataFrame(index=df.index.copy())
+
     out["comentario"] = df[text_col].astype(str).to_numpy()
     out["has_text"] = df["has_text"].astype(int).to_numpy()
+
+    # Asignación escalar segura: se replica para todas las filas existentes
+    out["periodo"] = str(dataset_id)
 
     for i, c in enumerate(califs, start=1):
         out[f"calif_{i}"] = _scale_to_0_50(df[c])

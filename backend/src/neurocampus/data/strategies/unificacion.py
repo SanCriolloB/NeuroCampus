@@ -35,12 +35,90 @@ DEDUP_KEYS = ["periodo", "codigo_materia", "grupo", "cedula_profesor"]
 class UnificacionStrategy:
     """Unifica datasets históricos y genera artefactos en /historico."""
 
-    def __init__(self, base_uri: str = "localfs://."):
-        self.store = AlmacenAdapter(base_uri)
+    def __init__(self, base_uri: str | None = None):
+        """
+        Inicializa el store para leer/escribir artefactos del pipeline.
 
+        Problema real que resuelve:
+        - En jobs/background tasks el CWD puede NO ser la raíz del repo.
+        - Si alguien pasa `base_uri="localfs://."`, AlmacenAdapter apunta al CWD,
+        y listados como `data/labeled/` quedan vacíos → Unify falla con
+        "No hay datasets etiquetados...".
+
+        Solución:
+        - Detectar la raíz del repo de forma robusta (por presencia de carpetas
+        `data/` y `datasets/`).
+        - Si base_uri es None o apunta a "." → usar raíz del repo.
+        - Si base_uri fue provisto pero NO contiene `data/` ni `datasets/`,
+        se hace fallback automático a la raíz del repo.
+        """
+        project_root = self._find_project_root()
+
+        def _is_dot_uri(u: str) -> bool:
+            u = (u or "").strip()
+            return u in ("localfs://.", "localfs://./", "localfs://")
+
+        # Normalización de base_uri
+        if base_uri is None or _is_dot_uri(base_uri):
+            base_uri = f"localfs://{project_root.as_posix()}"
+
+        store = AlmacenAdapter(base_uri)
+
+        # Fallback: si el base_dir no ve carpetas esperadas, cambiar a raíz repo.
+        if (not store.exists("data")) and (not store.exists("datasets")):
+            store = AlmacenAdapter(f"localfs://{project_root.as_posix()}")
+
+        self.store = store
+
+    @staticmethod
+    def _find_project_root() -> Path:
+        """
+        Encuentra la raíz del repo de NeuroCampus de forma robusta.
+
+        Criterio:
+        - Un directorio que contenga `data/` y `datasets/`.
+        - Si no se encuentra, hace fallback al esquema de parents[5].
+        """
+        here = Path(__file__).resolve()
+        for p in here.parents:
+            if (p / "data").exists() and (p / "datasets").exists():
+                return p
+
+        # Fallback compatible con el layout estándar:
+        # .../backend/src/neurocampus/data/strategies/unificacion.py -> parents[5] ≈ raíz repo
+        return here.parents[5]
+    
     # ----------------------------
     # Listing helpers
     # ----------------------------
+
+    def _ls_variants(self, prefix: str) -> list[str]:
+        """
+        Lista un prefix intentando variantes con y sin trailing slash.
+
+        Esto evita diferencias entre llamadas tipo:
+        - "data/labeled"
+        - "data/labeled/"
+        """
+        pref = prefix.strip()
+        candidates = {pref, pref.rstrip("/"), pref.rstrip("\\")}
+        candidates.add(pref.rstrip("/\\") + "/")
+
+        out: list[str] = []
+        for c in candidates:
+            try:
+                out.extend(self.store.ls(c))
+            except Exception:
+                continue
+        # dedupe manteniendo orden
+        seen = set()
+        uniq = []
+        for x in out:
+            if x not in seen:
+                seen.add(x)
+                uniq.append(x)
+        return uniq
+
 
     def listar_datasets_raw(self, prefix: str = "datasets/") -> list[str]:
         """
@@ -74,8 +152,10 @@ class UnificacionStrategy:
         Lista datasets etiquetados disponibles en data/labeled/:
         - <id>_beto.parquet
         - <id>_teacher.parquet (compat)
+        - <id>_beto.csv
+        - <id>_teacher.csv
         """
-        items = self.store.ls(prefix)
+        items = self._ls_variants(prefix)
         out: Set[str] = set()
 
         for it in items:
@@ -91,9 +171,46 @@ class UnificacionStrategy:
 
         return sorted(out)
 
+
     # ----------------------------
     # Resolve URIs
     # ----------------------------
+
+    def listar_periodos_raw(self, datasets_prefix: str = "datasets") -> list[str]:
+        """
+        Lista datasets crudos disponibles en `datasets/` (layout nuevo + legacy).
+
+        Soporta:
+        - datasets/<id>.parquet|csv|xlsx
+        - datasets/<id>/data.parquet|csv|xlsx (legacy)
+        """
+        out: set[str] = set()
+        prefixes = (datasets_prefix.rstrip("/"), datasets_prefix.rstrip("/") + "/")
+
+        for pref in prefixes:
+            try:
+                items = self.store.ls(pref)
+            except Exception:
+                items = []
+
+            for it in items:
+                name = Path(it).name
+                p = Path(name)
+
+                # Archivo plano
+                if p.suffix.lower() in {".parquet", ".csv", ".xlsx"}:
+                    out.add(p.stem)
+                    continue
+
+                # Posible carpeta legacy
+                folder = f"{datasets_prefix.rstrip('/')}/{p.name}"
+                for fname in ("data.parquet", "data.csv", "data.xlsx"):
+                    if self.store.exists(f"{folder}/{fname}"):
+                        out.add(p.name)
+                        break
+
+        return sorted(out)
+
 
     def _resolve_dataset_uri(self, dataset_id: str) -> str:
         """Resuelve la URI del dataset crudo (datasets/) para un dataset_id."""

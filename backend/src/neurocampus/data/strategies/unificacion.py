@@ -289,6 +289,69 @@ class UnificacionStrategy:
     # Write helpers
     # ----------------------------
 
+    def _to_text(self, x):
+        """
+        Convierte valores heterogéneos a texto de forma segura.
+
+        - bytes/bytearray/memoryview -> decode utf-8 (replace)
+        - NaN/<NA>/None -> None
+        - otros -> str(...)
+        """
+        import pandas as pd
+
+        if x is None:
+            return None
+        try:
+            # cubre NaN y pandas NA
+            if pd.isna(x):
+                return None
+        except Exception:
+            pass
+
+        if isinstance(x, (bytes, bytearray, memoryview)):
+            return bytes(x).decode("utf-8", errors="replace")
+
+        return str(x)
+
+
+    def _sanitize_for_parquet(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Sanitiza columnas para que PyArrow pueda convertir el DataFrame a Parquet.
+
+        Problema típico:
+        - columnas dtype=object con mezcla de tipos (ej: bytes + int) → ArrowTypeError
+
+        Regla:
+        - Forzar 'id' a texto si existe (es el caso más común del fallo).
+        - Para otras columnas object: si detectamos bytes o tipos complejos (dict/list/tuple/set),
+        convertimos toda la columna a texto.
+        """
+        import pandas as pd
+
+        out = df.copy()
+
+        # Caso crítico observado en tu error
+        if "id" in out.columns:
+            out["id"] = out["id"].map(self._to_text)
+
+        for col in out.columns:
+            if out[col].dtype != "object":
+                continue
+
+            sample = out[col].dropna().head(200).tolist()
+            if not sample:
+                continue
+
+            has_bytes = any(isinstance(v, (bytes, bytearray, memoryview)) for v in sample)
+            has_complex = any(isinstance(v, (dict, list, tuple, set)) for v in sample)
+
+            # Si hay tipos que Arrow suele rechazar o mezclar, normalizamos a texto
+            if has_bytes or has_complex:
+                out[col] = out[col].map(self._to_text)
+
+        return out
+
+
     def _dedupe_concat(self, frames: List[pd.DataFrame]) -> pd.DataFrame:
         """Concatena y elimina duplicados por claves canónicas cuando existan."""
         if not frames:
@@ -302,12 +365,33 @@ class UnificacionStrategy:
         return big
 
     def _write_parquet(self, df: pd.DataFrame, out_uri: str) -> None:
-        """Escribe parquet usando el store."""
-        parent = str(Path(out_uri).parent).replace("\\", "/")
-        if parent and parent not in ("", "."):
-            self.store.makedirs(parent)
-        with self.store.open(out_uri, "wb") as out_fh:
-            df.to_parquet(out_fh, index=False)
+        """
+        Escribe parquet de forma segura y atómica.
+
+        1) Sanitiza columnas object (ej: id bytes+int) para evitar ArrowTypeError.
+        2) Escribe a un archivo temporal y luego hace replace atómico.
+        Así evitamos archivos 0 bytes cuando hay error durante to_parquet.
+
+        Nota:
+        - Este strategy usa `localfs`, así que resolvemos paths con `self.store.base_dir`.
+        """
+        import os
+        from pathlib import Path
+
+        safe_df = self._sanitize_for_parquet(df)
+
+        base_dir = Path(self.store.base_dir)
+        abs_path = (base_dir / Path(out_uri)).resolve()
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_path = abs_path.with_suffix(abs_path.suffix + ".tmp")
+
+        # Escribir por path (mejor compatibilidad con pyarrow en Windows)
+        safe_df.to_parquet(tmp_path, index=False)
+
+        # Replace atómico
+        os.replace(tmp_path, abs_path)
+
 
     # ----------------------------
     # Public API

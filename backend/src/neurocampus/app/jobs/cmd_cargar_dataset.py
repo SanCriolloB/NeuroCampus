@@ -191,18 +191,36 @@ def _infer_dataset_id(src: str, dst: str, dataset_id_arg: Optional[str]) -> str:
     """Infere un dataset_id/periodo estable.
 
     Orden:
-    1) --dataset-id
+    1) --dataset-id (si es válido)
     2) stem del archivo de salida (data/processed/<stem>.parquet)
     3) stem del archivo de entrada
+
+    Nota:
+    - Algunos frontends/envíos pueden mandar `"None"`, `"null"` o `"nan"` como string.
+      Esos valores NO se consideran dataset_id válidos.
     """
-    if dataset_id_arg and str(dataset_id_arg).strip():
+
+    def _is_valid(x: Optional[str]) -> bool:
+        if x is None:
+            return False
+        s = str(x).strip()
+        if not s:
+            return False
+        return s.lower() not in {"none", "null", "nan", "<na>"}
+
+    if _is_valid(dataset_id_arg):
         return str(dataset_id_arg).strip()
 
     dst_stem = Path(dst).stem
-    if dst_stem:
+    if _is_valid(dst_stem):
         return dst_stem
 
-    return Path(src).stem
+    src_stem = Path(src).stem
+    if _is_valid(src_stem):
+        return src_stem
+
+    raise ValueError("No se pudo inferir un dataset_id válido (periodo).")
+
 
 
 def _scale_to_0_50(s: pd.Series) -> pd.Series:

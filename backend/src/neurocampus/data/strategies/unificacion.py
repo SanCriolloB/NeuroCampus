@@ -37,30 +37,30 @@ class UnificacionStrategy:
     def __init__(self, base_uri: str = "localfs://."):
         self.store = AlmacenAdapter(base_uri)
 
-    def listar_periodos(self, prefix: str = "datasets/") -> List[str]:
-        """Lista periodos disponibles desde datasets/.
-
-        Soporta:
-        - layout nuevo: datasets/<periodo>.parquet|csv|xlsx
-        - layout viejo: datasets/<periodo>/data.parquet|csv|xlsx
+    def listar_periodos_labeled(self, labeled_dir: str = "data/labeled") -> list[str]:
         """
-        items = self.store.ls(prefix)
-        found: List[str] = []
+        Lista datasets etiquetados (layout nuevo):
+        - data/labeled/<dataset_id>_beto.parquet
 
-        for it in items:
-            p = Path(it)
-            name = p.name
+        Retorna dataset_id (por ejemplo: 2025-1, 2024-2, evaluaciones_2025, etc.)
+        """
+        import re
+        from pathlib import Path
 
-            if PERIODO_RE.match(name):
-                found.append(name)
-                continue
+        p = Path(labeled_dir)
+        if not p.exists():
+            return []
 
-            if p.suffix.lower() in {".parquet", ".csv", ".xlsx"}:
-                stem = p.stem
-                if PERIODO_RE.match(stem):
-                    found.append(stem)
+        out: list[str] = []
+        for f in p.glob("*_beto.parquet"):
+            name = f.name
+            # si es periodo tipo 2025-1_beto.parquet
+            m = re.match(r"^(?P<id>.+)_beto\.parquet$", name)
+            if m:
+                out.append(m.group("id"))
 
-        return sorted(set(found))
+        return sorted(set(out))
+
 
     def _resolve_dataset_uri(self, periodo: str) -> str:
         """Resuelve la URI del dataset crudo (datasets/) para un periodo."""
@@ -147,7 +147,7 @@ class UnificacionStrategy:
 
     def periodo_actual(self) -> Tuple[str, Dict[str, Any]]:
         """Último periodo lexicográfico → historico/periodo_actual/<periodo>.parquet"""
-        periodos = self.listar_periodos()
+        periodos = self.listar_periodos_labeled()
         if not periodos:
             raise RuntimeError("No hay periodos en datasets/")
         ultimo = periodos[-1]
@@ -159,7 +159,9 @@ class UnificacionStrategy:
 
     def acumulado(self) -> Tuple[str, Dict[str, Any]]:
         """Concatena todos los periodos → historico/unificado.parquet"""
-        periodos = self.listar_periodos()
+        periodos = self.listar_periodos_labeled()
+        if not periodos:
+            raise RuntimeError("No hay datasets etiquetados ...")
         frames = [self._leer_periodo(p) for p in periodos]
         pdf = self._dedupe_concat(frames)
 
@@ -174,7 +176,7 @@ class UnificacionStrategy:
         hasta: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Unifica una ventana de periodos → historico/ventanas/unificado_<tag>.parquet"""
-        periodos = self.listar_periodos()
+        periodos = self.listar_periodos_labeled()
         if ultimos:
             sel = periodos[-ultimos:]
         else:
@@ -192,7 +194,7 @@ class UnificacionStrategy:
 
     def acumulado_labeled(self) -> Tuple[str, Dict[str, Any]]:
         """Unifica labeled disponibles → historico/unificado_labeled.parquet"""
-        periodos = self.listar_periodos()
+        periodos = self.listar_periodos_labeled()
         frames: List[pd.DataFrame] = []
         skipped: List[str] = []
 

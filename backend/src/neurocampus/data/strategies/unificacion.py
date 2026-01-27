@@ -27,7 +27,7 @@ import pandas as pd
 from ..adapters.almacen_adapter import AlmacenAdapter
 from ..adapters.formato_adapter import read_file
 from ..adapters.dataframe_adapter import as_df
-from ..chain.validadores import normalizar_encabezados
+from ..utils.headers import normalizar_encabezados
 
 DEDUP_KEYS = ["periodo", "codigo_materia", "grupo", "cedula_profesor"]
 

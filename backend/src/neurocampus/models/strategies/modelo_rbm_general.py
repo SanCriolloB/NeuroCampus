@@ -5,65 +5,73 @@ neurocampus.models.strategies.modelo_rbm_general
 Estrategia **RBM General** con:
 
 - Normalización robusta (Vectorizer minmax o scale_0_5).
-- Soporte de entrenamiento orquestado por
+- Orquestación por
   :class:`~neurocampus.models.templates.plantilla_entrenamiento.PlantillaEntrenamiento`
-  mediante el contrato:
+  mediante:
   - :meth:`setup(data_ref, hparams)`
   - :meth:`train_step(epoch) -> (loss, metrics)`
 
-Métricas reales (train/val) + confusion matrix
+Métricas reales (train/val) + confusion matrix (Commit 4)
 ---------------------------------------------------------
-Se agregan:
-
-- **Split real** train/val configurable por:
+- Split real train/val configurable por:
   - ``split_mode``: ``temporal`` | ``random``
-  - ``val_ratio``: proporción de validación (default 0.2)
-  - Si existe columna ``split`` (train/val/test), se usa como fuente prioritaria.
-- Métricas por época (numéricas) que el frontend puede graficar vía eventos:
+  - ``val_ratio``: proporción de validación
+  - si existe ``split`` (train/val), tiene prioridad.
+- Métricas por época:
   - ``accuracy``, ``f1_macro``, ``val_accuracy``, ``val_f1_macro``, ``val_loss``
-- Métrica final no-numérica:
-  - ``confusion_matrix`` (3x3) + ``labels``
+- Métricas finales:
+  - ``confusion_matrix`` (3x3) y ``labels``
 
-Objetivo (target) y fugas de información
-----------------------------------------
-El flujo actualizado define que el objetivo sea **sentiment_probs** (``p_neg,p_neu,p_pos``).
-Por lo tanto:
+Objetivo (target) y fuga de información
+---------------------------------------
+El flujo actualizado define que el objetivo sea **sentiment_probs**
+(``p_neg,p_neu,p_pos``).
 
 - Si ``target_mode='sentiment_probs'``:
-  - **Los p_*** se usan como **target** (soft labels), NO como features.
+  - p_* se usan como **target soft** y se excluyen como features (evita leakage).
 - Si ``target_mode='label'``:
-  - Se usan columnas de etiqueta (``sent_label``/``sentiment_label``/etc.) como target hard.
+  - se usa etiqueta hard (sent_label/sentiment_label/etc).
 
-.. important::
-   Evitar incluir ``p_neg/p_neu/p_pos`` como features cuando también son el target
-   (esto inflaría métricas por leakage).
+Commit 5 — Docente/Materia como embeddings (relación docente–materia)
+---------------------------------------------------------------------
+Se incorpora soporte para **embeddings aprendibles** de docente y materia para
+capturar relaciones Docente–Materia sin vectores one-hot gigantes.
 
-Teacher/Materia (opcional)
---------------------------
-Si ``include_teacher_materia=True`` y el DataFrame trae columnas string
-``teacher_key`` y/o ``materia_key``, se agregan features con **hashing one-hot**
-de dimensión fija (por defecto 128 cada uno) para capturar relaciones sin crear
-one-hot gigantes.
+Se añade el parámetro:
+
+- ``teacher_materia_mode``: ``embed`` | ``hash`` | ``none``
+
+Comportamiento:
+
+- ``embed`` (recomendado):
+  - teacher_key/materia_key se transforman a índices mediante hashing estable
+    (md5 mod N buckets) y se aprenden embeddings.
+  - La cabeza supervisada concatena: ``H_rbm`` + ``emb_teacher`` + ``emb_materia``
+    y opcionalmente la interacción ``emb_teacher * emb_materia``.
+- ``hash``:
+  - se mantiene el modo anterior: se agregan features one-hot por hashing
+    (teacher_h_* y materia_h_*), entrando a la RBM como visibles.
+- ``none``:
+  - no se usa teacher/materia.
 
 Persistencia
 ------------
 La persistencia de runs/champion se maneja fuera (router + runs_io).
-Esta estrategia implementa ``save(out_dir)`` para guardar:
+Esta estrategia implementa :meth:`save(out_dir)` para guardar:
 
 - ``rbm.pt`` y ``head.pt`` (pesos)
-- ``vectorizer.json`` y ``meta.json`` (feat_cols, hashing dims, etc.)
+- ``vectorizer.json`` (normalización)
+- ``meta.json`` (feat_cols, split/target, y configuración teacher/materia)
 
 Notas sobre utilidades de métricas
 ----------------------------------
-Este archivo usa :mod:`neurocampus.models.utils.metrics` para:
+Se usa :mod:`neurocampus.models.utils.metrics`:
 
 - accuracy
 - f1_macro
 - confusion_matrix
 - normalize_probs
 - soft_to_hard
-
-Así se evita duplicación entre estrategias.
 """
 
 from __future__ import annotations
@@ -90,6 +98,9 @@ from neurocampus.models.utils.metrics import (
     normalize_probs,
     soft_to_hard,
 )
+
+__all__ = ["RBMGeneral", "ModeloRBMGeneral"]
+
 
 # =============================================================================
 # Etiquetas / mapeos
@@ -121,7 +132,13 @@ _LABEL_COL_CANDIDATES = [
 
 
 def _suffix_index(name: str, prefix: str) -> int:
-    """Convierte el sufijo de una columna tipo x_text_12 a int(12)."""
+    """
+    Convierte el sufijo de una columna tipo ``x_text_12`` a ``int(12)``.
+
+    :param name: Nombre de la columna.
+    :param prefix: Prefijo de embeddings.
+    :return: Índice entero; si falla retorna 0.
+    """
     try:
         return int(name[len(prefix):])
     except Exception:
@@ -130,9 +147,10 @@ def _suffix_index(name: str, prefix: str) -> int:
 
 def _norm_label(v: Any) -> str:
     """
-    Normaliza etiquetas a {neg, neu, pos}.
+    Normaliza etiquetas a ``{neg, neu, pos}`` aceptando variantes es/en.
 
-    Acepta variantes en español/inglés.
+    :param v: Valor original.
+    :return: 'neg' | 'neu' | 'pos' | '' (si no reconoce).
     """
     if not isinstance(v, str):
         return ""
@@ -147,7 +165,12 @@ def _norm_label(v: Any) -> str:
 
 
 def _auto_pick_embed_prefix(columns: List[str]) -> Optional[str]:
-    """Intenta detectar automáticamente el prefijo de embeddings de texto."""
+    """
+    Intenta detectar automáticamente el prefijo de embeddings de texto.
+
+    :param columns: Columnas del dataset.
+    :return: Prefijo detectado o None.
+    """
     for pr in _CANDIDATE_EMBED_PREFIXES:
         if any(c.startswith(pr) for c in columns):
             return pr
@@ -158,7 +181,8 @@ def _parse_periodo_to_sortkey(v: Any) -> Tuple[int, int]:
     """
     Convierte '2025-1' -> (2025, 1) para sorting temporal.
 
-    Si no se puede parsear, retorna (0,0).
+    :param v: Valor de periodo.
+    :return: Tupla (year, term), si no parsea retorna (0,0).
     """
     if v is None:
         return (0, 0)
@@ -174,6 +198,10 @@ def _stable_hash_index(text: str, dim: int) -> int:
     Índice hash estable (no depende del hash randomizado de Python).
 
     Usa md5(text) y mod dim.
+
+    :param text: Texto a hashear.
+    :param dim: Tamaño del espacio discreto (buckets).
+    :return: Índice en [0, dim-1].
     """
     if dim <= 0:
         return 0
@@ -201,6 +229,13 @@ class _Vectorizer:
     mode: str = "minmax"
 
     def fit(self, X: np.ndarray, mode: str = "minmax") -> "_Vectorizer":
+        """
+        Ajusta estadísticos sobre X.
+
+        :param X: Matriz (n_samples, n_features).
+        :param mode: 'minmax' o 'scale_0_5'.
+        :return: self.
+        """
         if X is None or X.size == 0:
             raise ValueError("Vectorizer.fit recibió una matriz vacía.")
 
@@ -236,6 +271,12 @@ class _Vectorizer:
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
+        """
+        Transforma X a [0,1] usando estadísticos del fit.
+
+        :param X: Matriz (n_samples, n_features).
+        :return: Matriz transformada float32.
+        """
         if self.mean_ is None or self.min_ is None or self.max_ is None:
             raise RuntimeError("Vectorizer no está ajustado (llama a fit primero).")
 
@@ -247,6 +288,7 @@ class _Vectorizer:
         return Xs.astype(np.float32, copy=False)
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serializa el vectorizer a dict JSON-friendly."""
         return {
             "mean": None if self.mean_ is None else self.mean_.tolist(),
             "min":  None if self.min_  is None else self.min_.tolist(),
@@ -256,6 +298,12 @@ class _Vectorizer:
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "_Vectorizer":
+        """
+        Reconstruye el vectorizer desde un dict.
+
+        :param d: Dict serializado.
+        :return: Instancia.
+        """
         obj = cls()
         if not d:
             return obj
@@ -279,6 +327,12 @@ class _RBM(nn.Module):
     """
 
     def __init__(self, n_visible: int, n_hidden: int, cd_k: int = 1, seed: int = 42):
+        """
+        :param n_visible: Dimensión visible.
+        :param n_hidden: Dimensión oculta.
+        :param cd_k: Pasos de Contrastive Divergence.
+        :param seed: Semilla.
+        """
         super().__init__()
         g = torch.Generator().manual_seed(int(seed))
         self.W = nn.Parameter(torch.randn(n_visible, n_hidden, generator=g) * 0.01)
@@ -287,21 +341,27 @@ class _RBM(nn.Module):
         self.cd_k = int(cd_k)
 
     def hidden_logits(self, v: Tensor) -> Tensor:
+        """Logits de hidden units."""
         return F.linear(v, self.W.t(), self.b_h)
 
     def hidden_probs(self, v: Tensor) -> Tensor:
+        """Probabilidades de hidden units."""
         return torch.sigmoid(self.hidden_logits(v))
 
     def visible_logits(self, h: Tensor) -> Tensor:
+        """Logits de visible units."""
         return F.linear(h, self.W, self.b_v)
 
     def sample_hidden(self, v: Tensor) -> Tensor:
+        """Muestreo Bernoulli de hidden."""
         return torch.bernoulli(self.hidden_probs(v))
 
     def sample_visible(self, h: Tensor) -> Tensor:
+        """Muestreo Bernoulli de visible."""
         return torch.bernoulli(torch.sigmoid(self.visible_logits(h)))
 
     def free_energy(self, v: Tensor) -> Tensor:
+        """Energía libre para visibles v."""
         vbias_term = (v * self.b_v).sum(dim=1)
         wx_b = self.hidden_logits(v)
         hidden_term = torch.log1p(torch.exp(wx_b)).sum(dim=1)
@@ -311,6 +371,7 @@ class _RBM(nn.Module):
         """
         Ejecuta CD-k desde visibles v0.
 
+        :param v0: Visibles iniciales.
         :return: (vk, hk) últimas muestras.
         """
         vk = v0
@@ -321,17 +382,83 @@ class _RBM(nn.Module):
 
 
 # =============================================================================
-# Estrategia RBMGeneral (compatible con PlantillaEntrenamiento)
+# Head supervisada con embeddings teacher/materia (Commit 5)
+# =============================================================================
+
+class _TeacherMateriaHead(nn.Module):
+    """
+    Cabeza supervisada con embeddings aprendibles para teacher/materia.
+
+    Combina:
+    - representación de RBM (H: n_hidden)
+    - embedding docente (E_t: emb_dim)
+    - embedding materia (E_m: emb_dim)
+    - (opcional) interacción E_t * E_m
+
+    Luego aplica una capa lineal a 3 clases (neg/neu/pos).
+
+    :param n_hidden: Dimensión de H.
+    :param emb_dim: Dimensión embeddings.
+    :param teacher_buckets: Cantidad de buckets para teacher hashing -> Embedding.
+    :param materia_buckets: Cantidad de buckets para materia hashing -> Embedding.
+    :param use_interaction: Si True concatena E_t * E_m.
+    """
+
+    def __init__(
+        self,
+        n_hidden: int,
+        emb_dim: int,
+        teacher_buckets: int,
+        materia_buckets: int,
+        use_interaction: bool = True,
+    ) -> None:
+        super().__init__()
+        self.n_hidden = int(n_hidden)
+        self.emb_dim = int(emb_dim)
+        self.teacher_buckets = int(teacher_buckets)
+        self.materia_buckets = int(materia_buckets)
+        self.use_interaction = bool(use_interaction)
+
+        # Embeddings aprendibles (hashing estable -> índice)
+        self.teacher_emb = nn.Embedding(self.teacher_buckets, self.emb_dim)
+        self.materia_emb = nn.Embedding(self.materia_buckets, self.emb_dim)
+
+        in_dim = self.n_hidden + 2 * self.emb_dim + (self.emb_dim if self.use_interaction else 0)
+        self.classifier = nn.Linear(in_dim, 3)
+
+    def forward(self, h: Tensor, teacher_idx: Optional[Tensor] = None, materia_idx: Optional[Tensor] = None) -> Tensor:
+        """
+        :param h: Tensor (batch, n_hidden) con activaciones RBM.
+        :param teacher_idx: Tensor (batch,) long con índices docente.
+        :param materia_idx: Tensor (batch,) long con índices materia.
+        :return: Logits (batch, 3).
+        """
+        bsz = h.shape[0]
+        dev = h.device
+
+        if teacher_idx is None:
+            teacher_idx = torch.zeros((bsz,), dtype=torch.long, device=dev)
+        if materia_idx is None:
+            materia_idx = torch.zeros((bsz,), dtype=torch.long, device=dev)
+
+        et = self.teacher_emb(teacher_idx)
+        em = self.materia_emb(materia_idx)
+
+        parts = [h, et, em]
+        if self.use_interaction:
+            parts.append(et * em)
+
+        x = torch.cat(parts, dim=1)
+        return self.classifier(x)
+
+
+# =============================================================================
+# Estrategia RBMGeneral
 # =============================================================================
 
 class RBMGeneral:
     """
-    Estrategia RBMGeneral con cabeza supervisada (3 clases).
-
-    Flujo:
-    - ``setup``: carga DF, arma features/targets, split train/val, vectoriza, inicializa RBM+head,
-      preentrena RBM (unsupervised).
-    - ``train_step``: entrena la head 1 época (supervised/soft labels), evalúa métricas train/val.
+    Estrategia RBMGeneral con cabeza supervisada (3 clases) y soporte teacher/materia.
 
     Parámetros en ``hparams`` (principales)
     --------------------------------------
@@ -339,19 +466,34 @@ class RBMGeneral:
     - ``batch_size`` (int)
     - ``lr_rbm`` (float)
     - ``lr_head`` (float)
-    - ``epochs_rbm`` (int): pretraining RBM (antes de las épocas reportadas)
+    - ``epochs_rbm`` (int)
     - ``n_hidden`` (int)
     - ``cd_k`` (int)
     - ``scale_mode``: ``minmax`` | ``scale_0_5``
 
-    Split / validación (Commit 4)
-    -----------------------------
+    Split / validación
+    ------------------
     - ``split_mode``: ``temporal`` | ``random`` (default ``temporal``)
     - ``val_ratio``: float (default 0.2)
 
-    Target (Commit 4)
-    -----------------
+    Target
+    ------
     - ``target_mode``: ``sentiment_probs`` | ``label`` (default ``sentiment_probs``)
+
+    Teacher/Materia (Commit 5)
+    --------------------------
+    - ``include_teacher_materia``: bool
+    - ``teacher_materia_mode``: ``embed`` | ``hash`` | ``none``
+
+    Si ``embed``:
+    - ``tm_emb_dim``: int (default 16)
+    - ``teacher_emb_buckets``: int (default 2048)
+    - ``materia_emb_buckets``: int (default 2048)
+    - ``tm_use_interaction``: bool (default True)
+
+    Si ``hash`` (modo anterior):
+    - ``teacher_hash_dim``: int (default 128)
+    - ``materia_hash_dim``: int (default 128)
     """
 
     def __init__(
@@ -379,15 +521,24 @@ class RBMGeneral:
         self.epochs_rbm: int = 1
         self.scale_mode: str = "minmax"
 
-        # commit 4: split/target
+        # split/target
         self.split_mode: str = "temporal"
         self.val_ratio: float = 0.2
         self.target_mode: str = "sentiment_probs"
 
-        # teacher/materia hashing
+        # teacher/materia (Commit 5)
         self.include_teacher_materia: bool = True
+        self.teacher_materia_mode: str = "embed"  # embed | hash | none
+
+        # modo hash (legacy)
         self.teacher_hash_dim: int = 128
         self.materia_hash_dim: int = 128
+
+        # modo embed (Commit 5)
+        self.tm_emb_dim: int = 16
+        self.teacher_emb_buckets: int = 2048
+        self.materia_emb_buckets: int = 2048
+        self.tm_use_interaction: bool = True
 
         # features/artefactos
         self.vec: _Vectorizer = _Vectorizer()
@@ -396,7 +547,7 @@ class RBMGeneral:
         self.opt_rbm = None
         self.opt_head = None
 
-        # columnas y prefijo embeddings
+        # columnas y prefijo embeddings de texto
         self.feat_cols_: List[str] = []
         self.text_embed_prefix_: str = "x_text_"
 
@@ -407,6 +558,12 @@ class RBMGeneral:
         self.y_val_hard: Optional[Tensor] = None
         self.y_train_soft: Optional[Tensor] = None
         self.y_val_soft: Optional[Tensor] = None
+
+        # índices teacher/materia (solo si teacher_materia_mode == "embed")
+        self.teacher_idx_train: Optional[Tensor] = None
+        self.teacher_idx_val: Optional[Tensor] = None
+        self.materia_idx_train: Optional[Tensor] = None
+        self.materia_idx_val: Optional[Tensor] = None
 
         # tracking interno
         self._epoch: int = 0
@@ -421,6 +578,7 @@ class RBMGeneral:
         Carga DF desde parquet/csv/xlsx.
 
         :param path: ruta local al dataset.
+        :return: DataFrame.
         """
         if path is None:
             raise ValueError("data_ref is None")
@@ -436,20 +594,19 @@ class RBMGeneral:
         raise ValueError("Formato no soportado: " + ext)
 
     # -------------------------------------------------------------------------
-    # Feature engineering (incluye hashing opcional teacher/materia)
+    # Feature engineering (hash legacy)
     # -------------------------------------------------------------------------
 
     def _add_teacher_materia_hash_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Agrega features hash one-hot para teacher_key/materia_key si aplica.
+        Agrega features hash one-hot para teacher_key/materia_key (modo legacy ``hash``).
 
         - Crea columnas: teacher_h_0..teacher_h_(dim-1) y materia_h_0..materia_h_(dim-1)
-        - No requiere conocer el vocabulario completo.
-        - Es determinístico (md5).
-
-        Si no hay columnas teacher_key/materia_key, retorna df sin cambios.
+        - Determinístico (md5).
         """
         if not self.include_teacher_materia:
+            return df
+        if self.teacher_materia_mode != "hash":
             return df
 
         out = df
@@ -476,17 +633,21 @@ class RBMGeneral:
 
         return out
 
+    # -------------------------------------------------------------------------
+    # Feature selection (numéricas)
+    # -------------------------------------------------------------------------
+
     def _pick_feature_cols(self, df: pd.DataFrame) -> List[str]:
         """
-        Selecciona columnas de features de forma robusta.
+        Selecciona columnas numéricas de features y define orden estable.
 
         Regla:
-        - Tomar solo columnas numéricas
-        - EXCLUIR targets (según target_mode)
+        - Tomar solo columnas numéricas.
+        - EXCLUIR targets (p_*) si ``target_mode='sentiment_probs'``.
+        - Mantener orden estable para calif_*, pregunta_* y embeddings x_text_*.
 
-        Embeddings:
-        - Si existe un prefijo de embeddings de texto (x_text_*) y son numéricas,
-          quedan incluidas automáticamente por select_dtypes; aquí solo aseguramos orden estable.
+        :param df: DataFrame de entrada (ya con features hash si modo 'hash').
+        :return: Lista de columnas.
         """
         df_num = df.select_dtypes(include=[np.number]).copy()
 
@@ -524,9 +685,7 @@ class RBMGeneral:
     # Target building
     # -------------------------------------------------------------------------
 
-    def _extract_targets(
-        self, df: pd.DataFrame
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    def _extract_targets(self, df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Construye targets hard y/o soft.
 
@@ -556,12 +715,11 @@ class RBMGeneral:
         if mask_valid.sum() == 0:
             return None, None
 
-        # NOTA: el filtrado por mask_valid se aplica afuera para mantener X/y alineados
         y_hard_full = np.array([_LABEL_MAP.get(s, -1) for s in y_raw.tolist()], dtype=np.int64)
         return y_hard_full, None
 
     # -------------------------------------------------------------------------
-    # Split train/val (Commit 4)
+    # Split train/val
     # -------------------------------------------------------------------------
 
     def _split_indices(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
@@ -570,7 +728,7 @@ class RBMGeneral:
 
         Prioridad:
         1) Columna ``split`` si existe (train/val/test).
-        2) Si split_mode=temporal y existe ``periodo``: ordenar por periodo y tomar cola como val.
+        2) Temporal por ``periodo`` si split_mode=temporal.
         3) Random con val_ratio.
 
         :return: (idx_train, idx_val)
@@ -594,7 +752,7 @@ class RBMGeneral:
             order = np.argsort(np.array(keys, dtype=object), kind="stable")
             n_val = max(1, int(round(n * float(self.val_ratio))))
             idx_val = order[-n_val:].astype(np.int64)
-            idx_train = order[:-n_val].astype(np.int64)
+            idx_train = order[:-n_val:].astype(np.int64)
             if idx_train.size == 0:
                 idx_train = idx_val
             return idx_train, idx_val
@@ -610,6 +768,41 @@ class RBMGeneral:
         return idx_train, idx_val
 
     # -------------------------------------------------------------------------
+    # Teacher/Materia indices (Commit 5, modo embed)
+    # -------------------------------------------------------------------------
+
+    def _build_teacher_materia_indices(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Construye índices discretos para teacher/materia usando hashing estable.
+
+        Esto evita almacenar un vocabulario explícito y es estable entre ejecuciones.
+
+        :param df: DataFrame (debe tener teacher_key/materia_key para aprovecharlo).
+        :return: (teacher_idx, materia_idx) arrays int64 de tamaño n.
+        """
+        n = len(df)
+
+        if not self.include_teacher_materia or self.teacher_materia_mode != "embed":
+            return (
+                np.zeros((n,), dtype=np.int64),
+                np.zeros((n,), dtype=np.int64),
+            )
+
+        if "teacher_key" in df.columns:
+            teacher_raw = df["teacher_key"].astype("string").fillna("")
+        else:
+            teacher_raw = pd.Series([""] * n)
+
+        if "materia_key" in df.columns:
+            materia_raw = df["materia_key"].astype("string").fillna("")
+        else:
+            materia_raw = pd.Series([""] * n)
+
+        teacher_idx = teacher_raw.map(lambda s: _stable_hash_index(str(s), self.teacher_emb_buckets)).to_numpy(np.int64)
+        materia_idx = materia_raw.map(lambda s: _stable_hash_index(str(s), self.materia_emb_buckets)).to_numpy(np.int64)
+        return teacher_idx, materia_idx
+
+    # -------------------------------------------------------------------------
     # Public API requerido por PlantillaEntrenamiento
     # -------------------------------------------------------------------------
 
@@ -619,12 +812,14 @@ class RBMGeneral:
 
         Pasos:
         - Leer dataset.
-        - (Opcional) agregar hashing teacher/materia.
-        - Seleccionar features numéricas sin leakage.
-        - Construir targets hard/soft según target_mode.
+        - Configurar split/target y teacher/materia.
+        - Si teacher_materia_mode='hash': generar one-hot hash (features visibles).
+        - Construir targets hard/soft.
         - Split train/val.
         - Vectorizar (fit SOLO en train).
-        - Inicializar RBM + head.
+        - Inicializar RBM + head:
+          - head simple (legacy)
+          - head con embeddings (Commit 5)
         - Preentrenar RBM (unsupervised) con train.
         """
         hp = {str(k).lower(): v for k, v in (hparams or {}).items()}
@@ -637,7 +832,7 @@ class RBMGeneral:
         use_cuda = bool(hp.get("use_cuda", False))
         self.device = "cuda" if (use_cuda and torch.cuda.is_available()) else self.device
 
-        # hparams
+        # hparams base
         self.batch_size = int(hp.get("batch_size", self.batch_size))
         self.cd_k = int(hp.get("cd_k", self.cd_k))
         self.lr_rbm = float(hp.get("lr_rbm", self.lr_rbm))
@@ -647,26 +842,46 @@ class RBMGeneral:
         self.epochs_rbm = int(hp.get("epochs_rbm", self.epochs_rbm))
         self.scale_mode = str(hp.get("scale_mode", self.scale_mode))
 
-        # commit 4 split/target
+        # split/target
         self.split_mode = str(hp.get("split_mode", self.split_mode)).lower()
         self.val_ratio = float(hp.get("val_ratio", self.val_ratio))
         self.target_mode = str(hp.get("target_mode", self.target_mode)).lower()
 
-        # teacher/materia hashing
+        # teacher/materia (Commit 5)
         self.include_teacher_materia = bool(hp.get("include_teacher_materia", self.include_teacher_materia))
+        self.teacher_materia_mode = str(hp.get("teacher_materia_mode", self.teacher_materia_mode)).lower()
+
+        # normalizar valores válidos
+        if self.teacher_materia_mode not in ("embed", "hash", "none"):
+            self.teacher_materia_mode = "embed"
+
+        if not self.include_teacher_materia:
+            self.teacher_materia_mode = "none"
+
+        # modo hash legacy
         self.teacher_hash_dim = int(hp.get("teacher_hash_dim", self.teacher_hash_dim))
         self.materia_hash_dim = int(hp.get("materia_hash_dim", self.materia_hash_dim))
 
-        # embeddings prefix (si aplica)
+        # modo embed Commit 5
+        self.tm_emb_dim = int(hp.get("tm_emb_dim", self.tm_emb_dim))
+        self.teacher_emb_buckets = int(hp.get("teacher_emb_buckets", self.teacher_emb_buckets))
+        self.materia_emb_buckets = int(hp.get("materia_emb_buckets", self.materia_emb_buckets))
+        self.tm_use_interaction = bool(hp.get("tm_use_interaction", self.tm_use_interaction))
+
+        # embeddings prefix (texto)
         self.text_embed_prefix_ = str(hp.get("text_embed_prefix", self.text_embed_prefix_))
 
         # cargar DF
         df = self._load_df(data_ref)
 
-        # opcional: hashing keys
+        # (A) teacher/materia
+        # - hash: agrega columnas numéricas a df
+        # - embed: crea índices aparte (no altera df numéricamente)
         df = self._add_teacher_materia_hash_features(df)
 
-        # targets
+        teacher_idx_full, materia_idx_full = self._build_teacher_materia_indices(df)
+
+        # (B) targets
         y_hard_full, y_soft_full = self._extract_targets(df)
 
         # filtrar labels inválidas si y_hard_full trae -1
@@ -679,8 +894,10 @@ class RBMGeneral:
                 y_hard_full = y_hard_full[valid]
                 if y_soft_full is not None:
                     y_soft_full = y_soft_full[valid]
+                teacher_idx_full = teacher_idx_full[valid]
+                materia_idx_full = materia_idx_full[valid]
 
-        # features
+        # (C) features
         feat_cols = self._pick_feature_cols(df)
         if not feat_cols:
             raise ValueError("No se detectaron columnas numéricas de features para entrenar RBM.")
@@ -688,13 +905,13 @@ class RBMGeneral:
         self.feat_cols_ = feat_cols
         X_full = df[feat_cols].to_numpy(dtype=np.float32)
 
-        # split indices
+        # (D) split
         idx_train, idx_val = self._split_indices(df)
 
         X_tr = X_full[idx_train]
         X_va = X_full[idx_val]
 
-        # vectorizer fit SOLO en train
+        # (E) vectorizer fit SOLO en train
         mode = "scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"
         self.vec = _Vectorizer().fit(X_tr, mode=mode)
 
@@ -704,7 +921,7 @@ class RBMGeneral:
         self.X_train = torch.from_numpy(X_tr_s).to(self.device)
         self.X_val = torch.from_numpy(X_va_s).to(self.device)
 
-        # targets tensors
+        # (F) targets tensors
         if y_hard_full is not None:
             self.y_train_hard = torch.from_numpy(y_hard_full[idx_train].astype(np.int64)).to(self.device)
             self.y_val_hard = torch.from_numpy(y_hard_full[idx_val].astype(np.int64)).to(self.device)
@@ -719,17 +936,40 @@ class RBMGeneral:
             self.y_train_soft = None
             self.y_val_soft = None
 
-        # init models
+        # (G) teacher/materia idx tensors (solo embed)
+        if self.teacher_materia_mode == "embed":
+            self.teacher_idx_train = torch.from_numpy(teacher_idx_full[idx_train].astype(np.int64)).to(self.device)
+            self.teacher_idx_val = torch.from_numpy(teacher_idx_full[idx_val].astype(np.int64)).to(self.device)
+            self.materia_idx_train = torch.from_numpy(materia_idx_full[idx_train].astype(np.int64)).to(self.device)
+            self.materia_idx_val = torch.from_numpy(materia_idx_full[idx_val].astype(np.int64)).to(self.device)
+        else:
+            self.teacher_idx_train = None
+            self.teacher_idx_val = None
+            self.materia_idx_train = None
+            self.materia_idx_val = None
+
+        # (H) init models
         n_visible = int(self.X_train.shape[1])
         n_hidden = int(hp.get("n_hidden", self.n_hidden or 32))
 
         self.rbm = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
-        self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
+
+        # head: embed vs legacy
+        if self.teacher_materia_mode == "embed":
+            self.head = _TeacherMateriaHead(
+                n_hidden=n_hidden,
+                emb_dim=self.tm_emb_dim,
+                teacher_buckets=self.teacher_emb_buckets,
+                materia_buckets=self.materia_emb_buckets,
+                use_interaction=self.tm_use_interaction,
+            ).to(self.device)
+        else:
+            self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
 
         self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum)
         self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
 
-        # pretrain RBM
+        # (I) pretrain RBM
         self._pretrain_rbm()
 
         self._epoch = 0
@@ -757,13 +997,40 @@ class RBMGeneral:
 
         self.rbm.eval()
 
+    def _head_logits(
+        self,
+        h: Tensor,
+        *,
+        teacher_idx: Optional[Tensor] = None,
+        materia_idx: Optional[Tensor] = None,
+    ) -> Tensor:
+        """
+        Calcula logits usando la head correspondiente (embed o legacy).
+
+        :param h: Hidden RBM (batch, n_hidden).
+        :param teacher_idx: Índices teacher si modo embed.
+        :param materia_idx: Índices materia si modo embed.
+        :return: Logits (batch, 3).
+        """
+        if self.head is None:
+            raise RuntimeError("Head no inicializada.")
+
+        if self.teacher_materia_mode == "embed":
+            assert isinstance(self.head, _TeacherMateriaHead)
+            return self.head(h, teacher_idx=teacher_idx, materia_idx=materia_idx)
+
+        # legacy head (Sequential)
+        return self.head(h)
+
     def train_step(self, epoch: int) -> Tuple[float, Dict[str, Any]]:
         """
         Ejecuta una época de entrenamiento supervisado de la cabeza (head).
 
-        Retorna:
-          - loss promedio en train (para curva)
-          - métricas train/val + confusion matrix.
+        - La RBM se mantiene fija (eval) y se usa para generar H.
+        - La head se entrena con soft labels (si target_mode=sentiment_probs) o hard labels.
+
+        :param epoch: Época (1-indexed).
+        :return: (train_loss, metrics)
         """
         if self.rbm is None or self.head is None or self.opt_head is None:
             raise RuntimeError("RBMGeneral no está inicializado (setup no ejecutado).")
@@ -792,7 +1059,16 @@ class RBMGeneral:
             with torch.no_grad():
                 hb = self.rbm.hidden_probs(xb)
 
-            logits = self.head(hb)
+            # teacher/materia batch idx si embed
+            t_idx = None
+            m_idx = None
+            if self.teacher_materia_mode == "embed":
+                if self.teacher_idx_train is not None:
+                    t_idx = self.teacher_idx_train[idx]
+                if self.materia_idx_train is not None:
+                    m_idx = self.materia_idx_train[idx]
+
+            logits = self._head_logits(hb, teacher_idx=t_idx, materia_idx=m_idx)
 
             # target: soft o hard
             if self.target_mode == "sentiment_probs" and self.y_train_soft is not None:
@@ -821,20 +1097,32 @@ class RBMGeneral:
         metrics["confusion_matrix"] = self._last_confusion_matrix
         metrics["labels"] = ["neg", "neu", "pos"]
 
+        # info teacher/materia (útil para debug/UI)
+        metrics["teacher_materia_mode"] = str(self.teacher_materia_mode)
+
         return float(train_loss), metrics
 
     def _evaluate(self, train_loss: float) -> Dict[str, Any]:
         """
         Evalúa métricas en train y val.
+
+        :param train_loss: Loss promedio de train reportado en train_step.
+        :return: Dict con métricas numéricas y actualiza confusion matrix en val.
         """
         assert self.rbm is not None and self.head is not None
+        assert self.X_train is not None and self.X_val is not None
+
         self.rbm.eval()
         self.head.eval()
 
         # ---- train preds ----
         with torch.no_grad():
             Htr = self.rbm.hidden_probs(self.X_train)
-            logits_tr = self.head(Htr)
+
+            t_tr = self.teacher_idx_train if self.teacher_materia_mode == "embed" else None
+            m_tr = self.materia_idx_train if self.teacher_materia_mode == "embed" else None
+
+            logits_tr = self._head_logits(Htr, teacher_idx=t_tr, materia_idx=m_tr)
             proba_tr = F.softmax(logits_tr, dim=1)
             pred_tr = torch.argmax(proba_tr, dim=1).cpu().numpy()
 
@@ -851,7 +1139,11 @@ class RBMGeneral:
         # ---- val preds ----
         with torch.no_grad():
             Hva = self.rbm.hidden_probs(self.X_val)
-            logits_va = self.head(Hva)
+
+            t_va = self.teacher_idx_val if self.teacher_materia_mode == "embed" else None
+            m_va = self.materia_idx_val if self.teacher_materia_mode == "embed" else None
+
+            logits_va = self._head_logits(Hva, teacher_idx=t_va, materia_idx=m_va)
             proba_va = F.softmax(logits_va, dim=1)
             pred_va = torch.argmax(proba_va, dim=1).cpu().numpy()
 
@@ -895,15 +1187,18 @@ class RBMGeneral:
         """
         Convierte un DataFrame a matriz X respetando ``feat_cols_``.
 
-        Si faltan columnas, se rellenan con 0.0. Si hay teacher_key/materia_key y el
-        modelo fue entrenado con hashing, se generan esas columnas antes.
+        - Si faltan columnas, se rellenan con 0.0.
+        - En modo ``hash``: si hay teacher_key/materia_key, genera columnas teacher_h_*/materia_h_*.
+        - En modo ``embed``: teacher/materia NO se incorporan a X; van por índices aparte.
+
+        :param df: DataFrame.
+        :return: Matriz numpy float32.
         """
         if not self.feat_cols_:
             raise RuntimeError("El modelo no tiene feat_cols_ configuradas (no entrenado o falta meta).")
 
-        needs_teacher = any(c.startswith("teacher_h_") for c in self.feat_cols_)
-        needs_materia = any(c.startswith("materia_h_") for c in self.feat_cols_)
-        if (needs_teacher or needs_materia) and (("teacher_key" in df.columns) or ("materia_key" in df.columns)):
+        # Si el modelo fue entrenado en modo hash, reconstruir columnas hash al inferir
+        if self.teacher_materia_mode == "hash" and self.include_teacher_materia:
             df = self._add_teacher_materia_hash_features(df.copy())
 
         missing = [c for c in self.feat_cols_ if c not in df.columns]
@@ -917,38 +1212,60 @@ class RBMGeneral:
         """
         Predice probabilidades (n,3) para un DataFrame.
 
+        :param df: DataFrame de entrada.
         :return: numpy array con orden [neg, neu, pos].
         """
         if self.rbm is None or self.head is None:
             raise RuntimeError("Modelo no cargado/entrenado.")
+
         X_np = self._df_to_X(df.copy())
         Xs = self.vec.transform(X_np)
         Xt = torch.from_numpy(Xs).to(self.device)
+
+        # teacher/materia idx para inferencia si embed
+        t_idx = None
+        m_idx = None
+        if self.teacher_materia_mode == "embed" and self.include_teacher_materia:
+            teacher_idx, materia_idx = self._build_teacher_materia_indices(df)
+            t_idx = torch.from_numpy(teacher_idx.astype(np.int64)).to(self.device)
+            m_idx = torch.from_numpy(materia_idx.astype(np.int64)).to(self.device)
 
         self.rbm.eval()
         self.head.eval()
         with torch.no_grad():
             H = self.rbm.hidden_probs(Xt)
-            proba = F.softmax(self.head(H), dim=1).cpu().numpy()
+            logits = self._head_logits(H, teacher_idx=t_idx, materia_idx=m_idx)
+            proba = F.softmax(logits, dim=1).cpu().numpy()
         return proba
 
     def predict_df(self, df: pd.DataFrame) -> List[str]:
-        """Predice etiquetas string {neg,neu,pos} para un DataFrame."""
+        """
+        Predice etiquetas string {neg,neu,pos} para un DataFrame.
+        """
         idx = self.predict_proba_df(df).argmax(axis=1)
         return [_INV_LABEL_MAP[int(i)] for i in idx]
 
     def predict_proba(self, X_or_df: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
-        """Wrapper: acepta np.ndarray (ya alineado a feat_cols_) o DataFrame."""
+        """
+        Wrapper: acepta np.ndarray o DataFrame.
+
+        .. note::
+           Si usas np.ndarray, en modo embed no podrás pasar teacher/materia.
+           Recomendación: usar DataFrame si requieres embeddings Docente/Materia.
+        """
         if isinstance(X_or_df, pd.DataFrame):
             return self.predict_proba_df(X_or_df)
         if self.rbm is None or self.head is None:
             raise RuntimeError("Modelo no cargado/entrenado.")
+
         X_np = np.asarray(X_or_df, dtype=np.float32)
         Xs = self.vec.transform(X_np)
         Xt = torch.from_numpy(Xs).to(self.device)
+
         with torch.no_grad():
             H = self.rbm.hidden_probs(Xt)
-            return F.softmax(self.head(H), dim=1).cpu().numpy()
+            logits = self._head_logits(H, teacher_idx=None, materia_idx=None)
+            return F.softmax(logits, dim=1).cpu().numpy()
 
     def predict(self, X_or_df: Union[np.ndarray, pd.DataFrame]) -> List[str]:
         """Predice etiquetas string para np.ndarray o DataFrame."""
@@ -969,6 +1286,8 @@ class RBMGeneral:
         - rbm.pt
         - head.pt
         - meta.json
+
+        :param out_dir: Directorio de salida.
         """
         if self.rbm is None or self.head is None:
             raise RuntimeError("No se puede guardar: modelo no entrenado/cargado.")
@@ -998,9 +1317,20 @@ class RBMGeneral:
             "target_mode": self.target_mode,
             "split_mode": self.split_mode,
             "val_ratio": float(self.val_ratio),
+
+            # teacher/materia Commit 5
             "include_teacher_materia": bool(self.include_teacher_materia),
+            "teacher_materia_mode": str(self.teacher_materia_mode),
+
+            # modo hash (legacy)
             "teacher_hash_dim": int(self.teacher_hash_dim),
             "materia_hash_dim": int(self.materia_hash_dim),
+
+            # modo embed
+            "tm_emb_dim": int(self.tm_emb_dim),
+            "teacher_emb_buckets": int(self.teacher_emb_buckets),
+            "materia_emb_buckets": int(self.materia_emb_buckets),
+            "tm_use_interaction": bool(self.tm_use_interaction),
         }
         with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2, ensure_ascii=False)
@@ -1010,8 +1340,13 @@ class RBMGeneral:
         """
         Carga un modelo guardado con :meth:`save`.
 
-        :param in_dir: directorio con rbm.pt/head.pt/vectorizer.json/meta.json
-        :param device: 'cpu' o 'cuda' (default auto)
+        Compatibilidad:
+        - si ``meta.json`` no tiene teacher_materia_mode (runs antiguos),
+          se asume ``hash`` si hay dims > 0; en caso contrario ``none``.
+
+        :param in_dir: Directorio con rbm.pt/head.pt/vectorizer.json/meta.json.
+        :param device: 'cpu' o 'cuda' (default auto).
+        :return: Instancia cargada.
         """
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1020,6 +1355,7 @@ class RBMGeneral:
         obj.device = device
 
         meta_path = os.path.join(in_dir, "meta.json")
+        meta: Dict[str, Any] = {}
         if os.path.exists(meta_path):
             meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
             obj.feat_cols_ = list(meta.get("feat_cols_", []))
@@ -1028,9 +1364,27 @@ class RBMGeneral:
             obj.target_mode = str(meta.get("target_mode", obj.target_mode))
             obj.split_mode = str(meta.get("split_mode", obj.split_mode))
             obj.val_ratio = float(meta.get("val_ratio", obj.val_ratio))
+
             obj.include_teacher_materia = bool(meta.get("include_teacher_materia", obj.include_teacher_materia))
+
+            # teacher/materia mode (compat)
+            tmm = meta.get("teacher_materia_mode")
+            if tmm is None:
+                # compat runs antiguos
+                th = int(meta.get("teacher_hash_dim", 0))
+                mh = int(meta.get("materia_hash_dim", 0))
+                tmm = "hash" if (th > 0 or mh > 0) else "none"
+            obj.teacher_materia_mode = str(tmm).lower()
+
+            # legacy dims
             obj.teacher_hash_dim = int(meta.get("teacher_hash_dim", obj.teacher_hash_dim))
             obj.materia_hash_dim = int(meta.get("materia_hash_dim", obj.materia_hash_dim))
+
+            # embed config
+            obj.tm_emb_dim = int(meta.get("tm_emb_dim", obj.tm_emb_dim))
+            obj.teacher_emb_buckets = int(meta.get("teacher_emb_buckets", obj.teacher_emb_buckets))
+            obj.materia_emb_buckets = int(meta.get("materia_emb_buckets", obj.materia_emb_buckets))
+            obj.tm_use_interaction = bool(meta.get("tm_use_interaction", obj.tm_use_interaction))
 
         vec_path = os.path.join(in_dir, "vectorizer.json")
         if os.path.exists(vec_path):
@@ -1046,9 +1400,27 @@ class RBMGeneral:
         ).to(device)
         obj.rbm.load_state_dict(rbm_ckpt["state_dict"])
 
+        # construir head según modo
+        n_hidden = int(rbm_ckpt["n_hidden"])
+        if obj.teacher_materia_mode == "embed" and obj.include_teacher_materia:
+            obj.head = _TeacherMateriaHead(
+                n_hidden=n_hidden,
+                emb_dim=obj.tm_emb_dim,
+                teacher_buckets=obj.teacher_emb_buckets,
+                materia_buckets=obj.materia_emb_buckets,
+                use_interaction=obj.tm_use_interaction,
+            ).to(device)
+        else:
+            obj.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(device)
+
         head_ckpt = torch.load(os.path.join(in_dir, "head.pt"), map_location=device)
-        obj.head = nn.Sequential(nn.Linear(int(rbm_ckpt["n_hidden"]), 3)).to(device)
         obj.head.load_state_dict(head_ckpt["state_dict"])
+
+        # tensores runtime no se restauran (solo inference usa índices on-the-fly)
+        obj.teacher_idx_train = None
+        obj.teacher_idx_val = None
+        obj.materia_idx_train = None
+        obj.materia_idx_val = None
 
         return obj
 
@@ -1064,6 +1436,11 @@ class RBMGeneral:
         - llama a :meth:`setup`
         - corre :meth:`train_step` por `epochs`
         - retorna métricas finales
+
+        :param data_ref: Ruta al dataset.
+        :param epochs: Épocas.
+        :param hparams: Hparams.
+        :return: Dict métricas finales.
         """
         self.setup(data_ref, hparams or {})
         last_loss = 0.0

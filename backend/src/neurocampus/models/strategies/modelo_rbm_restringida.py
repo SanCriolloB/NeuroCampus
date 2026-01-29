@@ -37,14 +37,18 @@ Modos:
   - ignora teacher/materia.
 
 Objetivo (target) y fuga de información
----------------------------------------
+--------------------------------------------------
 Por defecto, el flujo actualizado usa ``target_mode='sentiment_probs'``:
 
 - ``p_neg,p_neu,p_pos`` se usan como **target soft**, NO como features.
+- El entrenamiento de la cabeza supervisada usa *soft cross-entropy*:
+  ``loss = -sum(y_soft * log_softmax(logits))``.
 
-Si ``target_mode='label'``:
-- usa etiquetas hard si existen (sent_label/sentiment_label/etc.)
-- si no hay label, cae a argmax(p_*) solo para métricas.
+Fallback (controlado):
+- Si ``target_mode='sentiment_probs'`` y faltan ``p_*``:
+  - intenta usar una columna de label hard (sent_label/sentiment_label/etc.) y cambia
+    internamente a ``target_mode='label'``;
+  - si tampoco hay label hard, lanza error (evita “entrenar sin supervisión” por accidente).
 
 .. important::
    Si ``target_mode='sentiment_probs'``, se fuerza ``use_text_probs=False`` para evitar
@@ -573,7 +577,7 @@ class RBMRestringida:
     - ``val_ratio``: float (default 0.2)
     - si hay columna ``split`` (train/val), tiene prioridad.
 
-    Target (Commit 4)
+    Target (Commit 6)
     -----------------
     - ``target_mode``: sentiment_probs | label (default sentiment_probs)
 
@@ -614,7 +618,7 @@ class RBMRestringida:
         self.epochs_rbm: int = 1
         self.scale_mode: str = "minmax"
 
-        # commit 4 (split/target)
+        # split/target
         self.split_mode: str = "temporal"
         self.val_ratio: float = 0.2
         self.target_mode: str = "sentiment_probs"
@@ -625,7 +629,7 @@ class RBMRestringida:
         self.use_text_embeds: bool = False
         self.text_embed_prefix_: str = "x_text_"
 
-        # commit 5: teacher/materia
+        # teacher/materia
         self.include_teacher_materia: bool = True
         self.teacher_materia_mode: str = "embed"  # embed | hash | none
 
@@ -769,23 +773,46 @@ class RBMRestringida:
         return teacher_idx, materia_idx
 
     # -------------------------------------------------------------------------
-    # Targets
+    # Targets (Commit 6)
     # -------------------------------------------------------------------------
 
     def _extract_targets(self, df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Construye targets hard y/o soft.
 
+        Commit 6:
+        - Si ``target_mode='sentiment_probs'`` y existen p_*:
+          - y_soft = normalize(p_*)
+          - y_hard = argmax(y_soft) (para métricas/confusion)
+        - Si ``target_mode='sentiment_probs'`` y faltan p_*:
+          - fallback controlado a label hard si existe
+          - si no existe label hard, error explícito
+
+        En modo ``label``:
+        - usa label hard si existe
+        - si no existe label hard pero hay p_*, usa argmax(p_*) SOLO para métricas (sin soft targets)
+
         :return: (y_hard[int64] o None, y_soft[float32](n,3) o None)
         """
-        # Soft labels (probabilidades)
-        if self.target_mode == "sentiment_probs" and all(c in df.columns for c in _PROB_COLS):
-            probs = normalize_probs(df[_PROB_COLS].to_numpy(dtype=np.float32))
-            y_soft = probs.astype(np.float32, copy=False)
-            y_hard = soft_to_hard(probs)
-            return y_hard, y_soft
+        # (A) Soft labels (probabilidades)
+        if self.target_mode == "sentiment_probs":
+            if all(c in df.columns for c in _PROB_COLS):
+                probs = normalize_probs(df[_PROB_COLS].to_numpy(dtype=np.float32))
+                y_soft = probs.astype(np.float32, copy=False)
+                y_hard = soft_to_hard(probs)
+                return y_hard, y_soft
 
-        # Hard labels
+            # fallback a label hard si faltan p_*
+            label_col = next((c for c in _LABEL_COL_CANDIDATES if c in df.columns), None)
+            if label_col is None:
+                raise ValueError(
+                    "target_mode='sentiment_probs' pero faltan columnas p_neg/p_neu/p_pos "
+                    "y no existe ninguna columna de label hard (sent_label/sentiment_label/etc)."
+                )
+            # cambiar modo internamente para consistencia del run
+            self.target_mode = "label"
+
+        # (B) Hard labels
         label_col = next((c for c in _LABEL_COL_CANDIDATES if c in df.columns), None)
 
         if label_col is None and all(c in df.columns for c in _PROB_COLS):
@@ -881,7 +908,7 @@ class RBMRestringida:
 
     def setup(self, data_ref: str, hparams: Dict[str, Any]) -> None:
         """
-        Prepara el entrenamiento (Commit 4 + Commit 5).
+        Prepara el entrenamiento (Commit 4 + Commit 5 + Commit 6).
 
         Pasos:
         - Leer DF.
@@ -890,7 +917,8 @@ class RBMRestringida:
           - si mode='hash': generar columnas one-hot por hashing (visibles)
           - si mode='embed': construir índices discretos (head)
           - si mode='none': ignorar
-        - Construir targets según target_mode.
+        - Construir targets según target_mode (Commit 6).
+        - Validar que exista supervisión (soft o hard); si no, error.
         - Split train/val.
         - Vectorización (fit SOLO en train).
         - Inicializar RBM + head (embed o legacy).
@@ -915,7 +943,7 @@ class RBMRestringida:
         self.epochs_rbm = int(hp.get("epochs_rbm", self.epochs_rbm))
         self.scale_mode = str(hp.get("scale_mode", self.scale_mode))
 
-        # commit 4 split/target
+        # split/target
         self.split_mode = str(hp.get("split_mode", self.split_mode)).lower()
         self.val_ratio = float(hp.get("val_ratio", self.val_ratio))
         self.target_mode = str(hp.get("target_mode", self.target_mode)).lower()
@@ -930,7 +958,7 @@ class RBMRestringida:
         if self.target_mode == "sentiment_probs":
             self.use_text_probs = False
 
-        # commit 5 teacher/materia
+        # teacher/materia
         self.include_teacher_materia = bool(hp.get("include_teacher_materia", self.include_teacher_materia))
         self.teacher_materia_mode = str(hp.get("teacher_materia_mode", self.teacher_materia_mode)).lower()
 
@@ -943,7 +971,7 @@ class RBMRestringida:
         self.teacher_hash_dim = int(hp.get("teacher_hash_dim", self.teacher_hash_dim))
         self.materia_hash_dim = int(hp.get("materia_hash_dim", self.materia_hash_dim))
 
-        # embed (commit 5)
+        # embed
         self.tm_emb_dim = int(hp.get("tm_emb_dim", self.tm_emb_dim))
         self.teacher_emb_buckets = int(hp.get("teacher_emb_buckets", self.teacher_emb_buckets))
         self.materia_emb_buckets = int(hp.get("materia_emb_buckets", self.materia_emb_buckets))
@@ -958,8 +986,16 @@ class RBMRestringida:
         # build indices only if mode == 'embed' (otherwise zeros)
         teacher_idx_full, materia_idx_full = self._build_teacher_materia_indices(df)
 
-        # targets
+        # targets (Commit 6)
         y_hard_full, y_soft_full = self._extract_targets(df)
+
+        # Validación: debe existir supervisión (soft o hard)
+        if y_hard_full is None and y_soft_full is None:
+            raise ValueError(
+                "No se encontraron targets para entrenamiento. "
+                "Revisa que existan p_neg/p_neu/p_pos (para sentiment_probs) "
+                "o una columna de label hard (sent_label/sentiment_label/etc)."
+            )
 
         # filtrar labels inválidas si es hard (-1)
         if y_hard_full is not None:
@@ -1088,7 +1124,7 @@ class RBMRestringida:
 
         Flujo:
         (A) RBM: un paso CD por época (diagnóstico recon_error)
-        (B) Head: entrenamiento supervisado con targets soft/hard
+        (B) Head: entrenamiento supervisado con targets soft/hard (Commit 6)
         (C) Métricas reales train/val + confusion matrix
 
         :param epoch: Número de época (1-indexed).
@@ -1146,6 +1182,7 @@ class RBMRestringida:
 
             logits = self._head_logits(hb, teacher_idx=t_idx, materia_idx=m_idx)
 
+            # Commit 6: soft cross-entropy si hay soft targets
             if self.target_mode == "sentiment_probs" and self.y_train_soft is not None:
                 yb = self.y_train_soft[idx]
                 logp = F.log_softmax(logits, dim=1)
@@ -1179,6 +1216,7 @@ class RBMRestringida:
         metrics["labels"] = list(_CLASSES)
 
         metrics["teacher_materia_mode"] = str(self.teacher_materia_mode)
+        metrics["target_mode"] = str(self.target_mode)
         metrics["time_epoch_ms"] = float((time.perf_counter() - t0) * 1000.0)
 
         loss_out = float(recon_error + cls_loss)
@@ -1193,6 +1231,9 @@ class RBMRestringida:
           - val_loss, val_accuracy, val_f1_macro
 
         Además actualiza ``self._last_confusion_matrix`` para val.
+
+        Commit 6:
+        - val_loss usa soft CE si target_mode=sentiment_probs y y_val_soft existe.
 
         :param train_loss: Loss total reportado en train.
         :return: Dict de métricas.
@@ -1427,7 +1468,7 @@ class RBMRestringida:
             "use_text_embeds": bool(self.use_text_embeds),
             "text_embed_prefix": self.text_embed_prefix_,
 
-            # commit 5 teacher/materia
+            # teacher/materia
             "include_teacher_materia": bool(self.include_teacher_materia),
             "teacher_materia_mode": str(self.teacher_materia_mode),
 
@@ -1435,7 +1476,7 @@ class RBMRestringida:
             "teacher_hash_dim": int(self.teacher_hash_dim),
             "materia_hash_dim": int(self.materia_hash_dim),
 
-            # embed commit 5
+            # embed
             "tm_emb_dim": int(self.tm_emb_dim),
             "teacher_emb_buckets": int(self.teacher_emb_buckets),
             "materia_emb_buckets": int(self.materia_emb_buckets),
@@ -1491,7 +1532,7 @@ class RBMRestringida:
             obj.teacher_hash_dim = int(meta.get("teacher_hash_dim", obj.teacher_hash_dim))
             obj.materia_hash_dim = int(meta.get("materia_hash_dim", obj.materia_hash_dim))
 
-            # embed commit 5
+            # embed
             obj.tm_emb_dim = int(meta.get("tm_emb_dim", obj.tm_emb_dim))
             obj.teacher_emb_buckets = int(meta.get("teacher_emb_buckets", obj.teacher_emb_buckets))
             obj.materia_emb_buckets = int(meta.get("materia_emb_buckets", obj.materia_emb_buckets))

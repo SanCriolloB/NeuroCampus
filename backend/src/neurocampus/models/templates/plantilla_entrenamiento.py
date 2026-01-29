@@ -18,6 +18,11 @@ Esta plantilla es responsable de:
 
 Cambios
 ----------------
+Mejoras incluidas en este commit:
+
+- No se sobrescribe ``time_epoch_ms`` si la estrategia ya lo reporta.
+- El retraso artificial para suavizar la UI es configurable con ``ui_sleep_s`` o ``ui_sleep_ms``.
+
 Se amplía el contrato de la estrategia para permitir:
 
 - ``train_step(epoch, hparams, y=None) -> metrics``
@@ -249,13 +254,15 @@ class PlantillaEntrenamiento:
 
                 # Unificar métricas (enriched se manda a UI vía eventos)
                 enriched: Dict[str, Any] = dict(last_metrics)
-                enriched["time_epoch_ms"] = float(dt_ms)
+
+                # No pisar si la estrategia ya lo reportó (Commit 4+)
+                enriched.setdefault("time_epoch_ms", float(dt_ms))
 
                 # Default: si no hay recon_error, usa loss como aproximación
                 enriched.setdefault("recon_error", float(loss))
 
                 # Agregar a history solo lo numérico (para graficar)
-                hist_item: Dict[str, Any] = {"epoch": float(epoch), "loss": float(loss)}
+                hist_item: Dict[str, Any] = {"epoch": int(epoch), "loss": float(loss)}
                 for k, v in enriched.items():
                     if isinstance(v, (int, float)):
                         hist_item[k] = float(v)
@@ -266,8 +273,15 @@ class PlantillaEntrenamiento:
                 # -----------------------------------------
                 emit_epoch_end(job_id, epoch, float(loss), enriched)
 
-                # Pequeño retraso opcional para suavizar gráficas (no bloqueante)
-                time.sleep(0.01)
+                # Retraso opcional para suavizar la UI (default 10ms).
+                sleep_s = float(hparams_norm.get("ui_sleep_s", 0.01))
+                if "ui_sleep_ms" in hparams_norm and hparams_norm["ui_sleep_ms"] is not None:
+                    try:
+                        sleep_s = float(hparams_norm["ui_sleep_ms"]) / 1000.0
+                    except Exception:
+                        pass
+                if sleep_s > 0:
+                    time.sleep(min(sleep_s, 0.5))
 
             # -----------------------------------------
             # Finalización exitosa
@@ -275,7 +289,10 @@ class PlantillaEntrenamiento:
             final_loss = float(history[-1]["loss"]) if history else float("nan")
             final_metrics: Dict[str, Any] = dict(last_metrics)
             final_metrics.setdefault("loss_final", final_loss)
-            final_metrics.setdefault("recon_error_final", history[-1].get("recon_error", final_loss) if history else final_loss)
+            final_metrics.setdefault(
+                "recon_error_final",
+                history[-1].get("recon_error", final_loss) if history else final_loss,
+            )
 
             emit_training_completed(job_id, final_metrics)
 
@@ -294,6 +311,7 @@ class PlantillaEntrenamiento:
             return {
                 "job_id": job_id,
                 "status": "failed",
+                "metrics": dict(last_metrics),
                 "error": str(e),
                 "history": history,
             }

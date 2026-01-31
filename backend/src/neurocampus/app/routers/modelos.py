@@ -4,34 +4,30 @@ neurocampus.app.routers.modelos
 
 Router de **Modelos** (FastAPI) para NeuroCampus.
 
-Este módulo expone endpoints de entrenamiento, estado de jobs, auditoría (runs)
-y champion. Está diseñado para ser compatible con el flujo reproducible del sistema:
+Incluye:
+- Entrenamiento async (BackgroundTasks)
+- Estado de jobs (polling)
+- Readiness (insumos disponibles)
+- Runs y champion (auditoría y selección del mejor modelo)
+- Promote manual (opcional)
 
-- Datos produce *feature-packs* en ``artifacts/features/<dataset_id>/train_matrix.parquet``.
-- Modelos entrena desde esos artefactos, persiste runs en ``artifacts/runs/<run_id>/``
-  y mantiene un champion en ``artifacts/champions/<dataset_id>/...``.
+Correcciones clave
+------------------
+  - Evitar reutilización de instancias de estrategia entre jobs.
+    Se usan CLASES (factory) y se crea una instancia NUEVA por entrenamiento.
 
---------
-- ``GET /modelos/readiness?dataset_id=...`` para detectar insumos disponibles.
-- Resolver de ``data_source`` (feature_pack/labeled/unified_labeled).
-- ``auto_prepare``: intentar generar artefactos faltantes (unificado labeled / feature-pack).
---------
-- Persistencia real de runs (run_id + metrics/history/config/job_meta + pesos si la estrategia los guarda).
-- Champion auto-update por score mediante helpers del módulo :mod:`neurocampus.utils.runs_io`.
-- Endpoint manual para promover un run a champion: ``POST /modelos/champion/promote``.
+  - Resetear runtime-state si el strategy expone un método de reset
+    (reset / _reset_runtime_state / reset_state / clear_state).
+  - Esto mitiga estados “fantasma” por hot-reload o referencias persistentes.
 
-.. note::
-   - Este router maneja jobs en memoria (``_ESTADOS``) y expone polling vía ``/estado/{job_id}``.
-   - La persistencia (runs/champion) se delega a ``runs_io.py`` para evitar duplicación.
-
-.. warning::
-   Este router asume que el pipeline de Datos ya existe (DataTab) y genera los artefactos
-   necesarios. Si ``data_source='labeled'`` falta, no se auto-construye BETO desde aquí.
+  - FIX: No pasar valores None dentro de hparams hacia el training.
+    Especialmente `teacher_materia_mode`, para evitar que el strategy reciba None
+    y lo convierta en 'none' (string), deshabilitando teacher/materia por accidente.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Type
 
 import os
 import time
@@ -129,10 +125,6 @@ def _relpath(p: Path) -> str:
 def _strip_localfs(uri: str) -> str:
     """
     Convierte un URI estilo ``localfs://...`` a una ruta local.
-
-    Ejemplo:
-        - ``localfs:///tmp/x.parquet`` -> ``/tmp/x.parquet``
-        - ``localfs://data/x.parquet`` -> ``data/x.parquet``
     """
     if isinstance(uri, str) and uri.startswith("localfs://"):
         return uri.replace("localfs://", "", 1)
@@ -142,15 +134,60 @@ def _strip_localfs(uri: str) -> str:
 def _abs_path(ref: str) -> Path:
     """
     Convierte un ref (relativo/absoluto o localfs://) a un Path absoluto bajo BASE_DIR.
-
-    :param ref: Ruta relativa/absoluta o localfs://...
-    :return: Path absoluto.
     """
     raw = _strip_localfs(ref)
     p = Path(raw)
     if not p.is_absolute():
         p = (BASE_DIR / p).resolve()
     return p
+
+
+# ---------------------------------------------------------------------------
+# FIX A: Factory de estrategias (CLASES, no instancias)
+# ---------------------------------------------------------------------------
+
+_STRATEGY_CLASSES: Dict[str, Type[Any]] = {
+    "rbm_general": RBMGeneral,
+    "rbm_restringida": RBMRestringida,
+}
+
+
+def _create_strategy(modelo: str) -> Any:
+    """
+    Crea una instancia NUEVA de estrategia por job (FIX A).
+
+    :param modelo: nombre lógico del modelo ("rbm_general" | "rbm_restringida")
+    :raises HTTPException: si el modelo no está soportado
+    """
+    key = str(modelo or "").strip().lower()
+    cls = _STRATEGY_CLASSES.get(key)
+    if cls is None:
+        raise HTTPException(status_code=400, detail=f"Modelo no soportado: {modelo}")
+    return cls()
+
+
+def _safe_reset_strategy(strategy: Any) -> None:
+    """
+    Intenta resetear estado runtime del strategy (FIX B defensivo).
+
+    Esto NO sustituye el arreglo definitivo dentro del strategy (setup/fit),
+    pero reduce la probabilidad de contaminación por hot-reload u otras causas.
+
+    Métodos que intenta:
+      - reset()
+      - _reset_runtime_state()
+      - reset_state()
+      - clear_state()
+    """
+    for m in ("reset", "_reset_runtime_state", "reset_state", "clear_state"):
+        fn = getattr(strategy, m, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                # Reset nunca debe tumbar el entrenamiento.
+                pass
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -168,15 +205,44 @@ def _normalize_hparams(hparams: Dict[str, Any] | None) -> Dict[str, Any]:
     return {str(k).lower(): v for k, v in hparams.items()}
 
 
+def _prune_hparams_for_ui(hparams_norm: Dict[str, Any]) -> Dict[str, Any]:
+    """Elimina claves 'reservadas' de hparams para mostrarlas en UI sin pisar campos del request.
+
+    Problema real detectado:
+      - Si el usuario manda ``hparams.epochs`` (p. ej. 10) pero el request usa ``epochs`` (p. ej. 5),
+        al construir ``params`` se terminaba mostrando 10 en ``/modelos/estado``.
+      - Además, el evento ``training.started`` puede traer de vuelta esos hparams y volver a pisar
+        ``params`` si hacemos un reemplazo completo.
+
+    Esta función elimina claves que deben venir del request (no de hparams) en el bloque que se expone
+    en el estado para la UI.
+    """
+    hp = dict(hparams_norm or {})
+    for k in [
+        # Request-level / control de entrenamiento
+        "epochs",
+        "val_ratio",
+        "split_mode",
+        "target_mode",
+        "data_source",
+        "include_teacher_materia",
+        "teacher_materia_mode",
+        "job_id",
+        # Metodología / selección
+        "metodologia",
+        "ventana_n",
+        "dataset_id",
+        "periodo_actual",
+        "auto_prepare",
+        "data_ref",
+    ]:
+        hp.pop(k, None)
+    return hp
+
+
 def _flatten_metrics_from_payload(payload: Dict[str, Any], allow_loss: bool = True) -> Dict[str, float]:
     """
     Aplana métricas numéricas desde un payload de evento.
-
-    Se usa cuando el evento no trae un dict `metrics` explícito.
-    Filtra campos de control y conserva solo numéricos.
-
-    :param payload: payload del evento.
-    :param allow_loss: incluir `loss` si está presente.
     """
     if not payload:
         return {}
@@ -195,14 +261,6 @@ def _flatten_metrics_from_payload(payload: Dict[str, Any], allow_loss: bool = Tr
 def _wire_job_observers(job_id: str) -> None:
     """
     Suscribe handlers al BUS para capturar eventos ``training.*`` de un job.
-
-    Eventos:
-    - training.started: inicializa metadatos (modelo/params)
-    - training.epoch_end: agrega un punto a history[] y actualiza metrics
-    - training.completed: marca estado y métricas finales
-    - training.failed: marca error
-
-    Idempotente: evita resuscribir si ya fue wired (útil con --reload).
     """
     if job_id in _OBS_WIRED_JOBS:
         return
@@ -218,17 +276,35 @@ def _wire_job_observers(job_id: str) -> None:
             return
         st = _ESTADOS[job_id]
         st.setdefault("history", [])
+        st.setdefault("progress", 0.0)
         st["status"] = "running"
         st["model"] = evt.payload.get("model", st.get("model"))
+
+        # IMPORTANTE:
+        # No reemplazar st["params"] por completo, porque el evento `training.started`
+        # suele reflejar hparams (y puede incluir `epochs`), lo cual podría pisar el
+        # valor correcto `req.epochs` guardado previamente por el router.
         params_evt = evt.payload.get("params")
         if isinstance(params_evt, dict):
-            st["params"] = _normalize_hparams(params_evt) or st.get("params", {})
+            incoming = _normalize_hparams(params_evt)
+            existing = st.get("params", {}) or {}
+            keep_epochs = existing.get("epochs")
+            # Merge de incoming -> existing
+            for k, v in incoming.items():
+                if k == "epochs":
+                    continue
+                existing[k] = v
+            # Restaurar epochs correcto si existía
+            if keep_epochs is not None:
+                existing["epochs"] = keep_epochs
+            st["params"] = existing
 
     def _on_epoch_end(evt) -> None:
         if not _match(evt) or job_id not in _ESTADOS:
             return
         st = _ESTADOS[job_id]
         st.setdefault("history", [])
+        st.setdefault("progress", 0.0)
 
         payload = evt.payload or {}
         epoch = payload.get("epoch")
@@ -242,13 +318,24 @@ def _wire_job_observers(job_id: str) -> None:
         if isinstance(loss, (int, float)):
             point["loss"] = float(loss)
 
-        # Solo numéricos al history (para graficación)
         for k, v in (metrics or {}).items():
             if isinstance(v, (int, float)) and k not in ("epoch",):
                 point[k] = float(v)
 
         st["history"].append(point)
         st["metrics"] = {k: v for k, v in point.items() if k not in ("epoch",)}
+
+        # Item 2: progress = epoch / epochs_total (si se puede calcular)
+        try:
+            epochs_total = st.get("params", {}).get("epochs") or 1
+            e = float(epoch) if isinstance(epoch, (int, float)) else None
+            et = float(epochs_total)
+            if e is not None and et > 0:
+                st["progress"] = min(1.0, max(0.0, e / et))
+        except Exception:
+            # Nunca romper el job-state por progress
+            pass
+
 
     def _on_completed(evt) -> None:
         if not _match(evt) or job_id not in _ESTADOS:
@@ -260,6 +347,7 @@ def _wire_job_observers(job_id: str) -> None:
             final_metrics = _flatten_metrics_from_payload(payload, allow_loss=True) or st.get("metrics", {})
         st["metrics"] = final_metrics
         st["status"] = "completed"
+        st["progress"] = 1.0
 
     def _on_failed(evt) -> None:
         if not _match(evt) or job_id not in _ESTADOS:
@@ -267,6 +355,7 @@ def _wire_job_observers(job_id: str) -> None:
         st = _ESTADOS[job_id]
         st["status"] = "failed"
         st["error"] = evt.payload.get("error", "unknown error")
+        st.setdefault("progress", 0.0)
 
     BUS.subscribe("training.started", _on_started)
     BUS.subscribe("training.epoch_end", _on_epoch_end)
@@ -277,31 +366,17 @@ def _wire_job_observers(job_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Commit 2: readiness + resolver data_source + auto_prepare
+# Readiness + resolver data_source + auto_prepare
 # ---------------------------------------------------------------------------
 
 def _dataset_id(req: EntrenarRequest) -> Optional[str]:
-    """
-    Obtiene dataset_id/periodo desde el request.
-
-    En el schema actualizado, ``dataset_id`` y ``periodo_actual`` se sincronizan.
-    Aquí usamos getattr para no romper compatibilidad si el schema aún está migrando.
-    """
+    """Obtiene dataset_id/periodo desde el request."""
     return getattr(req, "dataset_id", None) or getattr(req, "periodo_actual", None)
 
 
 def _resolve_by_data_source(req: EntrenarRequest) -> str:
     """
     Resuelve el input principal del entrenamiento según `data_source`.
-
-    Prioridad:
-    1) `data_ref` (override manual / legacy)
-    2) `data_source`:
-       - feature_pack: artifacts/features/<dataset_id>/train_matrix.parquet
-       - unified_labeled: historico/unificado_labeled.parquet (fallback a historico/unificado.parquet)
-       - labeled: data/labeled/<dataset_id>_beto.parquet|_teacher.parquet (heurística)
-
-    :raises HTTPException: si falta dataset_id.
     """
     data_ref = getattr(req, "data_ref", None)
     if data_ref:
@@ -325,7 +400,6 @@ def _resolve_by_data_source(req: EntrenarRequest) -> str:
             return "historico/unificado.parquet"
         return "historico/unificado_labeled.parquet"
 
-    # labeled (fallback)
     try:
         p = resolve_labeled_path(str(ds))
         return _relpath(p)
@@ -334,19 +408,10 @@ def _resolve_by_data_source(req: EntrenarRequest) -> str:
 
 
 def _ensure_unified_labeled() -> None:
-    """
-    Asegura la existencia de `historico/unificado_labeled.parquet`.
-
-    Implementación:
-    - Ejecuta `UnificacionStrategy.acumulado_labeled()` en forma síncrona.
-
-    Si en tu operación prefieres jobs, puedes cambiar esto por una llamada a
-    ``POST /jobs/data/unify/run`` y esperar su finalización.
-    """
+    """Asegura `historico/unificado_labeled.parquet`."""
     out = BASE_DIR / "historico" / "unificado_labeled.parquet"
     if out.exists():
         return
-
     try:
         from neurocampus.data.strategies.unificacion import UnificacionStrategy
     except Exception as e:
@@ -363,12 +428,7 @@ def _ensure_unified_labeled() -> None:
 
 
 def _ensure_feature_pack(dataset_id: str, input_uri: str) -> None:
-    """
-    Asegura `artifacts/features/<dataset_id>/train_matrix.parquet`.
-
-    :param dataset_id: id lógico del dataset.
-    :param input_uri: fuente etiquetada (labeled o unificado_labeled).
-    """
+    """Asegura `artifacts/features/<dataset_id>/train_matrix.parquet`."""
     out = BASE_DIR / "artifacts" / "features" / dataset_id / "train_matrix.parquet"
     if out.exists():
         return
@@ -394,17 +454,7 @@ def _ensure_feature_pack(dataset_id: str, input_uri: str) -> None:
 
 
 def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
-    """
-    Ejecuta preparación automática si ``auto_prepare=True`` y ``data_ref`` no existe.
-
-    - unified_labeled: crea historico/unificado_labeled.parquet
-    - feature_pack:
-      - acumulado/ventana: requiere unificado_labeled + crea artifacts/features/<ds>/train_matrix.parquet
-      - periodo_actual: intenta crear feature-pack desde labeled del periodo
-    - labeled: NO se auto-prepara aquí (requiere BETO/PLN de DataTab).
-
-    :raises HTTPException: si no hay insumos para preparar.
-    """
+    """Ejecuta preparación automática si `auto_prepare=True` y `data_ref` no existe."""
     auto_prepare = bool(getattr(req, "auto_prepare", False))
     if not auto_prepare:
         return
@@ -454,11 +504,7 @@ def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
 
 
 def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
-    """
-    Lee dataset desde ruta local (parquet/csv).
-
-    :param path_or_uri: ruta relativa/absoluta o localfs://...
-    """
+    """Lee dataset desde ruta local (parquet/csv)."""
     p = _abs_path(path_or_uri)
     try:
         if p.suffix.lower() == ".parquet":
@@ -472,19 +518,18 @@ def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
 
 def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
     """
-    Resuelve fuente de datos + auto_prepare + metodología y materializa un parquet temporal.
-
-    Flujo:
-    1) data_ref := resolver por data_source (o override)
-    2) auto_prepare si falta (unificado/feature-pack)
-    3) leer DF
-    4) aplicar metodología (periodo_actual/acumulado/ventana)
-    5) escribir ``data/.tmp/df_sel_<job_id>.parquet``
-
-    :return: ruta relativa del parquet temporal.
+    Resuelve fuente de datos + auto_prepare + (si aplica) metodología.
     """
     data_ref = _resolve_by_data_source(req)
     _auto_prepare_if_needed(req, data_ref)
+
+    data_source = str(getattr(req, "data_source", "labeled")).lower()
+
+    if data_source == "feature_pack":
+        pack_path = _abs_path(data_ref)
+        if not pack_path.exists():
+            raise HTTPException(status_code=404, detail=f"Feature-pack no encontrado: {pack_path}")
+        return str(pack_path.resolve())
 
     df = _read_dataframe_any(data_ref)
 
@@ -508,11 +553,74 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"No se pudo materializar el subconjunto: {e}") from e
 
-    return _relpath(tmp_ref)
+    return str(tmp_ref.resolve())
 
 
 # ---------------------------------------------------------------------------
-# Endpoints: readiness (Commit 2)
+# FIX: Construcción robusta de hparams para el training (NO None + defaults)
+# ---------------------------------------------------------------------------
+
+def _build_run_hparams(req: EntrenarRequest, job_id: str) -> Dict[str, Any]:
+    """
+    Construye hparams para el training garantizando:
+
+    - NO incluir valores None (para evitar que el strategy reciba None y lo degrade a 'none').
+    - Defaults consistentes con el flujo nuevo:
+      - data_source=feature_pack
+      - target_mode=sentiment_probs
+      - split_mode=temporal
+      - val_ratio=0.2
+      - include_teacher_materia=True
+      - teacher_materia_mode='embed' (si include_teacher_materia=True)
+    - Los campos explícitos del request tienen prioridad sobre req.hparams.
+
+    :param req: Request de entrenamiento.
+    :param job_id: Correlation/job id.
+    :return: Dict de hparams listo para pasar a PlantillaEntrenamiento.run().
+    """
+    hp = _normalize_hparams(getattr(req, "hparams", None))
+
+    # Evitar que hparams contenga claves reservadas del request (p.ej. epochs)
+    # ya que el número de épocas lo controla `req.epochs`.
+    hp.pop("epochs", None)
+
+    def put(key: str, value: Any) -> None:
+        if value is None:
+            return
+        hp[key] = value
+
+    put("job_id", job_id)
+
+    # Defaults defensivos (si el request viene con None)
+    data_source = getattr(req, "data_source", None) or "feature_pack"
+    target_mode = getattr(req, "target_mode", None) or "sentiment_probs"
+    split_mode = getattr(req, "split_mode", None) or "temporal"
+    val_ratio = getattr(req, "val_ratio", None)
+    if val_ratio is None:
+        val_ratio = 0.2
+
+    include_tm = getattr(req, "include_teacher_materia", None)
+    if include_tm is None:
+        include_tm = True
+
+    tm_mode = getattr(req, "teacher_materia_mode", None)
+    # Si se desea teacher/materia y el modo no viene, default a 'embed'
+    if (tm_mode is None) and bool(include_tm):
+        tm_mode = "embed"
+
+    put("data_source", data_source)
+    put("target_mode", target_mode)
+    put("split_mode", split_mode)
+    put("val_ratio", val_ratio)
+    put("include_teacher_materia", bool(include_tm))
+    # Importante: SOLO poner teacher_materia_mode si no es None
+    put("teacher_materia_mode", tm_mode)
+
+    return hp
+
+
+# ---------------------------------------------------------------------------
+# Endpoints: readiness
 # ---------------------------------------------------------------------------
 
 @router.get(
@@ -521,15 +629,7 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
     summary="Verifica insumos para entrenar (labeled / unified_labeled / feature_pack)",
 )
 def readiness(dataset_id: str) -> ReadinessResponse:
-    """
-    Verifica existencia de artefactos mínimos para entrenar un ``dataset_id``.
-
-    Chequeos:
-    - labeled: ``data/labeled/<dataset_id>_beto.parquet`` (o *_teacher.parquet)
-    - unified_labeled: ``historico/unificado_labeled.parquet``
-    - feature_pack: ``artifacts/features/<dataset_id>/train_matrix.parquet``
-    """
-    # labeled (heurística)
+    """Verifica existencia de artefactos mínimos para entrenar un dataset_id."""
     try:
         labeled_path = resolve_labeled_path(dataset_id)
         labeled_ref = _relpath(labeled_path)
@@ -554,64 +654,43 @@ def readiness(dataset_id: str) -> ReadinessResponse:
 
 
 # ---------------------------------------------------------------------------
-# Entrenamiento (Commit 3: persistencia vía runs_io)
+# Entrenamiento (persistencia vía runs_io)
 # ---------------------------------------------------------------------------
 
 def _run_training(job_id: str, req: EntrenarRequest) -> None:
-    """
-    Ejecuta el entrenamiento en background.
-
-    Commit 3:
-    - Si finaliza exitosamente:
-      - Persiste un run usando :func:`neurocampus.utils.runs_io.save_run`.
-      - Decide/actualiza champion usando :func:`neurocampus.utils.runs_io.maybe_update_champion`.
-
-    Cualquier excepción marca el job como ``failed``.
-    """
+    """Ejecuta el entrenamiento en background y persiste runs/champion si aplica."""
     t0 = time.perf_counter()
     try:
-        estrategia = RBMGeneral() if req.modelo == "rbm_general" else RBMRestringida()
+        # FIX A: instancia nueva SIEMPRE
+        estrategia = _create_strategy(req.modelo)
+        # FIX B defensivo: reset si existe
+        _safe_reset_strategy(estrategia)
+
         tpl = PlantillaEntrenamiento(estrategia)
 
         _wire_job_observers(job_id)
 
-        # 1) materializar subset (según metodología)
         selected_ref = _prepare_selected_data(req, job_id)
 
-        # 2) ejecutar entrenamiento
+        # FIX: hparams robusto (sin None + defaults)
+        run_hparams = _build_run_hparams(req, job_id)
+
         out = tpl.run(
             selected_ref,
             req.epochs,
-            {
-                **(_normalize_hparams(req.hparams)),
-                "job_id": job_id,
-                # hints (si la estrategia decide usarlos)
-                "data_source": getattr(req, "data_source", None),
-                "target_mode": getattr(req, "target_mode", None),
-                "split_mode": getattr(req, "split_mode", None),
-                "val_ratio": getattr(req, "val_ratio", None),
-                "include_teacher_materia": getattr(req, "include_teacher_materia", None),
-            },
+            run_hparams,
             model_name=req.modelo,
         )
 
         st = _ESTADOS.get(job_id, {})
         st.update(out)
 
-        # 3) persistir run + champion (solo si completed)
         if out.get("status") == "completed":
             ds = _dataset_id(req) or "unknown"
             run_id = build_run_id(dataset_id=str(ds), model_name=str(req.modelo), job_id=job_id)
 
-            # snapshot reproducible del request
             req_snapshot = (req.model_dump() if hasattr(req, "model_dump") else req.dict())
-            req_snapshot.update(
-                {
-                    "job_id": job_id,
-                    "selected_ref": selected_ref,
-                    "base_dir": str(BASE_DIR),
-                }
-            )
+            req_snapshot.update({"job_id": job_id, "selected_ref": selected_ref, "base_dir": str(BASE_DIR)})
 
             run_dir = save_run(
                 run_id=run_id,
@@ -624,12 +703,10 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 history=out.get("history") or [],
             )
 
-            # Guardar pesos si la estrategia lo implementa (mejor esfuerzo)
             try:
                 if hasattr(estrategia, "save") and callable(getattr(estrategia, "save")):
                     estrategia.save(str(run_dir))
             except Exception:
-                # no hacemos fallar el job por IO de pesos
                 pass
 
             upd = maybe_update_champion(
@@ -651,54 +728,67 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         st["status"] = "failed"
         st["error"] = str(e)
         st["time_total_ms"] = float((time.perf_counter() - t0) * 1000.0)
+        st.setdefault("progress", 0.0)
         _ESTADOS[job_id] = st
 
 
 @router.post("/entrenar", response_model=EntrenarResponse)
 def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
-    """
-    Lanza un entrenamiento en background y retorna ``job_id``.
-
-    Inicializa el estado en ``_ESTADOS`` para que la UI haga polling a
-    ``GET /modelos/estado/{job_id}``.
-    """
+    """Lanza un entrenamiento en background y retorna job_id."""
     job_id = str(uuid.uuid4())
 
-    hp_norm = _normalize_hparams(req.hparams)
+    # hparams crudo normalizado (para pasarlo al training tal cual, excepto None)
+    hp_norm_raw = _normalize_hparams(req.hparams)
+    # versión "limpia" para UI (no debe pisar campos del request)
+    hp_norm_ui = _prune_hparams_for_ui(hp_norm_raw)
+
     base_ref = _resolve_by_data_source(req)
+
+    # Defaults consistentes (y sin None) para reflejar en UI
+    resolved_run_hparams = _build_run_hparams(req, job_id)
+
+    # IMPORTANTE (Item 1):
+    # - No permitir que hp_norm_ui contenga 'epochs' (u otros reservados) que pisen req.epochs.
+    # - Colocar epochs AL FINAL del dict params para que siempre sea el valor del request.
+    params_ui: Dict[str, Any] = {
+        **hp_norm_ui,
+        "dataset_id": _dataset_id(req),
+        "periodo_actual": getattr(req, "periodo_actual", None),
+        "metodologia": getattr(req, "metodologia", "periodo_actual"),
+        "ventana_n": getattr(req, "ventana_n", None),
+        # reflejar defaults consistentes (y ya “limpios”)
+        "data_source": resolved_run_hparams.get("data_source", "feature_pack"),
+        "target_mode": resolved_run_hparams.get("target_mode", "sentiment_probs"),
+        "split_mode": resolved_run_hparams.get("split_mode", "temporal"),
+        "val_ratio": resolved_run_hparams.get("val_ratio", 0.2),
+        "include_teacher_materia": resolved_run_hparams.get("include_teacher_materia", True),
+        "teacher_materia_mode": resolved_run_hparams.get("teacher_materia_mode", "embed"),
+        "auto_prepare": getattr(req, "auto_prepare", True),
+        "data_ref": getattr(req, "data_ref", None) or base_ref,
+        "job_id": job_id,
+        # Item 1: epochs del request SIEMPRE
+        "epochs": req.epochs,
+    }
 
     _ESTADOS[job_id] = {
         "job_id": job_id,
         "status": "running",
+        "progress": 0.0,  # Item 2
         "metrics": {},
         "history": [],
         "model": req.modelo,
-        "params": {
-            "epochs": req.epochs,
-            **hp_norm,
-            "dataset_id": _dataset_id(req),
-            "periodo_actual": getattr(req, "periodo_actual", None),
-            "metodologia": getattr(req, "metodologia", "periodo_actual"),
-            "ventana_n": getattr(req, "ventana_n", None),
-            "data_source": getattr(req, "data_source", "feature_pack"),
-            "target_mode": getattr(req, "target_mode", "sentiment_probs"),
-            "split_mode": getattr(req, "split_mode", "temporal"),
-            "val_ratio": getattr(req, "val_ratio", 0.2),
-            "include_teacher_materia": getattr(req, "include_teacher_materia", True),
-            "auto_prepare": getattr(req, "auto_prepare", True),
-            "data_ref": getattr(req, "data_ref", None) or base_ref,
-        },
+        "params": params_ui,
         "error": None,
         "run_id": None,
         "artifact_path": None,
         "champion_promoted": False,
     }
 
-    # Asegurar que hparams viajen normalizados (Pydantic v2/v1)
+    # Normaliza hparams, preservando el resto del request intacto
     try:
-        req_norm = req.model_copy(update={"hparams": hp_norm})
+        req_norm = req.model_copy(update={"hparams": hp_norm_raw})
     except AttributeError:
-        req_norm = req.copy(update={"hparams": hp_norm})
+        req_norm = req.copy(update={"hparams": hp_norm_raw})
 
     bg.add_task(_run_training, job_id, req_norm)
     return EntrenarResponse(job_id=job_id, status="running", message="Entrenamiento lanzado")
@@ -706,18 +796,10 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
 
 @router.get("/estado/{job_id}", response_model=EstadoResponse)
 def estado(job_id: str) -> EstadoResponse:
-    """
-    Devuelve el estado actual de un job.
-
-    Puede incluir ``run_id`` y ``artifact_path`` si el entrenamiento terminó exitosamente.
-    """
-    st = _ESTADOS.get(job_id) or {"job_id": job_id, "status": "unknown", "metrics": {}, "history": []}
+    """Devuelve el estado actual de un job."""
+    st = _ESTADOS.get(job_id) or {"job_id": job_id, "status": "unknown", "metrics": {}, "history": [], "progress": 0.0}
     return EstadoResponse(**st)
 
-
-# ---------------------------------------------------------------------------
-# Commit 3: promote manual
-# ---------------------------------------------------------------------------
 
 @router.post(
     "/champion/promote",
@@ -725,13 +807,7 @@ def estado(job_id: str) -> EstadoResponse:
     summary="Promueve un run existente a champion (manual)",
 )
 def promote_champion(req: PromoteChampionRequest) -> ChampionInfo:
-    """
-    Promueve manualmente un run existente a champion usando runs_io.
-
-    Internamente delega a :func:`neurocampus.utils.runs_io.promote_run_to_champion`.
-
-    :raises HTTPException: si el run no existe o hay error de IO.
-    """
+    """Promueve manualmente un run existente a champion usando runs_io."""
     try:
         champ = promote_run_to_champion(
             dataset_id=req.dataset_id,
@@ -746,10 +822,6 @@ def promote_champion(req: PromoteChampionRequest) -> ChampionInfo:
     return ChampionInfo(**champ)
 
 
-# ---------------------------------------------------------------------------
-# Runs / Champion (auditoría)
-# ---------------------------------------------------------------------------
-
 @router.get(
     "/runs",
     response_model=list[RunSummary],
@@ -761,13 +833,7 @@ def get_runs(
     dataset_id: Optional[str] = None,
     periodo: Optional[str] = None,
 ) -> list[RunSummary]:
-    """
-    Devuelve un resumen de runs encontrados en ``artifacts/runs``.
-
-    Filtros:
-      - ``model_name``: ej. ``rbm_general``
-      - ``dataset_id`` / ``dataset`` / ``periodo``: dataset asociado
-    """
+    """Devuelve un resumen de runs encontrados en artifacts/runs."""
     ds = dataset_id or dataset or periodo
     runs = list_runs(model_name=model_name, dataset_id=ds)
     return [RunSummary(**r) for r in runs]
@@ -779,11 +845,7 @@ def get_runs(
     summary="Detalles completos de un run (incluye config si existe)",
 )
 def get_run_details(run_id: str) -> RunDetails:
-    """
-    Devuelve detalles completos de un run leyendo artifacts del filesystem.
-
-    Delegación a :func:`neurocampus.utils.runs_io.load_run_details`.
-    """
+    """Devuelve detalles completos de un run leyendo artifacts del filesystem."""
     details = load_run_details(run_id)
     if not details:
         raise HTTPException(status_code=404, detail=f"Run {run_id} no encontrado")
@@ -801,16 +863,7 @@ def get_champion(
     dataset_id: Optional[str] = None,
     periodo: Optional[str] = None,
 ) -> ChampionInfo:
-    """
-    Devuelve el campeón actual.
-
-    Prioridad:
-    1) Si se pasa ``dataset_id`` (o alias), intenta champion por dataset con
-       :func:`neurocampus.utils.runs_io.load_dataset_champion`.
-    2) Fallback/legacy con :func:`neurocampus.utils.runs_io.load_current_champion`.
-
-    :raises HTTPException: si no hay champion.
-    """
+    """Devuelve el campeón actual."""
     ds = dataset_id or dataset or periodo
 
     if ds:

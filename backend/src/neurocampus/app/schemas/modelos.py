@@ -7,40 +7,39 @@ Esquemas (Pydantic) para la API de **Modelos**.
 Este módulo define los request/response usados por los endpoints del router
 ``/modelos`` (entrenamiento, estado de jobs, listados de runs, champion, etc.).
 
-Cambios principales
-----------------------------
-- Se amplía :class:`EntrenarRequest` para soportar el flujo actualizado:
+Cambios principales (alineación con flujo actualizado)
+------------------------------------------------------
+- Se amplía :class:`EntrenarRequest` para soportar:
 
   - ``dataset_id`` (alias conveniente del dataset/periodo; compatible con ``periodo_actual``).
   - ``data_source``: ``feature_pack`` (recomendado), ``labeled`` (fallback), ``unified_labeled``.
   - ``target_mode``: por defecto ``sentiment_probs`` (usa ``p_neg/p_neu/p_pos``).
-  - ``split_mode`` y ``val_ratio`` para evaluación real (accuracy/f1/confusion).
-  - ``include_teacher_materia`` y ``auto_prepare`` (preparación automática de artifacts si falta).
+  - ``split_mode`` y ``val_ratio`` para evaluación real.
+  - ``include_teacher_materia`` y **``teacher_materia_mode``** (evita que se pierda en el request).
+  - ``auto_prepare`` para preparar artifacts cuando sea viable.
 
-- Se amplía :class:`EstadoResponse` para devolver:
-
-  - ``progress`` (0..1)
-  - ``metrics`` como ``Dict[str, Any]`` (permite matrices/confusion, brier, etc.)
-  - ``history`` con métricas por época (incluye val_accuracy, val_f1_macro, etc.)
-  - ``run_id`` y ``artifact_path`` al finalizar.
+- Se amplía :class:`EstadoResponse` para devolver también:
+  - ``model`` y ``params`` (para que UI pueda mostrar configuración real).
+  - ``champion_promoted`` y ``time_total_ms`` (útiles para auditoría).
 
 Compatibilidad hacia atrás
 --------------------------
 - Se mantiene ``periodo_actual`` y ``data_ref`` como campos legacy.
 - ``dataset_id`` y ``periodo_actual`` se sincronizan automáticamente.
+- Se conserva comportamiento tolerante ante campos extra (extra="ignore")
+  para evitar romper clientes legacy.
 
 Notas para Sphinx
 -----------------
 Los docstrings están escritos en reST para que Sphinx pueda renderizarlos con
-``autodoc`` / ``napoleon``. Puedes ajustar el estilo (Numpy/Google/reST) sin
-romper tipado.
+``autodoc`` / ``napoleon``.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, ConfigDict
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +62,7 @@ TargetMode = Literal["sentiment_probs", "sentiment_label", "score_only"]
 
 - ``sentiment_probs``: usa probabilidades soft ``p_neg/p_neu/p_pos`` (recomendado).
 - ``sentiment_label``: usa etiqueta dura (si existe en dataset).
-- ``score_only``: reservado / experimental (si aplica a un modelo específico).
+- ``score_only``: reservado / experimental.
 """
 
 SplitMode = Literal["temporal", "stratified", "random"]
@@ -71,6 +70,14 @@ SplitMode = Literal["temporal", "stratified", "random"]
 
 Metodologia = Literal["periodo_actual", "acumulado", "ventana"]
 """Metodología de selección de datos (sobre el histórico)."""
+
+TeacherMateriaMode = Literal["embed", "onehot", "none"]
+"""Modo para incluir docente/materia como features.
+
+- ``embed``: embeddings (hash-buckets + dim) (recomendado).
+- ``onehot``: one-hot (solo viable si cardinalidad es pequeña).
+- ``none``: desactiva explícitamente el uso de docente/materia.
+"""
 
 JobStatus = Literal["queued", "running", "completed", "failed", "unknown"]
 """Estados posibles reportados por el job de entrenamiento."""
@@ -103,6 +110,9 @@ class EntrenarRequest(BaseModel):
         como ruta explícita.
     :param target_mode: Objetivo a entrenar (por defecto ``sentiment_probs``).
     :param include_teacher_materia: Si ``True``, incluir features de docente/materia.
+    :param teacher_materia_mode: Modo para representar docente/materia (embed/onehot/none).
+        Si ``include_teacher_materia=True`` y este campo se omite, el backend debería
+        aplicar un default (normalmente ``embed``).
     :param auto_prepare: Si ``True``, el backend intentará generar artifacts faltantes
         (unificado/feature-pack) cuando sea posible.
     :param split_mode: Cómo hacer train/val.
@@ -110,6 +120,9 @@ class EntrenarRequest(BaseModel):
     :param epochs: Número de épocas de entrenamiento.
     :param hparams: Hiperparámetros específicos del modelo (dict flexible).
     """
+
+    # Mantener tolerancia a campos extra (compatibilidad)
+    model_config = ConfigDict(extra="ignore")
 
     modelo: ModeloName = Field(
         description="Tipo de modelo a entrenar (rbm_general | rbm_restringida | dbm_manual)."
@@ -181,6 +194,14 @@ class EntrenarRequest(BaseModel):
         description="Si True, incluye features de docente/materia en el entrenamiento.",
     )
 
+    teacher_materia_mode: Optional[TeacherMateriaMode] = Field(
+        default=None,
+        description=(
+            "Modo para representar docente/materia (embed/onehot/none). "
+            "Si include_teacher_materia=True y se omite, el backend debería usar 'embed'."
+        ),
+    )
+
     auto_prepare: bool = Field(
         default=True,
         description=(
@@ -219,6 +240,11 @@ class EntrenarRequest(BaseModel):
             "momentum": 0.5,
             "weight_decay": 0.0,
             "seed": 42,
+            # Nota: teacher/materia hparams pueden vivir aquí si el strategy lo requiere:
+            # "teacher_emb_buckets": 2048,
+            # "materia_emb_buckets": 2048,
+            # "tm_emb_dim": 16,
+            # "tm_use_interaction": True,
         },
         description="Hiperparámetros del entrenamiento (dict flexible).",
     )
@@ -248,20 +274,14 @@ class EpochItem(BaseModel):
     - accuracy / val_accuracy
     - val_f1_macro
     - time_epoch_ms
-
-    :param epoch: Índice de época (1..N).
-    :param loss: Pérdida global de la época.
-    :param recon_error: Error de reconstrucción (si el modelo lo reporta).
-    :param cls_loss: Pérdida de clasificación (si aplica).
-    :param accuracy: Accuracy en train (si se calcula).
-    :param val_accuracy: Accuracy en validación (si se calcula).
-    :param val_f1_macro: F1 macro en validación (si se calcula).
-    :param grad_norm: Norma de gradiente (si se reporta).
-    :param time_epoch_ms: Tiempo de la época en ms.
     """
 
+    model_config = ConfigDict(extra="ignore")
+
     epoch: int = Field(description="Época actual (1..N).")
-    loss: float = Field(description="Pérdida (loss) de la época.")
+
+    # Hacerlo opcional para robustez ante strategies que reporten solo recon_error u otros campos.
+    loss: Optional[float] = Field(default=None, description="Pérdida (loss) de la época (opcional).")
 
     recon_error: Optional[float] = Field(default=None, description="Error de reconstrucción (opcional).")
     cls_loss: Optional[float] = Field(default=None, description="Loss de clasificación (opcional).")
@@ -277,10 +297,6 @@ class EpochItem(BaseModel):
 class EntrenarResponse(BaseModel):
     """
     Respuesta inmediata al lanzar un entrenamiento (job async).
-
-    :param job_id: Identificador del job.
-    :param status: Estado inicial (queued/running).
-    :param message: Mensaje informativo.
     """
 
     job_id: str
@@ -292,26 +308,27 @@ class EstadoResponse(BaseModel):
     """
     Estado actual de un job de entrenamiento.
 
-    :param job_id: Identificador del job.
-    :param status: Estado del job (queued/running/completed/failed/unknown).
-    :param progress: Progreso estimado (0..1).
-    :param metrics: Métricas globales acumuladas (dict flexible).
-        Ejemplos: accuracy, f1_macro, confusion_matrix, brier_like_mse, etc.
-    :param history: Lista de :class:`EpochItem` con la traza por época.
-    :param run_id: Si el job terminó exitosamente, el run_id persistido.
-    :param artifact_path: Ruta al directorio de artifacts del run (si aplica).
-    :param error: Mensaje de error si status=failed.
+    Incluye métricas + trazas por época y metadatos de ejecución útiles para UI.
     """
+
+    model_config = ConfigDict(extra="ignore")
 
     job_id: str
     status: JobStatus = Field(description="Estado del job.")
     progress: float = Field(default=0.0, ge=0.0, le=1.0, description="Progreso 0..1.")
+
+    # NUEVO: para que la UI vea realmente qué modelo/cfg se ejecutó.
+    model: Optional[str] = Field(default=None, description="Nombre lógico del modelo en ejecución.")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Parámetros/hparams efectivos del job.")
 
     metrics: Dict[str, Any] = Field(default_factory=dict, description="Métricas globales (dict flexible).")
     history: List[EpochItem] = Field(default_factory=list, description="Historial por época.")
 
     run_id: Optional[str] = Field(default=None, description="run_id generado al completar (si aplica).")
     artifact_path: Optional[str] = Field(default=None, description="Ruta al directorio de artifacts del run.")
+    champion_promoted: Optional[bool] = Field(default=None, description="True si el run fue promovido a champion.")
+    time_total_ms: Optional[float] = Field(default=None, description="Tiempo total del job (ms).")
+
     error: Optional[str] = Field(default=None, description="Mensaje de error si falló.")
 
 
@@ -320,22 +337,9 @@ class EstadoResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class RunSummary(BaseModel):
-    """
-    Resumen ligero de un run para listados.
+    """Resumen ligero de un run para listados."""
 
-    Campos:
-      - run_id: nombre del directorio dentro de ``artifacts/runs``
-      - model_name: nombre lógico del modelo asociado (rbm_general, rbm_restringida, etc.)
-      - dataset_id: dataset asociado al run si fue registrado o inferible
-      - created_at: ISO8601 (UTC) derivado de mtime del directorio
-      - metrics: subset de métricas principales (accuracy, f1, etc.)
-
-    :param run_id: Identificador del run.
-    :param model_name: Nombre del modelo.
-    :param dataset_id: Dataset asociado.
-    :param created_at: Fecha de creación (ISO8601 UTC).
-    :param metrics: Métricas principales.
-    """
+    model_config = ConfigDict(extra="ignore")
 
     run_id: str
     model_name: str
@@ -345,20 +349,9 @@ class RunSummary(BaseModel):
 
 
 class RunDetails(BaseModel):
-    """
-    Detalle completo de un run.
+    """Detalle completo de un run."""
 
-    Incluye:
-      - metrics: contenido completo de ``metrics.json``
-      - config: contenido de ``config.snapshot.yaml`` o ``config.yaml`` (si existe)
-      - artifact_path: ruta absoluta o relativa al directorio del run (para depuración)
-
-    :param run_id: Identificador del run.
-    :param dataset_id: Dataset asociado al run.
-    :param metrics: Métricas del run.
-    :param config: Configuración snapshot (si existe).
-    :param artifact_path: Ruta del directorio del run.
-    """
+    model_config = ConfigDict(extra="ignore")
 
     run_id: str
     dataset_id: Optional[str] = None
@@ -368,14 +361,9 @@ class RunDetails(BaseModel):
 
 
 class ChampionInfo(BaseModel):
-    """
-    Información del modelo campeón (champion) para consumo por Predicciones/Dashboard.
+    """Información del modelo champion."""
 
-    :param model_name: Nombre del modelo campeón.
-    :param dataset_id: Dataset asociado (si aplica).
-    :param metrics: Métricas registradas del champion.
-    :param path: Ruta del directorio campeón en ``artifacts/champions``.
-    """
+    model_config = ConfigDict(extra="ignore")
 
     model_name: str
     dataset_id: Optional[str] = None
@@ -388,18 +376,9 @@ class ChampionInfo(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ReadinessResponse(BaseModel):
-    """
-    Respuesta del endpoint ``GET /modelos/readiness``.
+    """Respuesta del endpoint ``GET /modelos/readiness``."""
 
-    Indica si existen los insumos mínimos para entrenar un dataset según el flujo
-    actualizado (labeled/unified/feature-pack).
-
-    :param dataset_id: Dataset consultado.
-    :param labeled_exists: True si existe ``data/labeled/<dataset_id>_beto.parquet``.
-    :param unified_labeled_exists: True si existe ``historico/unificado_labeled.parquet``.
-    :param feature_pack_exists: True si existe ``artifacts/features/<dataset_id>/train_matrix.parquet``.
-    :param paths: Rutas relevantes para depuración/UI.
-    """
+    model_config = ConfigDict(extra="ignore")
 
     dataset_id: str
     labeled_exists: bool
@@ -409,15 +388,9 @@ class ReadinessResponse(BaseModel):
 
 
 class PromoteChampionRequest(BaseModel):
-    """
-    Request para promover un run existente a champion manualmente.
+    """Request para promover un run existente a champion manualmente."""
 
-    Usado por el endpoint opcional ``POST /modelos/champion/promote``.
-
-    :param dataset_id: Dataset sobre el que se define el champion.
-    :param run_id: Identificador del run a promover.
-    :param model_name: (Opcional) nombre del modelo; si se omite, puede inferirse desde el run.
-    """
+    model_config = ConfigDict(extra="ignore")
 
     dataset_id: str
     run_id: str

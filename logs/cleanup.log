@@ -351,3 +351,13 @@ timestamp,action,path,size,age_days,reason
 2026-01-31T17:55:30Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20260131_125257\vectorizer.json,526,0.00,age+surplus
 2026-01-31T17:55:30Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20260131_125257\job_meta.json,227,0.00,age+surplus
 2026-01-31T17:55:30Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\modelZ\run_0\dummy.bin,128,0.00,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20260131_125531\rbm.pt,2429,0.32,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20260131_125531\head.pt,1997,0.32,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20260131_125531\vectorizer.json,521,0.32,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\jobs\20260131_125531\job_meta.json,227,0.32,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\features\2025-1\train_matrix.parquet,23938,0.15,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\features\2025-1\teacher_index.json,10186,0.15,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\features\2025-1\bins.json,148,0.15,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\features\2025-1\materia_index.json,3645,0.15,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\features\2025-1\meta.json,686,0.15,age+surplus
+2026-02-01T01:30:14Z,moved_to_trash,C:\Users\santi\OneDrive\Documents\Universidad\Pasantia\NeuroCampus\artifacts\modelZ\run_0\dummy.bin,128,0.00,age+surplus

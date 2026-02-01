@@ -386,7 +386,7 @@ def _resolve_by_data_source(req: EntrenarRequest) -> str:
     if not ds:
         raise HTTPException(status_code=400, detail="Falta dataset_id/periodo_actual para resolver data_source.")
 
-    data_source = str(getattr(req, "data_source", "labeled")).lower()
+    data_source = str(getattr(req, "data_source", "feature_pack")).lower()
 
     if data_source == "feature_pack":
         return f"artifacts/features/{ds}/train_matrix.parquet"
@@ -427,11 +427,38 @@ def _ensure_unified_labeled() -> None:
     strat.acumulado_labeled()
 
 
-def _ensure_feature_pack(dataset_id: str, input_uri: str) -> None:
-    """Asegura `artifacts/features/<dataset_id>/train_matrix.parquet`."""
-    out = BASE_DIR / "artifacts" / "features" / dataset_id / "train_matrix.parquet"
-    if out.exists():
-        return
+def _ensure_feature_pack(dataset_id: str, input_uri: str, *, force: bool = False) -> Dict[str, str]:
+    """Asegura `artifacts/features/<dataset_id>/train_matrix.parquet`.
+
+    El **feature-pack** es un conjunto de artefactos derivados del dataset que permite
+    entrenar modelos (en especial la RBM restringida) leyendo una *matriz de entrenamiento*
+    ya materializada en disco (``train_matrix.parquet``) más índices auxiliares.
+
+    Esta función es *idempotente*:
+
+    - Si el archivo ya existe y ``force=False`` (default), no recalcula.
+    - Si ``force=True``, vuelve a construir el feature-pack.
+
+    :param dataset_id: Identificador del dataset (ej. ``"2025-1"``).
+    :param input_uri: Ruta/URI (relativa o absoluta) del dataset fuente (parquet/csv).
+    :param force: Recalcular incluso si ya existe.
+    :returns: Diccionario con rutas *relativas* a los artefactos generados.
+    :raises HTTPException: Si no se puede importar el builder o si falla el build.
+    """
+    out_dir = BASE_DIR / "artifacts" / "features" / dataset_id
+    out = out_dir / "train_matrix.parquet"
+
+    # Rutas esperadas (las devolvemos siempre, existan o no, para UI/debug).
+    artifacts_rel: Dict[str, str] = {
+        "train_matrix": _relpath(out),
+        "teacher_index": _relpath(out_dir / "teacher_index.json"),
+        "materia_index": _relpath(out_dir / "materia_index.json"),
+        "bins": _relpath(out_dir / "bins.json"),
+        "meta": _relpath(out_dir / "meta.json"),
+    }
+
+    if out.exists() and not force:
+        return artifacts_rel
 
     try:
         from neurocampus.data.features_prepare import prepare_feature_pack
@@ -440,21 +467,54 @@ def _ensure_feature_pack(dataset_id: str, input_uri: str) -> None:
             status_code=500,
             detail=(
                 "No se pudo importar prepare_feature_pack para auto_prepare. "
-                "Ejecuta manualmente el job: POST /jobs/data/features/prepare/run."
+                "Ejecuta manualmente el job: POST /jobs/data/features/prepare/run "
+                "o llama a POST /modelos/feature-pack/prepare."
             ),
         ) from e
 
-    output_dir = str((BASE_DIR / "artifacts" / "features" / dataset_id).resolve())
-    prepare_feature_pack(
-        base_dir=BASE_DIR,
-        dataset_id=dataset_id,
-        input_uri=input_uri,
-        output_dir=output_dir,
-    )
+    out_dir_abs = str(out_dir.resolve())
+
+    # El builder requiere base_dir explícito para poder resolver rutas relativas.
+    try:
+        prepare_feature_pack(
+            base_dir=BASE_DIR,
+            dataset_id=dataset_id,
+            input_uri=input_uri,
+            output_dir=out_dir_abs,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error construyendo feature-pack: {e}") from e
+
+    if not out.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "prepare_feature_pack no creó train_matrix.parquet. "
+                "Revisa logs y valida que input_uri apunte a un parquet válido."
+            ),
+        )
+
+    return artifacts_rel
 
 
 def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
-    """Ejecuta preparación automática si `auto_prepare=True` y `data_ref` no existe."""
+    """Ejecuta preparación automática si `auto_prepare=True` y `data_ref` no existe.
+
+    El objetivo es minimizar acciones manuales antes de entrenar:
+
+    - Si ``data_source='unified_labeled'`` y falta el archivo, intenta construirlo.
+    - Si ``data_source='feature_pack'`` y falta el feature-pack, intenta construirlo.
+
+    Notas de diseño:
+
+    - Para ``feature_pack`` preferimos usar como insumo ``data/processed/<dataset_id>.parquet``
+      (salida de la pestaña **Data**) porque suele existir antes que el ``labeled``.
+    - Para metodologías ``acumulado`` / ``ventana`` se usa ``historico/unificado_labeled.parquet``
+      como fuente (si está disponible), porque ya contiene el histórico consolidado.
+
+    :param req: Request de entrenamiento.
+    :param data_ref: Ruta/URI principal resuelta según `data_source`.
+    """
     auto_prepare = bool(getattr(req, "auto_prepare", False))
     if not auto_prepare:
         return
@@ -464,7 +524,7 @@ def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
         return
 
     ds = _dataset_id(req)
-    data_source = str(getattr(req, "data_source", "labeled")).lower()
+    data_source = str(getattr(req, "data_source", "feature_pack")).lower()
     metodologia = str(getattr(req, "metodologia", "periodo_actual")).lower()
 
     if data_source == "unified_labeled":
@@ -475,21 +535,34 @@ def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
         if not ds:
             raise HTTPException(status_code=400, detail="auto_prepare requiere dataset_id/periodo_actual.")
 
+        # Caso histórico (acumulado / ventana)
         if metodologia in ("acumulado", "ventana"):
             _ensure_unified_labeled()
             input_uri = "historico/unificado_labeled.parquet"
         else:
-            try:
-                labeled_path = resolve_labeled_path(str(ds))
-                input_uri = _relpath(labeled_path)
-            except Exception:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"No existe labeled para {ds}. "
-                        "Primero corre el pipeline de Datos para generar data/labeled/<dataset>_beto.parquet."
-                    ),
-                )
+            # Caso normal: intentamos con processed (Data tab) -> labeled -> datasets
+            processed = BASE_DIR / "data" / "processed" / f"{ds}.parquet"
+            if processed.exists():
+                input_uri = _relpath(processed)
+            else:
+                try:
+                    labeled_path = resolve_labeled_path(str(ds))
+                    input_uri = _relpath(labeled_path)
+                except Exception:
+                    raw = BASE_DIR / "datasets" / f"{ds}.parquet"
+                    if raw.exists():
+                        input_uri = _relpath(raw)
+                    else:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"No se encontró un dataset fuente para construir feature-pack de {ds}. "
+                                "Opciones:\n"
+                                "- Procesa/carga el dataset en la pestaña Data (debe generar data/processed/<ds>.parquet)\n"
+                                "- O genera labeled (data/labeled/<ds>_beto.parquet)\n"
+                                "- O asegúrate de tener datasets/<ds>.parquet"
+                            ),
+                        )
 
         _ensure_feature_pack(str(ds), input_uri=input_uri)
         return
@@ -523,12 +596,18 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
     data_ref = _resolve_by_data_source(req)
     _auto_prepare_if_needed(req, data_ref)
 
-    data_source = str(getattr(req, "data_source", "labeled")).lower()
+    data_source = str(getattr(req, "data_source", "feature_pack")).lower()
 
     if data_source == "feature_pack":
         pack_path = _abs_path(data_ref)
         if not pack_path.exists():
-            raise HTTPException(status_code=404, detail=f"Feature-pack no encontrado: {pack_path}")
+            raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Feature-pack no encontrado: {pack_path}. "
+                "Activa auto_prepare=true al entrenar o llama a POST /modelos/feature-pack/prepare."
+            ),
+        )
         return str(pack_path.resolve())
 
     df = _read_dataframe_any(data_ref)
@@ -730,6 +809,72 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         st["time_total_ms"] = float((time.perf_counter() - t0) * 1000.0)
         st.setdefault("progress", 0.0)
         _ESTADOS[job_id] = st
+
+
+@router.post(
+    "/feature-pack/prepare",
+    summary="Construye el feature-pack para un dataset",
+)
+def prepare_feature_pack_endpoint(
+    dataset_id: str,
+    input_uri: Optional[str] = None,
+    force: bool = False,
+) -> Dict[str, str]:
+    """Construye (o re-construye) el **feature-pack** de un dataset.
+
+    Este endpoint habilita el modo *automático* desde la pestaña **Data**:
+
+    - Tras subir/procesar un dataset, el frontend puede llamar a este endpoint
+      para dejar listo ``artifacts/features/<dataset_id>/train_matrix.parquet``.
+
+    También sirve como herramienta manual para debug/operación.
+
+    Resolución de ``input_uri`` (si no se envía):
+
+    1. ``data/processed/<dataset_id>.parquet``
+    2. ``data/labeled/<dataset_id>_beto.parquet`` (vía :func:`neurocampus.data.datos_dashboard.resolve_labeled_path`)
+    3. ``datasets/<dataset_id>.parquet``
+
+    :param dataset_id: Identificador del dataset (ej. ``"2025-1"``).
+    :param input_uri: Ruta/URI del dataset origen.
+    :param force: Si True, re-genera incluso si el feature-pack ya existe.
+    :returns: Diccionario de rutas relativas a los artefactos del feature-pack.
+    """
+    ds = str(dataset_id or "").strip()
+    if not ds:
+        raise HTTPException(status_code=400, detail="dataset_id es requerido")
+
+    if input_uri:
+        src_ref = _strip_localfs(str(input_uri))
+        if not _abs_path(src_ref).exists():
+            raise HTTPException(status_code=404, detail=f"input_uri no existe: {_abs_path(src_ref)}")
+    else:
+        # Resolver automáticamente el origen.
+        candidates = []
+        candidates.append(BASE_DIR / "data" / "processed" / f"{ds}.parquet")
+        try:
+            labeled = resolve_labeled_path(ds)
+            candidates.append(labeled)
+        except Exception:
+            pass
+        candidates.append(BASE_DIR / "datasets" / f"{ds}.parquet")
+
+        src_ref = None
+        for c in candidates:
+            if c.exists():
+                src_ref = _relpath(c)
+                break
+
+        if not src_ref:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"No se pudo resolver input_uri para {ds}. "
+                    "Primero procesa el dataset (data/processed), o genera labeled, o coloca el parquet en datasets/."
+                ),
+            )
+
+    return _ensure_feature_pack(ds, input_uri=src_ref, force=bool(force))
 
 
 @router.post("/entrenar", response_model=EntrenarResponse)

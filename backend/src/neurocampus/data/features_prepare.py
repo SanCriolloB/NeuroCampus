@@ -137,13 +137,53 @@ def prepare_feature_pack(
     df = _apply_score_bins(df, score_col=score_col, cfg=cfg)
 
     text_feat_cols = [c for c in df.columns if c.startswith("feat_t_")]
+
+    # Probabilidades (si vienen del labeled BETO)
+    prob_cols = [c for c in ["p_neg", "p_neu", "p_pos"] if c in df.columns]
+
+    # Si hay probas, aseguramos confidence y labels derivados (para que RBM no filtre todo a vacío)
+    if len(prob_cols) == 3:
+        if "sentiment_conf" not in df.columns:
+            df["sentiment_conf"] = df[prob_cols].astype(float).max(axis=1)
+
+        # Derivar etiqueta si no existe ninguna etiqueta “hard”
+        if not any(c in df.columns for c in ("sentiment_label_teacher", "sentiment_label", "y_sentimiento", "label")):
+            lab = (
+                df[prob_cols]
+                .astype(float)
+                .idxmax(axis=1)
+                .map({"p_neg": "neg", "p_neu": "neu", "p_pos": "pos"})
+                .fillna("")
+            )
+            df["sentiment_label"] = lab
+
+        # Asegurar y_sentimiento (usado por RBMRestringida)
+        if "y_sentimiento" not in df.columns:
+            if "sentiment_label_teacher" in df.columns:
+                df["y_sentimiento"] = df["sentiment_label_teacher"].astype(str)
+            elif "sentiment_label" in df.columns:
+                df["y_sentimiento"] = df["sentiment_label"].astype(str)
+
     sentiment_cols = [c for c in ["p_neg", "p_neu", "p_pos", "sentiment_conf"] if c in df.columns]
     one_hot_cols = [c for c in df.columns if c.startswith("score_q_")]
 
-    base_cols = [c for c in ["periodo", "teacher_id", "materia_id", "score_0_50", "score_q"] if c in df.columns]
-    extra_cols = [c for c in ["accepted_by_teacher", "sentiment_label_teacher"] if c in df.columns]
+    # Columnas que usan los RBM como features
+    calif_cols = [c for c in df.columns if c.startswith("calif_") and c.split("_", 1)[-1].isdigit()]
+    pregunta_cols = [c for c in df.columns if c.startswith("pregunta_") and c.split("_", 1)[-1].isdigit()]
 
-    keep_cols = base_cols + extra_cols + sentiment_cols + text_feat_cols + one_hot_cols
+    base_cols = [c for c in ["periodo", "teacher_id", "materia_id", "score_0_50", "score_q"] if c in df.columns]
+    extra_cols = [
+        c for c in [
+            "accepted_by_teacher",
+            "sentiment_label_teacher",
+            "sentiment_label",
+            "y_sentimiento",
+        ]
+        if c in df.columns
+    ]
+
+    keep_cols = base_cols + calif_cols + pregunta_cols + extra_cols + sentiment_cols + text_feat_cols + one_hot_cols
+    keep_cols = list(dict.fromkeys(keep_cols))  # dedup por si acaso
     train = df[keep_cols].copy()
 
     train_path = out_dir / "train_matrix.parquet"

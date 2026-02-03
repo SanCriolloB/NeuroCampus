@@ -467,6 +467,87 @@ class RBMGeneral:
 
         self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
         self._epoch = 0
+    # ---------- Mini-batches ----------
+    def _iter_minibatches(self, X: Tensor, y: Optional[Tensor]):
+        idx = torch.randperm(X.shape[0], device=X.device)
+        for start in range(0, len(idx), int(self.batch_size)):
+            sel = idx[start:start + int(self.batch_size)]
+            yield X[sel], (None if y is None else y[sel])
+
+    # ---------- Entrenamiento (compatible con PlantillaEntrenamiento) ----------
+    def train_step(self, epoch: int, hparams: Optional[Dict] = None, y: Any = None):
+        """
+        Ejecuta 1 época de entrenamiento.
+
+        Compatible con PlantillaEntrenamiento, que intenta llamar:
+          - train_step(epoch, hparams, y=y)
+          - train_step(epoch, hparams)
+          - train_step(epoch)
+        """
+        assert self.rbm is not None and self.opt_rbm is not None and self.X is not None, (
+            "RBMGeneral no está inicializado. Asegúrate de que setup(data_ref, hparams) se ejecutó."
+        )
+        assert self.head is not None and self.opt_head is not None, (
+            "RBMGeneral.head/opt_head no inicializados. Revisa setup()."
+        )
+
+        self._epoch = int(epoch)
+        t0 = time.perf_counter()
+
+        rbm_losses: List[float] = []
+        rbm_grad_norms: List[float] = []
+        cls_losses: List[float] = []
+
+        # --- RBM update ---
+        self.rbm.train()
+        for _ in range(max(1, int(getattr(self, "epochs_rbm", 1)))):
+            for xb, _ in self._iter_minibatches(self.X, self.y):
+                self.opt_rbm.zero_grad(set_to_none=True)
+
+                vk, _hk = self.rbm.contrastive_divergence_step(xb)
+                loss_rbm = self.rbm.free_energy(xb).mean() - self.rbm.free_energy(vk).mean()
+                loss_rbm.backward()
+
+                # grad norm (opcional, útil para UI/debug)
+                with torch.no_grad():
+                    sq = 0.0
+                    for p in self.rbm.parameters():
+                        if p.grad is not None:
+                            sq += float((p.grad.detach() ** 2).sum().cpu())
+                    rbm_grad_norms.append(float(sq ** 0.5))
+
+                self.opt_rbm.step()
+
+                # recon_error “amigable” (MSE entre v0 y vk)
+                with torch.no_grad():
+                    recon = torch.mean((vk - xb) ** 2).detach().cpu().item()
+                rbm_losses.append(float(recon))
+
+        # --- Head supervised (si hay y) ---
+        if self.y is not None:
+            self.head.train()
+            for xb, yb in self._iter_minibatches(self.X, self.y):
+                with torch.no_grad():
+                    H = self.rbm.hidden_probs(xb)
+                self.opt_head.zero_grad(set_to_none=True)
+                logits = self.head(H)
+                loss_cls = F.cross_entropy(logits, yb, ignore_index=3)
+                loss_cls.backward()
+                self.opt_head.step()
+                cls_losses.append(float(loss_cls.detach().cpu()))
+
+        time_epoch_ms = float((time.perf_counter() - t0) * 1000.0)
+
+        metrics = {
+            "epoch": float(epoch),
+            "recon_error": float(np.mean(rbm_losses)) if rbm_losses else 0.0,
+            "rbm_grad_norm": float(np.mean(rbm_grad_norms)) if rbm_grad_norms else 0.0,
+            "cls_loss": float(np.mean(cls_losses)) if cls_losses else 0.0,
+            "time_epoch_ms": time_epoch_ms,
+        }
+        metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
+        return metrics
+
 
     # --------------------------
     # Transformaciones y predict

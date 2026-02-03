@@ -693,12 +693,11 @@ def _resolve_features_input(dataset_id: str, input_uri: Optional[str]) -> str:
     """Resuelve el dataset fuente para construir el feature-pack.
 
     Orden (cuando input_uri no se especifica o viene vacío):
-      1) data/processed/<dataset_id>.parquet
-      2) data/labeled/<dataset_id>_beto.parquet
+      1) data/labeled/<dataset_id>_beto.parquet
+      2) data/processed/<dataset_id>.parquet
       3) historico/unificado_labeled.parquet
       4) datasets/<dataset_id>.parquet | datasets/<dataset_id>.csv
     """
-    # 1) input explícito (tolerar "" y "localfs://...")
     if input_uri is not None and str(input_uri).strip() != "":
         ref = _strip_localfs(str(input_uri))
         p = Path(ref)
@@ -712,22 +711,18 @@ def _resolve_features_input(dataset_id: str, input_uri: Optional[str]) -> str:
             raise FileNotFoundError(f"input_uri no existe: {p}")
         return ref
 
-    # 2) processed (preferido)
-    processed = DATA_PROCESSED_DIR / f"{dataset_id}.parquet"
-    if processed.exists():
-        return f"data/processed/{dataset_id}.parquet"
-
-    # 3) labeled
     labeled = DATA_LABELED_DIR / f"{dataset_id}_beto.parquet"
     if labeled.exists():
         return f"data/labeled/{dataset_id}_beto.parquet"
 
-    # 4) histórico
+    processed = DATA_PROCESSED_DIR / f"{dataset_id}.parquet"
+    if processed.exists():
+        return f"data/processed/{dataset_id}.parquet"
+
     hist = BASE_DIR / "historico" / "unificado_labeled.parquet"
     if hist.exists():
         return "historico/unificado_labeled.parquet"
 
-    # 5) raw datasets
     raw_parq = DATASETS_DIR / f"{dataset_id}.parquet"
     if raw_parq.exists():
         return f"datasets/{dataset_id}.parquet"
@@ -739,13 +734,12 @@ def _resolve_features_input(dataset_id: str, input_uri: Optional[str]) -> str:
     raise FileNotFoundError(
         "No se encontró input para feature-pack.\n"
         "Opciones válidas (en orden):\n"
-        "- data/processed/<dataset_id>.parquet\n"
         "- data/labeled/<dataset_id>_beto.parquet\n"
+        "- data/processed/<dataset_id>.parquet\n"
         "- historico/unificado_labeled.parquet\n"
         "- datasets/<dataset_id>.parquet | datasets/<dataset_id>.csv\n"
-        "Solución recomendada: procesa el dataset en Data (debe crear data/processed/<dataset_id>.parquet) "
-        "o corre BETO para generar el labeled."
     )
+
 
 
 

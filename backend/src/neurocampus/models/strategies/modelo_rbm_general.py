@@ -369,7 +369,19 @@ class RBMGeneral:
         if label_col is not None:
             y_raw = df[label_col].astype("string").fillna("").str.strip().str.lower()
         else:
-            y_raw = pd.Series([""] * len(df))
+            # Si no hay columna de etiqueta, pero sí probas p_* -> derivar etiqueta
+            if all(p in df.columns for p in _PROB_COLS):
+                y_raw = (
+                    df[_PROB_COLS]
+                    .astype(float)
+                    .idxmax(axis=1)
+                    .map({"p_neg": "neg", "p_neu": "neu", "p_pos": "pos"})
+                    .fillna("")
+                    .astype("string")
+                )
+            else:
+                # Sin labels ni probas: devolvemos y=None y NO filtramos a vacío
+                return X, None, feat_cols
 
         # Filtro por aceptación:
         # 1) si hay columna de aceptación -> filtrarla

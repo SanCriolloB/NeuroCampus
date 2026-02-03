@@ -19,9 +19,7 @@
       <script src="../../_static/translations.js?v=f85f4cfb"></script>
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Índice" href="../../genindex.html" />
-    <link rel="search" title="Búsqueda" href="../../search.html" />
-    <link rel="next" title="neurocampus.app.jobs.cmd_preprocesar_beto" href="neurocampus.app.jobs.cmd_preprocesar_beto.html" />
-    <link rel="prev" title="Jobs y orquestación" href="../jobs.html" /> 
+    <link rel="search" title="Búsqueda" href="../../search.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -44,25 +42,12 @@
 </div>
         </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
               <p class="caption" role="heading"><span class="caption-text">Contenido</span></p>
-<ul class="current">
+<ul>
 <li class="toctree-l1"><a class="reference internal" href="../../manual/index.html">Manual de usuario</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../arquitectura/index.html">Arquitectura de NeuroCampus</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../teoria/index.html">Teoría de modelos</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../api_backend/index.html">API del backend</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="../index.html">API Python (backend)</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../modelos.html">Modelos BM / RBM / DBM</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="../jobs.html">Jobs y orquestación</a><ul class="current">
-<li class="toctree-l3 current"><a class="current reference internal" href="#">neurocampus.app.jobs.cmd_train_rbm_manual</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#resumen-de-funcionalidad">Resumen de funcionalidad</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#modos-de-entrenamiento">Modos de entrenamiento</a></li>
-</ul>
-</li>
-<li class="toctree-l3"><a class="reference internal" href="neurocampus.app.jobs.cmd_preprocesar_beto.html">neurocampus.app.jobs.cmd_preprocesar_beto</a></li>
-<li class="toctree-l3"><a class="reference internal" href="neurocampus.app.jobs.cmd_train_dbm_manual.html">neurocampus.app.jobs.cmd_train_dbm_manual</a></li>
-</ul>
-</li>
-</ul>
-</li>
+<li class="toctree-l1"><a class="reference internal" href="../index.html">API Python (backend)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../devops/index.html">Guía de desarrollo y operación</a></li>
 </ul>
 
@@ -80,8 +65,6 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="../index.html">API Python (backend)</a></li>
-          <li class="breadcrumb-item"><a href="../jobs.html">Jobs y orquestación</a></li>
       <li class="breadcrumb-item active">neurocampus.app.jobs.cmd_train_rbm_manual</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../../_sources/api_python/generated/neurocampus.app.jobs.cmd_train_rbm_manual.rst.txt" rel="nofollow"> Ver código fuente de la página</a>
@@ -92,55 +75,14 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-neurocampus.app.jobs.cmd_train_rbm_manual">
-<span id="neurocampus-app-jobs-cmd-train-rbm-manual"></span><h1>neurocampus.app.jobs.cmd_train_rbm_manual<a class="headerlink" href="#module-neurocampus.app.jobs.cmd_train_rbm_manual" title="Link to this heading"></a></h1>
-<p>Entrena un modelo RBM/BM manual (NumPy) sobre un dataset preprocesado.</p>
-<p>Este script forma parte del pipeline de experimentación de NeuroCampus y se
-usa principalmente como comando de línea de comandos.</p>
-<section id="resumen-de-funcionalidad">
-<h2>Resumen de funcionalidad<a class="headerlink" href="#resumen-de-funcionalidad" title="Link to this heading"></a></h2>
-<ul class="simple">
-<li><p>Lee un archivo de entrada en formato <code class="docutils literal notranslate"><span class="pre">.parquet</span></code> o <code class="docutils literal notranslate"><span class="pre">.csv</span></code>.</p></li>
-<li><p>Selecciona únicamente las columnas numéricas.</p></li>
-<li><p>Entrena el modelo y calcula métricas de calidad:</p>
-<ul>
-<li><p>Error cuadrático medio de reconstrucción (MSE).</p></li>
-<li><p>Opcionalmente, una clasificación proxy con <code class="docutils literal notranslate"><span class="pre">LogisticRegression</span></code> sobre
-las representaciones ocultas para predecir la etiqueta
-<code class="docutils literal notranslate"><span class="pre">sentiment_label_teacher</span></code>.</p></li>
-</ul>
-</li>
-<li><p>Guarda un reporte JSON en el directorio indicado por <code class="docutils literal notranslate"><span class="pre">--out-dir</span></code> con
-parámetros y métricas.</p></li>
-</ul>
-</section>
-<section id="modos-de-entrenamiento">
-<h2>Modos de entrenamiento<a class="headerlink" href="#modos-de-entrenamiento" title="Link to this heading"></a></h2>
-<ul class="simple">
-<li><p>RBM: usa <code class="docutils literal notranslate"><span class="pre">RestrictedBoltzmannMachine</span></code> junto con <code class="docutils literal notranslate"><span class="pre">RBMTrainer</span></code> para
-gestionar entrenamiento, early stopping, callbacks y registro de métricas.</p></li>
-<li><p>BM: utiliza <code class="docutils literal notranslate"><span class="pre">BMManualStrategy</span></code> para mantener compatibilidad con la
-versión previa del pipeline.</p></li>
-</ul>
-<p>El punto de entrada principal es la función <code class="xref py py-func docutils literal notranslate"><span class="pre">main()</span></code>.</p>
-<p class="rubric">Functions</p>
-<table class="autosummary longtable docutils align-default">
-<tbody>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">main</span></code>()</p></td>
-<td><p>Punto de entrada del script de entrenamiento RBM/BM manual.</p></td>
-</tr>
-</tbody>
-</table>
-</section>
+  <section id="neurocampus-app-jobs-cmd-train-rbm-manual">
+<h1>neurocampus.app.jobs.cmd_train_rbm_manual<a class="headerlink" href="#neurocampus-app-jobs-cmd-train-rbm-manual" title="Link to this heading"></a></h1>
 </section>
 
 
            </div>
           </div>
-          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Pie de página">
-        <a href="../jobs.html" class="btn btn-neutral float-left" title="Jobs y orquestación" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Anterior</a>
-        <a href="neurocampus.app.jobs.cmd_preprocesar_beto.html" class="btn btn-neutral float-right" title="neurocampus.app.jobs.cmd_preprocesar_beto" accesskey="n" rel="next">Siguiente <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
-    </div>
+          <footer>
 
   <hr/>
 

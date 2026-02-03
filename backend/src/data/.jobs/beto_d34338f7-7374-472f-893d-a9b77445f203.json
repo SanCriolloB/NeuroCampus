@@ -1,0 +1,12 @@
+{
+  "job_id": "d34338f7-7374-472f-893d-a9b77445f203",
+  "status": "error",
+  "message": "BETO falló.",
+  "output_uri": "data/labeled/2025-1_beto.parquet",
+  "error": "usage: cmd_preprocesar_beto.py [-h] --in SRC --out DST [--text-col TEXT_COL]\n                               [--beto-model BETO_MODEL]\n                               [--batch-size BATCH_SIZE]\n                               [--threshold THRESHOLD] [--margin MARGIN]\n                               [--neu-min NEU_MIN]\n                               [--beto-mode {probs,simple}]\n                               [--min-tokens MIN_TOKENS]\n                               [--text-feats {none,tfidf_lsa}]\n                               [--text-feats-out-dir TEXT_FEATS_OUT_DIR]\n                               [--keep-empty-text]\n                               [--empty-text-policy {neutral,zero}]\n                               [--tfidf-min-df TFIDF_MIN_DF]\n                               [--tfidf-max-df TFIDF_MAX_DF]\ncmd_preprocesar_beto.py: error: unrecognized arguments: --dataset 2025-1 --treat-empty-as-no-text\n",
+  "params": {
+    "dataset_id": "2025-1",
+    "treat_empty_as_no_text": true,
+    "force": false
+  }
+}

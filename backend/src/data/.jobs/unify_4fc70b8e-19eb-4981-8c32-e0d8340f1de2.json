@@ -1,0 +1,10 @@
+{
+  "job_id": "4fc70b8e-19eb-4981-8c32-e0d8340f1de2",
+  "status": "error",
+  "message": "Unificación falló.",
+  "output_uri": "historico/unificado.parquet",
+  "error": "No hay datasets en datasets/",
+  "params": {
+    "mode": "acumulado"
+  }
+}

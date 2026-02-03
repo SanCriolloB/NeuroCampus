@@ -1,0 +1,10 @@
+{
+  "job_id": "77ed3a39-6e90-43d2-9007-762ded321743",
+  "status": "error",
+  "message": "Unificación falló.",
+  "output_uri": "historico/unificado_labeled.parquet",
+  "error": "No hay datasets etiquetados para unificar. Asegúrate de correr BETO al menos en un periodo.",
+  "params": {
+    "mode": "acumulado_labeled"
+  }
+}

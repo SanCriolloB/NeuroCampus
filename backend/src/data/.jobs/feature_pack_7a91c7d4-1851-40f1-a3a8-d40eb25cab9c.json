@@ -1,0 +1,11 @@
+{
+  "job_id": "7a91c7d4-1851-40f1-a3a8-d40eb25cab9c",
+  "status": "error",
+  "message": "Feature-pack falló.",
+  "output_uri": "artifacts/features/2025-1/train_matrix.parquet",
+  "error": "No existe input_uri y no se encontró labeled/processed para dataset=2025-1",
+  "params": {
+    "dataset_id": "2025-1",
+    "input_uri": ""
+  }
+}

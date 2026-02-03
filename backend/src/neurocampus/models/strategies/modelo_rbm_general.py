@@ -539,6 +539,7 @@ class RBMGeneral:
         meta = {
             "feat_cols_": self.feat_cols_,
             "vectorizer": self.vec.to_dict(),
+              "labels": getattr(self, "labels", _DEFAULT_LABELS),
             "hparams": {"scale_mode": self.scale_mode, "text_embed_prefix": self.text_embed_prefix_, "cd_k": self.cd_k},
         }
         with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:

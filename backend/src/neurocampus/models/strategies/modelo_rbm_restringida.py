@@ -302,11 +302,30 @@ class RBMRestringida:
         return list(self.feat_cols_)
 
     # ---------- helpers de IO ----------
-    def _load_df(self, ref: str) -> pd.DataFrame:
-        p = str(ref)
-        if p.lower().endswith(".parquet"):
+    def _load_df(self, ref: Union[str, pd.DataFrame]) -> pd.DataFrame:
+        """Carga df desde ruta (parquet/csv) o retorna copia si ya es DataFrame.
+
+        Resuelve rutas relativas contra CWD y contra la raíz del repo, y soporta
+        prefijos ``localfs://``.
+        """
+        if isinstance(ref, pd.DataFrame):
+            return ref.copy()
+
+        p = _resolve_ref_path(str(ref))
+        if not p.exists():
+            raise FileNotFoundError(str(p))
+
+        if p.suffix.lower() in (".parquet", ".pq"):
             return pd.read_parquet(p)
-        return pd.read_csv(p)
+
+        if p.suffix.lower() == ".csv":
+            return pd.read_csv(p)
+
+        # fallback por si llega una extensión rara
+        try:
+            return pd.read_parquet(p)
+        except Exception:
+            return pd.read_csv(p)
 
     def _resolve_labels(self, df: pd.DataFrame, require_accept: bool = False, threshold: float = 0.80) -> Optional[np.ndarray]:
         if "y_sentimiento" in df.columns:

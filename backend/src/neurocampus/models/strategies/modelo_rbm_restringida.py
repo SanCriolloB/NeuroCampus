@@ -35,6 +35,37 @@ _LABEL_MAP = {"neg": 0, "neu": 1, "pos": 2}
 _INV_LABEL_MAP = {v: k for k, v in _LABEL_MAP.items()}
 _CLASSES = ["neg", "neu", "pos"]
 
+def _strip_localfs(ref: str) -> str:
+    s = str(ref or "").strip()
+    return s[len("localfs://"):] if s.startswith("localfs://") else s
+
+
+def _find_repo_root(start: Path) -> Path:
+    # sube hasta encontrar una estructura típica de repo
+    for p in [start] + list(start.parents):
+        if (p / "backend").exists():
+            return p
+    # fallback razonable
+    return start.parents[5]
+
+
+def _resolve_ref_path(ref: str) -> Path:
+    s = _strip_localfs(ref)
+    p = Path(s)
+
+    # absoluto
+    if p.is_absolute():
+        return p
+
+    # relativo a cwd
+    cwd_p = (Path.cwd() / p).resolve()
+    if cwd_p.exists():
+        return cwd_p
+
+    # relativo al root del repo
+    root = _find_repo_root(Path(__file__).resolve())
+    return (root / p).resolve()
+
 
 def _safe_lower(s) -> str:
     try:

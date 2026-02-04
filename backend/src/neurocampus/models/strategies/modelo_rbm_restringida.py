@@ -192,6 +192,28 @@ class _Vectorizer:
         Xs = np.nan_to_num(Xs, nan=0.0, posinf=1.0, neginf=0.0)
 
         return Xs.astype(np.float32, copy=False)
+    def to_dict(self) -> dict:
+        return {
+            "mode": self.mode,
+            "mean_": None if self.mean_ is None else self.mean_.astype(float).tolist(),
+            "min_": None if self.min_ is None else self.min_.astype(float).tolist(),
+            "max_": None if self.max_ is None else self.max_.astype(float).tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "_Vectorizer":
+        obj = cls()
+        if not d:
+            return obj
+        obj.mode = str(d.get("mode", "minmax"))
+        mean_ = d.get("mean_")
+        min_ = d.get("min_")
+        max_ = d.get("max_")
+        obj.mean_ = None if mean_ is None else np.asarray(mean_, dtype=np.float32)
+        obj.min_  = None if min_  is None else np.asarray(min_, dtype=np.float32)
+        obj.max_  = None if max_  is None else np.asarray(max_, dtype=np.float32)
+        return obj
+
 
 
 

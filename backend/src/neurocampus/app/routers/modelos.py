@@ -782,11 +782,9 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 history=out.get("history") or [],
             )
 
-            try:
-                if hasattr(estrategia, "save") and callable(getattr(estrategia, "save")):
-                    estrategia.save(str(run_dir))
-            except Exception:
-                pass
+            if hasattr(estrategia, "save") and callable(getattr(estrategia, "save")):
+                estrategia.save(str(run_dir))
+
 
             upd = maybe_update_champion(
                 dataset_id=str(ds),

@@ -32,10 +32,15 @@ from typing import Any, Dict, Optional, Type
 import os
 import time
 import uuid
+import inspect
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
+from sklearn.model_selection import train_test_split
+
 
 from ..schemas.modelos import (
     EntrenarRequest,
@@ -697,6 +702,129 @@ def _build_run_hparams(req: EntrenarRequest, job_id: str) -> Dict[str, Any]:
 
     return hp
 
+def _evaluate_model_metrics(
+    model: Any,
+    data_ref: str,
+    *,
+    split_mode: str,
+    val_ratio: float,
+    hparams: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Calcula métricas de clasificación para guardar en metrics.json del run
+    y para que /modelos/runs y /modelos/champion muestren métricas reales.
+
+    - Usa el MISMO filtrado que el modelo hace en _prepare_xy(...)
+    - Aplica split_mode (temporal/random/stratified) y val_ratio
+    - Devuelve:
+        accuracy, f1_macro, val_accuracy, val_f1_macro,
+        confusion_matrix (VAL),
+        labels,
+        train{n,acc,f1_macro,confusion_matrix},
+        val{n,acc,f1_macro,confusion_matrix},
+        n_train, n_val
+    """
+    try:
+        # Normaliza path (puede venir con file:// o rutas relativas)
+        p = _abs_path(_strip_localfs(str(data_ref)))
+        df = pd.read_parquet(p)
+
+        # Construye kwargs compatibles con distintas firmas de _prepare_xy
+        base_kwargs = {
+            "accept_teacher": bool(hparams.get("accept_teacher", True)),
+            "threshold": float(hparams.get("accept_threshold", 0.8)),
+            "max_calif": int(hparams.get("max_calif", 10)),
+            "include_text_probs": bool(hparams.get("use_text_probs", False)),
+            "include_text_embeds": bool(hparams.get("use_text_embeds", False)),
+            "text_embed_prefix": str(hparams.get("text_embed_prefix", "x_text_")),
+        }
+
+        sig = inspect.signature(model._prepare_xy)  # type: ignore[attr-defined]
+        kwargs = {k: v for k, v in base_kwargs.items() if k in sig.parameters}
+
+        prep_out = model._prepare_xy(df, **kwargs)  # type: ignore[attr-defined]
+
+        # Soporta versiones viejas que retornaban más cosas (mask/meta)
+        if isinstance(prep_out, tuple):
+            if len(prep_out) == 3:
+                X, y, _feat_cols = prep_out
+            elif len(prep_out) >= 3:
+                X, y = prep_out[0], prep_out[1]
+            else:
+                return {}
+        else:
+            return {}
+
+        labels = list(getattr(model, "classes_", ["neg", "neu", "pos"]))
+        y_idx = np.asarray(y, dtype=int)
+        y_true = np.asarray([labels[int(i)] for i in y_idx], dtype=object)
+
+        n = int(len(y_true))
+        if n == 0:
+            return {}
+
+        # Split
+        val_ratio = float(val_ratio)
+        val_ratio = min(max(val_ratio, 0.0), 0.9)
+        n_val = int(round(n * val_ratio))
+        n_val = max(1, n_val) if n >= 2 else 0
+
+        if n_val == 0:
+            return {}
+
+        idx = np.arange(n)
+
+        if (split_mode or "").lower() == "temporal":
+            idx_tr = idx[: n - n_val]
+            idx_va = idx[n - n_val :]
+        else:
+            seed = int(hparams.get("seed", 42))
+            strat = y_true if (split_mode or "").lower() == "stratified" else None
+            try:
+                idx_tr, idx_va = train_test_split(
+                    idx, test_size=val_ratio, random_state=seed, shuffle=True, stratify=strat
+                )
+            except Exception:
+                idx_tr, idx_va = train_test_split(
+                    idx, test_size=val_ratio, random_state=seed, shuffle=True, stratify=None
+                )
+
+        X_tr, y_tr = X[idx_tr], y_true[idx_tr]
+        X_va, y_va = X[idx_va], y_true[idx_va]
+
+        y_pred_tr = np.asarray(model.predict(X_tr), dtype=object)  # type: ignore[attr-defined]
+        y_pred_va = np.asarray(model.predict(X_va), dtype=object)  # type: ignore[attr-defined]
+
+        def pack(y_t, y_p):
+            if len(y_t) == 0:
+                return {"n": 0, "acc": None, "f1_macro": None, "confusion_matrix": None}
+            return {
+                "n": int(len(y_t)),
+                "acc": float(accuracy_score(y_t, y_p)),
+                "f1_macro": float(f1_score(y_t, y_p, labels=labels, average="macro", zero_division=0)),
+                "confusion_matrix": confusion_matrix(y_t, y_p, labels=labels).tolist(),
+            }
+
+        tr_pack = pack(y_tr, y_pred_tr)
+        va_pack = pack(y_va, y_pred_va)
+
+        return {
+            "labels": labels,
+            "n_train": int(tr_pack["n"]),
+            "n_val": int(va_pack["n"]),
+            "accuracy": tr_pack["acc"],
+            "f1_macro": tr_pack["f1_macro"],
+            "val_accuracy": va_pack["acc"],
+            "val_f1_macro": va_pack["f1_macro"],
+            "train": tr_pack,
+            "val": va_pack,
+            # Por conveniencia, deja también la CM final como la de validación
+            "confusion_matrix": va_pack["confusion_matrix"],
+        }
+    except Exception as e:
+        logger.exception("Eval metrics failed: %s", e)
+        return {}
+
 
 # ---------------------------------------------------------------------------
 # Endpoints: readiness
@@ -761,8 +889,26 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             model_name=req.modelo,
         )
 
-        st = _ESTADOS.get(job_id, {})
+        # --- evaluación post-entrenamiento (métricas reales para runs/champion) ---
+        trained_model = out.get("model")
+        if trained_model is not None:
+            eval_metrics = _evaluate_model_metrics(
+                trained_model,
+                data_ref=str(selected_ref),
+                split_mode=req.split_mode,
+                val_ratio=req.val_ratio,
+                hparams=run_hparams,
+            )
+            if eval_metrics:
+                out_metrics = out.get("metrics") or {}
+                out["metrics"] = {**out_metrics, **eval_metrics}
+
         st.update(out)
+
+        run_id = out.get("run_id")
+        final_metrics = out.get("metrics", {})
+        history = out.get("history", [])
+
 
         if out.get("status") == "completed":
             ds = _dataset_id(req) or "unknown"

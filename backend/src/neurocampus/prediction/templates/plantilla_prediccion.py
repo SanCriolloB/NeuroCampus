@@ -92,6 +92,13 @@ class PlantillaPrediccion:
         self._vectorizer = vectorizer
         self._infer_fn = infer_fn
         self._postprocess = postprocess
+    
+    def run_online(self, body: Any, correlation_id: str | None = None) -> Dict[str, Any]:
+        payload = (
+            body.model_dump(exclude_none=True) if hasattr(body, "model_dump")
+            else (body.dict(exclude_none=True) if hasattr(body, "dict") else body)
+        )
+        return self.predict_online(payload, correlation_id=correlation_id)
 
     def predict_online(self, payload: Dict[str, Any], correlation_id: str | None = None) -> Dict[str, Any]:
         """

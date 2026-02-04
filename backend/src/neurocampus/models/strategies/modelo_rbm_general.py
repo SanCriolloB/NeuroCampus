@@ -21,6 +21,13 @@ from torch import Tensor
 _LABEL_MAP = {"neg": 0, "neu": 1, "pos": 2}
 _INV_LABEL_MAP = {v: k for k, v in _LABEL_MAP.items()}
 
+_LABEL_MAP = {"neg": 0, "neu": 1, "pos": 2}
+_INV_LABEL_MAP = {0: "neg", 1: "neu", 2: "pos"}
+
+# FIX: default labels (evita NameError en save/meta)
+_DEFAULT_LABELS = ["neg", "neu", "pos"]
+
+
 # Patrón de columnas numéricas aceptadas
 _NUMERIC_PATTERNS = [
     r"^calif_\d+$",     # calif_1..N
@@ -259,6 +266,7 @@ class RBMGeneral:
         self._epoch: int = 0
         self.accept_teacher: bool = False
         self.accept_threshold: float = 0.8
+        self.labels = list(_DEFAULT_LABELS)
 
     # --------------------------
     # Carga de dataset sencillo

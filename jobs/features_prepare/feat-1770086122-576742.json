@@ -1,0 +1,19 @@
+{
+  "id": "feat-1770086122-576742",
+  "status": "done",
+  "created_at": "2026-02-03T02:35:22Z",
+  "started_at": "2026-02-03T02:35:22Z",
+  "finished_at": "2026-02-03T02:35:22Z",
+  "dataset_id": "2025-1",
+  "input_uri": "data/processed/2025-1.parquet",
+  "output_dir": "C:\\Users\\santi\\OneDrive\\Documents\\Universidad\\Pasantia\\NeuroCampus\\artifacts\\features\\2025-1",
+  "force": false,
+  "artifacts": {
+    "train_matrix": "artifacts/features/2025-1/train_matrix.parquet",
+    "teacher_index": "artifacts/features/2025-1/teacher_index.json",
+    "materia_index": "artifacts/features/2025-1/materia_index.json",
+    "bins": "artifacts/features/2025-1/bins.json",
+    "meta": "artifacts/features/2025-1/meta.json"
+  },
+  "error": null
+}

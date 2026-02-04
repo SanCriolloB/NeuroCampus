@@ -475,7 +475,7 @@ class RBMGeneral:
             yield X[sel], (None if y is None else y[sel])
 
     # ---------- Entrenamiento (compatible con PlantillaEntrenamiento) ----------
-    def train_step(self, epoch: int, hparams: Optional[Dict] = None, y: Any = None):
+    def train_step(self, epoch: int, hparams: Optional[Dict] = None, y: any = None):
         """
         Ejecuta 1 época de entrenamiento.
 

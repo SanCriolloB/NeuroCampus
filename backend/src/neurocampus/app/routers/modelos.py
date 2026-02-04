@@ -41,7 +41,6 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 
-
 from ..schemas.modelos import (
     EntrenarRequest,
     EntrenarResponse,
@@ -860,6 +859,91 @@ def readiness(dataset_id: str) -> ReadinessResponse:
     )
 
 
+def _temporal_split(n: int, val_ratio: float) -> tuple[np.ndarray, np.ndarray]:
+    """Split temporal: train = primeras filas, val = últimas filas."""
+    if n <= 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+
+    vr = float(val_ratio or 0.2)
+    n_val = int(round(n * vr))
+    # defensivo
+    n_val = max(1, min(n - 1, n_val)) if n > 1 else 0
+
+    idx_tr = np.arange(0, n - n_val, dtype=int)
+    idx_va = np.arange(n - n_val, n, dtype=int)
+    return idx_tr, idx_va
+
+
+def _evaluate_post_training_metrics(estrategia, df: "pd.DataFrame", hparams: dict) -> dict:
+    """
+    Calcula métricas REALES (accuracy/f1/confusion) usando:
+      - el mismo _prepare_xy del modelo
+      - el mismo split temporal (val_ratio)
+      - el mismo esquema de labels [neg, neu, pos]
+    """
+    # defaults alineados con lo que tu modelo ya usa / espera
+    accept_teacher = bool(hparams.get("accept_teacher", True))
+    threshold = float(hparams.get("accept_threshold", 0.8))
+    max_calif = int(hparams.get("max_calif", 10))
+
+    include_text_probs = bool(hparams.get("use_text_probs", False))
+    include_text_embeds = bool(hparams.get("use_text_embeds", False))
+    text_embed_prefix = str(hparams.get("text_embed_prefix", "x_text_"))
+
+    # Firma REAL de tus strategies RBM (según tu prueba en terminal)
+    X, y, feat_cols = estrategia._prepare_xy(
+        df,
+        accept_teacher=accept_teacher,
+        threshold=threshold,
+        max_calif=max_calif,
+        include_text_probs=include_text_probs,
+        include_text_embeds=include_text_embeds,
+        text_embed_prefix=text_embed_prefix,
+    )
+
+    labels = ["neg", "neu", "pos"]
+    y_true = np.array([labels[int(i)] for i in y.tolist()])
+    y_pred = np.array(estrategia.predict(X))  # predict(X) devuelve strings
+
+    idx_tr, idx_va = _temporal_split(len(y_true), float(hparams.get("val_ratio", 0.2)))
+
+    y_true_tr, y_pred_tr = y_true[idx_tr], y_pred[idx_tr]
+    y_true_va, y_pred_va = y_true[idx_va], y_pred[idx_va]
+
+    acc_tr = float(accuracy_score(y_true_tr, y_pred_tr)) if len(idx_tr) else None
+    f1_tr = float(f1_score(y_true_tr, y_pred_tr, labels=labels, average="macro", zero_division=0)) if len(idx_tr) else None
+
+    acc_va = float(accuracy_score(y_true_va, y_pred_va)) if len(idx_va) else None
+    f1_va = float(f1_score(y_true_va, y_pred_va, labels=labels, average="macro", zero_division=0)) if len(idx_va) else None
+
+    cm_tr = confusion_matrix(y_true_tr, y_pred_tr, labels=labels).tolist() if len(idx_tr) else None
+    cm_va = confusion_matrix(y_true_va, y_pred_va, labels=labels).tolist() if len(idx_va) else None
+
+    return {
+        "accuracy": acc_tr,
+        "f1_macro": f1_tr,
+        "val_accuracy": acc_va,
+        "val_f1_macro": f1_va,
+        "n_train": int(len(idx_tr)),
+        "n_val": int(len(idx_va)),
+        "labels": labels,
+        "train": {
+            "n": int(len(idx_tr)),
+            "acc": acc_tr,
+            "f1_macro": f1_tr,
+            "confusion_matrix": cm_tr,
+        },
+        "val": {
+            "n": int(len(idx_va)),
+            "acc": acc_va,
+            "f1_macro": f1_va,
+            "confusion_matrix": cm_va,
+        },
+        # compat: muchos consumers esperan confusion_matrix a nivel raíz = VAL
+        "confusion_matrix": cm_va,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Entrenamiento (persistencia vía runs_io)
 # ---------------------------------------------------------------------------
@@ -879,7 +963,7 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
 
         selected_ref = _prepare_selected_data(req, job_id)
 
-        # FIX: hparams robusto (sin None + defaults)
+        # hparams robusto (sin None + defaults)
         run_hparams = _build_run_hparams(req, job_id)
 
         out = tpl.run(
@@ -889,33 +973,43 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             model_name=req.modelo,
         )
 
-        # --- evaluación post-entrenamiento (métricas reales para runs/champion) ---
-        trained_model = out.get("model")
-        if trained_model is not None:
-            eval_metrics = _evaluate_model_metrics(
-                trained_model,
-                data_ref=str(selected_ref),
-                split_mode=req.split_mode,
-                val_ratio=req.val_ratio,
-                hparams=run_hparams,
-            )
-            if eval_metrics:
-                out_metrics = out.get("metrics") or {}
-                out["metrics"] = {**out_metrics, **eval_metrics}
+        # estado base: si no existía, al menos deja job_id + contenedores
+        st = _ESTADOS.get(job_id, {})
+        if not isinstance(st, dict):
+            st = {}
+        st.setdefault("job_id", job_id)
+        st.setdefault("metrics", {})
+        st.setdefault("history", [])
 
-        st.update(out)
-
-        run_id = out.get("run_id")
-        final_metrics = out.get("metrics", {})
-        history = out.get("history", [])
-
+        # mete status/metrics/history que devolvió tpl.run(...)
+        if isinstance(out, dict):
+            st.update(out)
 
         if out.get("status") == "completed":
+            # 1) Calcular métricas REALES (accuracy/f1/confusion) sobre el mismo dataset
+            #    y con el mismo filtrado del modelo (_prepare_xy).
+            try:
+                df_eval = pd.read_parquet(str(selected_ref))
+                eval_metrics = _evaluate_post_training_metrics(estrategia, df_eval, run_hparams)
+
+                merged = dict(out.get("metrics") or {})
+                merged.update(eval_metrics)
+
+                out["metrics"] = merged
+                st["metrics"] = merged
+            except Exception as e_eval:
+                # No tumbar el run por evaluación: deja rastro para debug
+                merged = dict(out.get("metrics") or {})
+                merged["eval_error"] = str(e_eval)
+                out["metrics"] = merged
+                st["metrics"] = merged
+
+            # 2) Persistir run (CON métricas reales ya mergeadas)
             ds = _dataset_id(req) or "unknown"
             run_id = build_run_id(dataset_id=str(ds), model_name=str(req.modelo), job_id=job_id)
 
             req_snapshot = (req.model_dump() if hasattr(req, "model_dump") else req.dict())
-            req_snapshot.update({"job_id": job_id, "selected_ref": selected_ref, "base_dir": str(BASE_DIR)})
+            req_snapshot.update({"job_id": job_id, "selected_ref": str(selected_ref), "base_dir": str(BASE_DIR)})
 
             run_dir = save_run(
                 run_id=run_id,
@@ -928,10 +1022,11 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 history=out.get("history") or [],
             )
 
+            # 3) Guardar artefactos del modelo en el run_dir (rbm.pt, head.pt, vectorizer.json, etc.)
             if hasattr(estrategia, "save") and callable(getattr(estrategia, "save")):
                 estrategia.save(str(run_dir))
 
-
+            # 4) Actualizar champion usando métricas reales
             upd = maybe_update_champion(
                 dataset_id=str(ds),
                 model_name=str(req.modelo),
@@ -948,11 +1043,14 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
 
     except Exception as e:
         st = _ESTADOS.get(job_id) or {"job_id": job_id, "metrics": {}, "history": []}
+        if not isinstance(st, dict):
+            st = {"job_id": job_id, "metrics": {}, "history": []}
         st["status"] = "failed"
         st["error"] = str(e)
         st["time_total_ms"] = float((time.perf_counter() - t0) * 1000.0)
         st.setdefault("progress", 0.0)
         _ESTADOS[job_id] = st
+
 
 
 @router.post(

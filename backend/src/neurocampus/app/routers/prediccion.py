@@ -52,7 +52,7 @@ def _decide_with_rules_from_proba(proba: Union[List[float], np.ndarray],
     return "neu"
 
 
-@router.post("/prediccion/online", response_model=PrediccionOnlineResponse)
+@router.post("/online", response_model=PrediccionOnlineResponse)
 async def prediccion_online(req: Request, body: PrediccionOnlineRequest):
     """
     Endpoint de predicción online.
@@ -84,8 +84,9 @@ async def prediccion_online(req: Request, body: PrediccionOnlineRequest):
         #   tpl = PlantillaPrediccion(...)
         #   out = tpl.run_online(body)  / tpl.run(body) / tpl.predict(...)
         # Ajusta SOLO estas 2 líneas si tu template usa otro método.
-        tpl = PlantillaPrediccion()
-        out = tpl.run_online(body)
+        payload = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else body.dict(exclude_none=True)
+        out = predict_online(payload, correlation_id=getattr(req.state, "correlation_id", None))
+    
     except Exception as e:
         log.exception("prediccion_online failed (cid=%s)", getattr(req.state, "correlation_id", None))
         detail = {"detail": "prediction_failed", "error": str(e)}

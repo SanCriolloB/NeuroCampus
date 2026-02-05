@@ -72,116 +72,258 @@ from neurocampus.observability.eventos_prediccion import (
 # (Ver Día 6 A)  # noqa: E501
 
 class PlantillaPrediccion:
-    """
-    Orquesta el pipeline de predicción:
-      - Carga artefactos publicados (campeón) o por job_id.
-      - Vectoriza inputs.
-      - Ejecuta inferencia (scores probabilísticos).
-      - Aplica post-procesado (calibración/umbrales/formato).
-      - Emite eventos prediction.* con telemetría.
-    """
-
-    def __init__(self, artifacts_loader, vectorizer, infer_fn, postprocess):
+    def __init__(self, artifacts_loader, vectorizer=None, infer_fn=None, postprocess=None):
         """
-        artifacts_loader: callable(job_id|None) -> dict con handles/paths a modelos, vectorizador, etc.
-        vectorizer: callable(texto:str, califs:dict) -> features (X) para inferencia.
-        infer_fn: callable(artifacts, X) -> dict con probabilidades por clase/etiquetas adicionales.
-        postprocess: callable(scores:dict) -> (label_top:str, scores:dict, sentiment:dict, confidence:float)
+        artifacts_loader: callable(job_id|None) -> dict/obj con handles/paths a modelos, etc.
+        vectorizer: callable(texto:str, califs:dict) -> X para inferencia (opcional; puede venir None)
+        infer_fn: callable(artifacts, X) -> raw scores (opcional; puede venir None)
+        postprocess: callable(raw) -> (label_top, scores, sentiment, confidence) (opcional; puede venir None)
         """
         self._artifacts_loader = artifacts_loader
         self._vectorizer = vectorizer
         self._infer_fn = infer_fn
         self._postprocess = postprocess
-    
-    def run_online(self, body: Any, correlation_id: str | None = None) -> Dict[str, Any]:
-        payload = (
-            body.model_dump(exclude_none=True) if hasattr(body, "model_dump")
-            else (body.dict(exclude_none=True) if hasattr(body, "dict") else body)
-        )
-        return self.predict_online(payload, correlation_id=correlation_id)
 
+    # -------------------------
+    # Helpers robustos (fallback)
+    # -------------------------
+    def _extract_model(self, artifacts):
+        """Intenta sacar un 'modelo' desde artifacts (dict u objeto)."""
+        if artifacts is None:
+            return None
+
+        # Si ya es un modelo (tiene predict_*), devuélvelo
+        if hasattr(artifacts, "predict_proba_df") or hasattr(artifacts, "predict_df") or hasattr(artifacts, "predict_proba") or hasattr(artifacts, "predict"):
+            return artifacts
+
+        if isinstance(artifacts, dict):
+            for k in ("model", "strategy", "estrategia", "predictor"):
+                v = artifacts.get(k)
+                if v is not None and (
+                    hasattr(v, "predict_proba_df") or hasattr(v, "predict_df") or hasattr(v, "predict_proba") or hasattr(v, "predict")
+                ):
+                    return v
+
+        # también podría venir como atributo
+        for k in ("model", "strategy", "estrategia", "predictor"):
+            if hasattr(artifacts, k):
+                v = getattr(artifacts, k)
+                if v is not None and (
+                    hasattr(v, "predict_proba_df") or hasattr(v, "predict_df") or hasattr(v, "predict_proba") or hasattr(v, "predict")
+                ):
+                    return v
+
+        return None
+
+    def _fallback_vectorize_online(self, comentario: str, calificaciones: dict):
+        """
+        Fallback simple: arma un DataFrame 1xN con calificaciones.
+        Incluye varias variantes de nombre de columna para maximizar match con feat_cols_.
+        """
+        import pandas as pd
+
+        calificaciones = calificaciones or {}
+        row = {}
+
+        for k, v in calificaciones.items():
+            try:
+                fv = float(v)
+            except Exception:
+                continue
+
+            # nombres "probables" en datasets/features
+            row[k] = fv
+            row[f"x_{k}"] = fv
+            row[f"calif_{k}"] = fv
+
+        if comentario is not None:
+            row["comentario"] = str(comentario)
+
+        return pd.DataFrame([row])
+
+    def _fallback_infer(self, artifacts, X):
+        """
+        Si no hay infer_fn, intenta inferir directo desde el modelo encontrado en artifacts.
+        Retorna un raw compatible con _fallback_postprocess.
+        """
+        import numpy as np
+
+        model = self._extract_model(artifacts)
+        if model is None:
+            raise RuntimeError("No se pudo extraer un modelo desde artifacts (artifacts_loader no está entregando model/strategy).")
+
+        labels = getattr(model, "labels_", None) or ["neg", "neu", "pos"]
+
+        # Preferimos proba
+        if hasattr(model, "predict_proba_df"):
+            proba = np.asarray(model.predict_proba_df(X))[0].tolist()
+            return {"labels": labels, "proba": proba}
+
+        if hasattr(model, "predict_proba"):
+            proba = np.asarray(model.predict_proba(X))[0].tolist()
+            return {"labels": labels, "proba": proba}
+
+        # fallback sin proba
+        if hasattr(model, "predict_df"):
+            pred = model.predict_df(X)
+            pred0 = pred.iloc[0] if hasattr(pred, "iloc") else pred[0]
+            # sin proba => confidence 1.0 para el label
+            proba = [0.0] * len(labels)
+            if pred0 in labels:
+                proba[labels.index(pred0)] = 1.0
+            return {"labels": labels, "proba": proba}
+
+        if hasattr(model, "predict"):
+            pred = model.predict(X)
+            pred0 = pred[0] if isinstance(pred, (list, tuple)) else pred
+            proba = [0.0] * len(labels)
+            if pred0 in labels:
+                proba[labels.index(pred0)] = 1.0
+            return {"labels": labels, "proba": proba}
+
+        raise RuntimeError("El modelo encontrado no expone predict/predict_proba.")
+
+    def _fallback_postprocess(self, raw):
+        """
+        Convierte raw -> (label_top, scores, sentiment, confidence)
+        """
+        labels = raw.get("labels") or ["neg", "neu", "pos"]
+        proba = raw.get("proba")
+
+        if proba is None:
+            raise RuntimeError("raw no contiene 'proba' (fallback_postprocess).")
+
+        sentiment = {labels[i]: float(proba[i]) for i in range(min(len(labels), len(proba)))}
+        label_top = max(sentiment, key=sentiment.get)
+        confidence = float(sentiment[label_top])
+        scores = sentiment  # por ahora scores = distribución (sirve para smoke test)
+        return label_top, scores, sentiment, confidence
+
+    # -------------------------
+    # API methods
+    # -------------------------
     def predict_online(self, payload: Dict[str, Any], correlation_id: str | None = None) -> Dict[str, Any]:
-        """
-        Cumple contrato de POST /prediccion/online (v0.6.0).
-        Body esperado:
-          {
-            "job_id": "uuid-opcional",
-            "family": "sentiment_desempeno",
-            "input": { "calificaciones": {...}, "comentario": "..." }
-          }
-        """
         cid = correlation_id or f"cid-{uuid.uuid4()}"
         started = time.time()
+        stage = "io"
+
         try:
-            emit_requested(cid, family=payload.get("family","sentiment_desempeno"), mode="online", n_items=1)
+            emit_requested(cid, family=payload.get("family", "sentiment_desempeno"), mode="online", n_items=1)
+
             job_id = payload.get("job_id")
             inp = payload["input"]
-            X = self._vectorizer(inp.get("comentario",""), inp.get("calificaciones", {}))
+
+            # 1) carga artifacts PRIMERO (porque el vectorizador puede depender del modelo)
             artifacts = self._artifacts_loader(job_id)
-            raw = self._infer_fn(artifacts, X)
-            label_top, scores, sentiment, confidence = self._postprocess(raw)
-            lat_ms = int((time.time()-started)*1000)
-            emit_completed(cid, latencia_ms=lat_ms, n_items=1,
-                           distribucion_labels={label_top:1},
-                           distribucion_sentiment=sentiment)
-            
-            # Asegura JSON-serializable (evita 500 por numpy/torch)
-            label_top = str(label_top) if label_top is not None else None
-            scores = _to_jsonable(scores)
-            sentiment = _to_jsonable(sentiment)
-            confidence = _to_jsonable(confidence)
+
+            # 2) vectorize
+            stage = "vectorize"
+            if callable(self._vectorizer):
+                X = self._vectorizer(inp.get("comentario", ""), inp.get("calificaciones", {}))
+            else:
+                X = self._fallback_vectorize_online(inp.get("comentario", ""), inp.get("calificaciones", {}))
+
+            # 3) infer
+            stage = "predict"
+            if callable(self._infer_fn):
+                raw = self._infer_fn(artifacts, X)
+            else:
+                raw = self._fallback_infer(artifacts, X)
+
+            # 4) postprocess
+            stage = "postprocess"
+            if callable(self._postprocess):
+                label_top, scores, sentiment, confidence = self._postprocess(raw)
+            else:
+                label_top, scores, sentiment, confidence = self._fallback_postprocess(raw)
+
+            lat_ms = int((time.time() - started) * 1000)
+            emit_completed(
+                cid,
+                latencia_ms=lat_ms,
+                n_items=1,
+                distribucion_labels={label_top: 1},
+                distribucion_sentiment=sentiment,
+            )
 
             return {
                 "label_top": label_top,
-                "scores": scores,           # probabilidades por materia (0..1)
-                "sentiment": sentiment,     # {"pos":..,"neu":..,"neg":..}
-                "confidence": confidence,   # típicamente max(scores.values())
-                "latency_ms": int(lat_ms),
-                "correlation_id": str(cid),
+                "scores": scores,
+                "sentiment": sentiment,
+                "confidence": confidence,
+                "latency_ms": lat_ms,
+                "correlation_id": cid,
             }
 
         except Exception as e:
-            emit_failed(cid, error=str(e), stage="predict_online")
+            # stage debe ser SOLO: vectorize|predict|postprocess|io
+            emit_failed(cid, error=str(e), stage=stage)
             raise
 
-    def predict_batch(self, batch_items: List[Dict[str, Any]], correlation_id: str | None = None) -> Tuple[Dict[str,Any], List[Dict[str,Any]]]:
-        """
-        Cumple contrato de POST /prediccion/batch (v0.6.0):
-          - Procesa N filas y devuelve summary + sample + artifact path.
-        """
+    def predict_batch(self, batch_items: List[Dict[str, Any]], correlation_id: str | None = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         cid = correlation_id or f"cid-{uuid.uuid4()}"
         started = time.time()
+        stage = "io"
+
         try:
             emit_requested(cid, family="sentiment_desempeno", mode="batch", n_items=len(batch_items))
+
+            # artifacts una sola vez
             artifacts = self._artifacts_loader(None)
+
             results = []
             for row in batch_items:
-                X = self._vectorizer(row.get("comentario",""), row.get("calificaciones", {}))
-                raw = self._infer_fn(artifacts, X)
-                label_top, scores, sentiment, confidence = self._postprocess(raw)
-                label_top = str(label_top) if label_top is not None else None
-                results.append({
-                    "id": _to_jsonable(row.get("id")),
-                    "label_top": label_top,
-                    "confidence": _to_jsonable(confidence),
-                    "scores": _to_jsonable(scores),
-                    "sentiment": _to_jsonable(sentiment),
-                })
+                # vectorize
+                stage = "vectorize"
+                if callable(self._vectorizer):
+                    X = self._vectorizer(row.get("comentario", ""), row.get("calificaciones", {}))
+                else:
+                    X = self._fallback_vectorize_online(row.get("comentario", ""), row.get("calificaciones", {}))
 
-            # TODO: persistir parquet y devolver artifact ref
+                # infer
+                stage = "predict"
+                if callable(self._infer_fn):
+                    raw = self._infer_fn(artifacts, X)
+                else:
+                    raw = self._fallback_infer(artifacts, X)
+
+                # postprocess
+                stage = "postprocess"
+                if callable(self._postprocess):
+                    label_top, scores, sentiment, confidence = self._postprocess(raw)
+                else:
+                    label_top, scores, sentiment, confidence = self._fallback_postprocess(raw)
+
+                results.append(
+                    {
+                        "id": row.get("id"),
+                        "label_top": label_top,
+                        "confidence": confidence,
+                        "scores": scores,
+                        "sentiment": sentiment,
+                    }
+                )
+
             artifact_ref = f"localfs://predictions/batch/{uuid.uuid4()}.parquet"
-            lat_ms = int((time.time()-started)*1000)
-            emit_completed(cid, latencia_ms=lat_ms, n_items=len(batch_items),
-                           distribucion_labels={}, distribucion_sentiment={})
+            lat_ms = int((time.time() - started) * 1000)
+
+            emit_completed(cid, latencia_ms=lat_ms, n_items=len(batch_items), distribucion_labels={}, distribucion_sentiment={})
+
             summary = {"rows": len(batch_items), "ok": len(results), "errors": 0, "engine": "pandas"}
             sample = results[:2]
-            return {
-                "batch_id": str(uuid.uuid4()),
-                "summary": _to_jsonable(summary),
-                "sample": _to_jsonable(sample),
-                "artifact": str(artifact_ref),
-                "correlation_id": str(cid),
-            }, results
+
+            return (
+                {
+                    "batch_id": str(uuid.uuid4()),
+                    "summary": summary,
+                    "sample": sample,
+                    "artifact": artifact_ref,
+                    "correlation_id": cid,
+                },
+                results,
+            )
+
         except Exception as e:
-            emit_failed(cid, error=str(e), stage="predict_batch")
+            emit_failed(cid, error=str(e), stage=stage)
             raise
+

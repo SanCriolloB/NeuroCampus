@@ -79,6 +79,7 @@ export function DataTab() {
   // Flags del pipeline "Datos" (sin cambiar UI/estilos)
   const [generateTfidf, setGenerateTfidf] = useState(true);
   const [emptyAsNoText, setEmptyAsNoText] = useState(true);
+  const [forcePreprocessing, setForcePreprocessing] = useState(false);
 
   const [datasetName, setDatasetName] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -282,9 +283,9 @@ export function DataTab() {
           const job = await jobsApi.launchBetoPreproc(datasetId, {
             text_feats: generateTfidf ? "tfidf_lsa" : "none",
             empty_text_policy: emptyAsNoText ? "zero" : "neutral",
-            // mantener filas sin texto, pero NO contarlas como neutrales si empty_text_policy="zero"
             keep_empty_text: true,
             min_tokens: 1,
+            force_cargar_dataset: forcePreprocessing,
           });
 
           setBetoJobId(job.id);
@@ -450,6 +451,16 @@ export function DataTab() {
                       />
                       <label className="text-sm text-gray-400">
                         Treat empty comments as NO_TEXT
+                      </label>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        checked={forcePreprocessing}
+                        onCheckedChange={(checked) => setForcePreprocessing(checked as boolean)}
+                      />
+                      <label className="text-sm text-gray-400">
+                        Force rebuild processed dataset (data/processed)
                       </label>
                     </div>
                   </div>

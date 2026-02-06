@@ -8,15 +8,15 @@ from pathlib import Path
 from neurocampus.prediction.templates.plantilla_prediccion import PlantillaPrediccion
 from neurocampus.prediction.chain.posprocesado import format_output
 from neurocampus.models.strategies.modelo_rbm_general import RBMGeneral
+from neurocampus.models.strategies.modelo_rbm_restringida import RBMRestringida
+
 
 # -----------------------------------------------------------------------------
 # Configuración de “campeón” (champion)
 # -----------------------------------------------------------------------------
-# Familia por defecto (debe coincidir con la usada por cmd_autoretrain.py)
-DEFAULT_FAMILY = "with_text"
 
-# Directorio donde cmd_autoretrain promueve el campeón:
-CHAMPIONS_DIR = Path("artifacts") / "champions" / DEFAULT_FAMILY
+ARTIFACTS_DIR = Path("artifacts")
+CHAMPIONS_ROOT = ARTIFACTS_DIR / "champions"
 
 # Compat/fallback (soporte de tu código previo)
 LEGACY_CHAMPION_JSON = Path("artifacts/champions/sentiment_desempeno/current.json")
@@ -25,87 +25,83 @@ LEGACY_CHAMPION_JSON = Path("artifacts/champions/sentiment_desempeno/current.jso
 # -----------------------------------------------------------------------------
 # Utilidades internas
 # -----------------------------------------------------------------------------
-def _read_json(path: Path) -> Optional[dict]:
+def _find_latest_champion_json(dataset_id: str | None = None) -> Path | None:
+    # Si me dan dataset_id explícito: uso ese champion.json
+    if dataset_id:
+        p = CHAMPIONS_ROOT / dataset_id / "champion.json"
+        return p if p.exists() else None
+
+    # Si NO: tomo el champion.json más reciente por mtime
+    candidates = list(CHAMPIONS_ROOT.glob("*/champion.json"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _load_model_from_champion_json(champion_json: Path):
+    champ = json.loads(champion_json.read_text(encoding="utf-8"))
+
+    dataset_id = champ.get("dataset_id") or champ.get("metrics", {}).get("dataset_id") or champion_json.parent.name
+    model_name = champ.get("model_name") or champ.get("metrics", {}).get("model_name")
+    model_path = champ.get("path") or champ.get("metrics", {}).get("path")
+
+    if not model_name:
+        raise ValueError(f"champion.json sin model_name: {champion_json}")
+
+    # 1) path absoluto/guardado por el promote
+    model_dir = Path(model_path) if model_path else (CHAMPIONS_ROOT / dataset_id / model_name)
+
+    # 2) fallback por si el path guardado es raro
+    if not model_dir.exists():
+        model_dir = CHAMPIONS_ROOT / dataset_id / model_name
+
+    if not model_dir.exists():
+        raise FileNotFoundError(f"No existe model_dir={model_dir} (desde {champion_json})")
+
+    if model_name == "rbm_general":
+        model = RBMGeneral.load(str(model_dir))
+    elif model_name == "rbm_restringida":
+        model = RBMRestringida.load(str(model_dir))
+    else:
+        raise ValueError(f"model_name no soportado en predicción: {model_name}")
+
+    return dataset_id, model_name, model_dir, model
+
+
+
+def _load_artifacts_from_job(
+    job_id: str | None,
+    family: str = "sentiment_desempeno",
+    dataset_id: str | None = None) -> dict:
+
+    cj = _find_latest_champion_json(dataset_id=dataset_id)
+
+    if cj is None:
+        return {
+            "job_id": job_id,
+            "family": family,
+            "error": f"No hay champion.json en {CHAMPIONS_ROOT}",
+        }
+
     try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return None
-
-
-def _find_champion_dir() -> Optional[Path]:
-    """
-    Determina el directorio del campeón actual.
-    1) Usa artifacts/champions/<family>/latest.txt si existe.
-    2) Fallback: artifacts/champions/<family>/best_meta.json -> 'job_dir'
-    3) Fallback legacy: artifacts/champions/sentiment_desempeno/current.json -> 'job_id'
-       (resuelve a artifacts/jobs/<job_id>)
-    """
-    # (1) latest.txt
-    latest_txt = CHAMPIONS_DIR / "latest.txt"
-    if latest_txt.exists():
-        p = Path(latest_txt.read_text(encoding="utf-8").strip())
-        if p.exists():
-            return p
-
-    # (2) best_meta.json
-    best_meta = _read_json(CHAMPIONS_DIR / "best_meta.json")
-    if best_meta and "job_dir" in best_meta:
-        p = Path(best_meta["job_dir"])
-        if p.exists():
-            return p
-
-    # (3) legacy current.json
-    legacy = _read_json(LEGACY_CHAMPION_JSON)
-    if legacy and "job_id" in legacy:
-        p = Path("artifacts") / "jobs" / str(legacy["job_id"])
-        if p.exists():
-            return p
-
-    return None
-
-
-def _load_artifacts_from_job(job_id: str | None) -> dict:
-    """
-    Carga artefactos de un job específico o, si no se da job_id, del campeón actual.
-    Devuelve:
-      {
-        "job_id": str | None,
-        "model": RBMGeneral | None,
-        "feat_cols": List[str] | None,
-        "error": str | None
-      }
-    """
-    try:
-        # Determinar el directorio de artefactos
-        if job_id:
-            job_dir = Path("artifacts") / "jobs" / job_id
-        else:
-            job_dir = _find_champion_dir()
-
-        if not job_dir or not job_dir.exists():
-            return {"job_id": job_id, "model": None, "feat_cols": None, "error": "Champion/job no encontrado."}
-
-        # Cargar modelo
-        model = RBMGeneral.load(str(job_dir))
-
-        # Obtener feat_cols desde meta.json o job_meta.json (ambas son soportadas)
-        feat_cols: Optional[List[str]] = None
-        meta = _read_json(job_dir / "meta.json") or _read_json(job_dir / "job_meta.json")
-        if meta:
-            feat_cols = meta.get("feat_cols") or meta.get("feature_cols") or meta.get("feature_columns")
-        if not feat_cols and getattr(model, "feat_cols_", None):
-            feat_cols = list(model.feat_cols_)
-
-        # Seguridad mínima
-        if not feat_cols or len(feat_cols) == 0:
-            # Si no hay feat_cols persistidas, hacemos fallback a las del modelo
-            feat_cols = list(getattr(model, "feat_cols_", []) or [])
-
-        return {"job_id": job_dir.name, "model": model, "feat_cols": feat_cols, "error": None}
-    except Exception as ex:
-        return {"job_id": job_id, "model": None, "feat_cols": None, "error": f"Error cargando artefactos: {ex}"}
+        ds, mn, model_dir, model = _load_model_from_champion_json(cj)
+        return {
+            "job_id": job_id,
+            "family": family,
+            "dataset_id": ds,
+            "model_name": mn,
+            "champion_json": str(cj),
+            "model_dir": str(model_dir),
+            "model": model,
+            "labels": ["neg", "neu", "pos"],
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "job_id": job_id,
+            "family": family,
+            "error": str(e),
+        }
 
 
 def _row_to_df(row: Dict[str, Any], feat_cols: List[str]) -> "pd.DataFrame":
@@ -173,12 +169,9 @@ def _infer_real(model: RBMGeneral, payload: Dict[str, Any], feat_cols: List[str]
 #   - infer_fn         -> usamos inferencia real con feat_cols del modelo
 #   - postprocess      -> mantiene tu cadena de posprocesado
 # -----------------------------------------------------------------------------
-def _artifacts_loader_wrapper(job_id: str | None) -> dict:
-    """
-    Adaptador a la interfaz esperada por PlantillaPrediccion:
-    devuelve {"job_id", "model", "feat_cols"} y, si hubo problema, "error".
-    """
-    return _load_artifacts_from_job(job_id)
+
+def _artifacts_loader_wrapper(job_id: str | None, family: str = "sentiment_desempeno"):
+    return _load_artifacts_from_job(job_id, family=family)
 
 
 def _infer_wrapper(artifacts: dict, row: Dict[str, Any]) -> Dict[str, Any]:
@@ -197,33 +190,32 @@ def _infer_wrapper(artifacts: dict, row: Dict[str, Any]) -> Dict[str, Any]:
 
 _TEMPLATE = PlantillaPrediccion(
     artifacts_loader=_artifacts_loader_wrapper,
-    vectorizer=None,          # El modelo maneja su propio vectorizador/normalizador
-    infer_fn=_infer_wrapper,
-    postprocess=format_output
+    vectorizer=None,
+    infer_fn=None,              # <-- CLAVE
+    postprocess=format_output,
 )
+
 
 
 # -----------------------------------------------------------------------------
 # API pública
 # -----------------------------------------------------------------------------
 def predict_online(payload: Dict[str, Any], correlation_id: str | None = None) -> Dict[str, Any]:
-    """
-    Espera un payload con, por ejemplo:
-    {
-      "family": "with_text",        # opcional (por ahora se ignora si difiere de DEFAULT_FAMILY)
-      "job_id": null,               # opcional: si lo das, carga ese job; si no, carga campeón
-      "input": {
-         "calificaciones": {"calif_1": 4.2, "calif_2": 4.1, ...},
-         "p_neg": 0.10, "p_neu": 0.20, "p_pos": 0.70,   # opcional
-         "comentario": "texto..."                        # opcional; no se vectoriza aquí
-      }
-    }
-    """
-    return _TEMPLATE.predict_online(payload, correlation_id=correlation_id)
+    # Compat: algunas plantillas exponen predict_online, otras run_online
+    fn = getattr(_TEMPLATE, "predict_online", None) or getattr(_TEMPLATE, "run_online", None)
+    if fn is None:
+        raise AttributeError(
+            "PlantillaPrediccion no expone predict_online ni run_online. "
+            "Revisa backend/src/neurocampus/prediction/templates/plantilla_prediccion.py"
+        )
+    return fn(payload, correlation_id=correlation_id)
 
 
-def predict_batch(items: List[Dict[str, Any]], correlation_id: str | None = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """
-    items: lista de payloads (cada uno con "input": {...}) como en predict_online.
-    """
-    return _TEMPLATE.predict_batch(items, correlation_id=correlation_id)
+def predict_batch(items: List[Dict[str, Any]], correlation_id: str | None = None):
+    fn = getattr(_TEMPLATE, "predict_batch", None) or getattr(_TEMPLATE, "run_batch", None)
+    if fn is None:
+        raise AttributeError(
+            "PlantillaPrediccion no expone predict_batch ni run_batch. "
+            "Revisa backend/src/neurocampus/prediction/templates/plantilla_prediccion.py"
+        )
+    return fn(items, correlation_id=correlation_id)

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Dict, Any, List, Tuple
 import time
 import uuid
+import numpy as np
+
 
 def _to_jsonable(x: Any) -> Any:
     """
@@ -141,47 +143,51 @@ class PlantillaPrediccion:
 
         return pd.DataFrame([row])
 
-    def _fallback_infer(self, artifacts, X):
-        """
-        Si no hay infer_fn, intenta inferir directo desde el modelo encontrado en artifacts.
-        Retorna un raw compatible con _fallback_postprocess.
-        """
-        import numpy as np
-
-        model = self._extract_model(artifacts)
+    def _fallback_infer(self, artifacts: dict, X: Any, family=None) -> dict:
+        model = artifacts.get("model")
         if model is None:
-            raise RuntimeError("No se pudo extraer un modelo desde artifacts (artifacts_loader no está entregando model/strategy).")
+            raise RuntimeError("No hay 'model' en artifacts (champion no cargó).")
 
-        labels = getattr(model, "labels_", None) or ["neg", "neu", "pos"]
+        labels = artifacts.get("labels") or ["neg", "neu", "pos"]
 
-        # Preferimos proba
-        if hasattr(model, "predict_proba_df"):
-            proba = np.asarray(model.predict_proba_df(X))[0].tolist()
-            return {"labels": labels, "proba": proba}
-
+        # 1) Infer proba
         if hasattr(model, "predict_proba"):
-            proba = np.asarray(model.predict_proba(X))[0].tolist()
-            return {"labels": labels, "proba": proba}
+            proba = model.predict_proba(X)
+        elif hasattr(model, "predict_df"):
+            # Si solo existiera predict_df, lo soportamos, pero sin proba real:
+            pred = model.predict_df(X)  # debería devolver label
+            # fallback neutro
+            return {"labels": labels, "scores": {"neg": 0.0, "neu": 1.0, "pos": 0.0}, "label_top": "neu", "confidence": 1.0}
+        else:
+            raise RuntimeError(f"Modelo no tiene predict_proba/predict_df: {type(model)}")
 
-        # fallback sin proba
-        if hasattr(model, "predict_df"):
-            pred = model.predict_df(X)
-            pred0 = pred.iloc[0] if hasattr(pred, "iloc") else pred[0]
-            # sin proba => confidence 1.0 para el label
-            proba = [0.0] * len(labels)
-            if pred0 in labels:
-                proba[labels.index(pred0)] = 1.0
-            return {"labels": labels, "proba": proba}
+        proba = np.asarray(proba)
 
-        if hasattr(model, "predict"):
-            pred = model.predict(X)
-            pred0 = pred[0] if isinstance(pred, (list, tuple)) else pred
-            proba = [0.0] * len(labels)
-            if pred0 in labels:
-                proba[labels.index(pred0)] = 1.0
-            return {"labels": labels, "proba": proba}
+        # Nos quedamos con el primer ítem (online = 1)
+        if proba.ndim == 2:
+            if proba.shape[0] == 0:
+                scores = {"neg": 0.0, "neu": 1.0, "pos": 0.0}
+                return {"labels": labels, "scores": scores, "label_top": "neu", "confidence": 1.0}
+            p = proba[0]
+        else:
+            p = proba
 
-        raise RuntimeError("El modelo encontrado no expone predict/predict_proba.")
+        # 2) Construir scores dict NO vacío
+        scores = {labels[i]: float(p[i]) for i in range(min(len(labels), len(p)))}
+
+        if not scores:
+            scores = {"neg": 0.0, "neu": 1.0, "pos": 0.0}
+
+        label_top = max(scores, key=scores.get)
+        confidence = float(scores[label_top])
+
+        return {
+            "labels": labels,
+            "proba": [scores["neg"], scores["neu"], scores["pos"]],
+            "scores": scores,
+            "label_top": label_top,
+            "confidence": confidence,
+        }
 
     def _fallback_postprocess(self, raw):
         """
@@ -208,27 +214,50 @@ class PlantillaPrediccion:
         stage = "io"
 
         try:
-            emit_requested(cid, family=payload.get("family", "sentiment_desempeno"), mode="online", n_items=1)
-
             job_id = payload.get("job_id")
-            inp = payload["input"]
 
-            # 1) carga artifacts PRIMERO (porque el vectorizador puede depender del modelo)
-            artifacts = self._artifacts_loader(job_id)
+            # Define family
+            family = payload.get("family") or "sentiment_desempeno"
+
+            # Input del request (aquí estaba el bug: inp no existía)
+            inp = payload.get("input") or {}
+            if not isinstance(inp, dict):
+                inp = {}
+
+            emit_requested(cid, family=family, mode="online", n_items=1)
+
+            # 1) load artifacts
+            stage = "io"
+            artifacts = self._artifacts_loader(job_id, family)
 
             # 2) vectorize
             stage = "vectorize"
+            comentario = inp.get("comentario", "") or ""
+            calificaciones = inp.get("calificaciones", {}) or {}
+            if not isinstance(calificaciones, dict):
+                calificaciones = {}
+
             if callable(self._vectorizer):
-                X = self._vectorizer(inp.get("comentario", ""), inp.get("calificaciones", {}))
+                X = self._vectorizer(comentario, calificaciones)
             else:
-                X = self._fallback_vectorize_online(inp.get("comentario", ""), inp.get("calificaciones", {}))
+                X = self._fallback_vectorize_online(comentario, calificaciones)
 
             # 3) infer
             stage = "predict"
             if callable(self._infer_fn):
-                raw = self._infer_fn(artifacts, X)
+                # Algunos infer_fn aceptan (artifacts, X) y otros (artifacts, X, family)
+                try:
+                    import inspect
+                    n_params = len(inspect.signature(self._infer_fn).parameters)
+                    if n_params >= 3:
+                        raw = self._infer_fn(artifacts, X, family)
+                    else:
+                        raw = self._infer_fn(artifacts, X)
+                except Exception:
+                    # fallback conservador
+                    raw = self._infer_fn(artifacts, X)
             else:
-                raw = self._fallback_infer(artifacts, X)
+                raw = self._fallback_infer(artifacts, X, family)
 
             # 4) postprocess
             stage = "postprocess"
@@ -257,8 +286,11 @@ class PlantillaPrediccion:
 
         except Exception as e:
             # stage debe ser SOLO: vectorize|predict|postprocess|io
+            if stage not in {"io", "vectorize", "predict", "postprocess"}:
+                stage = "io"
             emit_failed(cid, error=str(e), stage=stage)
             raise
+
 
     def predict_batch(self, batch_items: List[Dict[str, Any]], correlation_id: str | None = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         cid = correlation_id or f"cid-{uuid.uuid4()}"
@@ -327,3 +359,5 @@ class PlantillaPrediccion:
             emit_failed(cid, error=str(e), stage=stage)
             raise
 
+    run_online = predict_online
+    run_batch  = predict_batch

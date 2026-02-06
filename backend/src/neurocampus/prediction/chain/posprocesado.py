@@ -10,9 +10,12 @@ def calibrate(scores: Dict[str, float]) -> Dict[str, float]:
     total = sum(scores.values()) or 1.0
     return {k: v/total for k, v in scores.items()}
 
-def pick_label(scores: Dict[str, float]) -> Tuple[str, float]:
+def pick_label(scores: dict):
+    if not scores:
+        return "neu", 0.0
     label = max(scores, key=scores.get)
-    return label, scores[label]
+    return label, float(scores[label])
+
 
 def format_output(raw: Dict[str, dict]) -> Tuple[str, Dict[str,float], Dict[str,float], float]:
     """
@@ -20,6 +23,11 @@ def format_output(raw: Dict[str, dict]) -> Tuple[str, Dict[str,float], Dict[str,
     Devuelve (label_top, materia_scores_calibradas, sentiment_scores, confidence)
     """
     mat = calibrate(raw.get("materia_scores", {}))
-    sent = raw.get("sentiment_scores", {"pos":0.33,"neu":0.33,"neg":0.34})
-    top, conf = pick_label(mat)
-    return top, mat, sent, conf
+    sent = raw.get("sentiment_scores", {"pos": 0.33, "neu": 0.33, "neg": 0.34})
+
+    # si materia_scores viene vacío, usamos sentiment como fallback para no romper
+    base = mat if mat else (sent if isinstance(sent, dict) else {})
+    top, conf = pick_label(base)
+
+    return top, (mat if mat else base), sent, conf
+

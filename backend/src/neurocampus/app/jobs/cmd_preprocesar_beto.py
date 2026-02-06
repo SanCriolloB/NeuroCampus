@@ -154,8 +154,27 @@ def _normalize_tfidf_params(min_df: Optional[float], max_df: Optional[float]) ->
     """
     _default_min_df: int = 3
     _default_max_df: Optional[float] = None
-    ...
+
+    # siempre definimos outputs
+    min_df_out: float | int = min_df if min_df is not None else _default_min_df
+    max_df_out: Optional[float] = max_df if max_df is not None else _default_max_df
+
+    # si viene 1.0 como float, conviértelo a entero 1 (evita fracción 100%)
+    if isinstance(min_df_out, float) and min_df_out >= 1.0:
+        min_df_out = int(round(min_df_out))
+
+    # si min_df <= 0, usa default seguro
+    if isinstance(min_df_out, (int, float)) and min_df_out <= 0:
+        min_df_out = _default_min_df
+
+    # max_df: fracciones válidas (0<max_df<=1.0). Si >1.0 o <=0 => ignóralo
+    if isinstance(max_df_out, float) and (max_df_out > 1.0 or max_df_out <= 0.0):
+        max_df_out = None
+    if isinstance(max_df_out, int) and max_df_out <= 1:
+        max_df_out = None
+
     return min_df_out, max_df_out
+
 
 
 def _compute_score_total_0_50(

@@ -162,6 +162,9 @@ class BetoPreprocRequest(BaseModel):
     #   - zero si keep_empty_text=False
     empty_text_policy: Optional[Literal["neutral", "zero"]] = None
 
+    # Opcional: forzar reconstrucción de data/processed/<dataset>.parquet
+    # (útil cuando cambian reglas de normalización, ej. MAYÚSCULAS docente/materia)
+    force_cargar_dataset: bool = False
 
 class BetoPreprocMeta(BaseModel):
     """Subset de campos interesantes del .meta.json generado por el job CLI."""
@@ -393,6 +396,18 @@ def launch_beto_preproc(req: BetoPreprocRequest, background: BackgroundTasks) ->
         # Si existe raw, lo podemos regenerar correctamente.
         if raw_src is not None and _processed_missing_docente_cols(processed_path):
             needs_cargar_dataset = True
+
+    # Force preprocessing: reconstruir processed aunque ya exista.
+    if bool(req.force_cargar_dataset):
+        if raw_src is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "force_cargar_dataset=true requiere que exista el dataset crudo en datasets/ "
+                    f"({raw_parquet} o {raw_csv})."
+                ),
+            )
+        needs_cargar_dataset = True
 
     # Salida etiquetada por BETO
     DATA_LABELED_DIR.mkdir(parents=True, exist_ok=True)

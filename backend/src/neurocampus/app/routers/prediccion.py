@@ -55,33 +55,57 @@ def _decide_with_rules_from_proba(proba: Union[List[float], np.ndarray],
 @router.post("/online", response_model=PrediccionOnlineResponse)
 async def prediccion_online(req: Request, body: PrediccionOnlineRequest):
     """
-    Endpoint online: llamamos al facade y, si devuelve probabilidades,
-    ajustamos la etiqueta final con reglas costo-sensibles (sin reentrenar).
+    Endpoint de predicción online.
+
+    - Devuelve errores como JSON (no 500 text/plain genérico).
+    - Hace JSON-safe la salida (numpy/torch) para evitar 500 por serialización.
     """
-    cid = getattr(req.state, "correlation_id", None)  # middleware ya lo inyecta
-    base = predict_online(body.model_dump(), correlation_id=cid)
+    import os
+    import logging
+    import traceback
 
-    # post-proceso solo si vienen probabilidades (lista de 3 floats)
+    import numpy as np
+    from fastapi import HTTPException
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+
     try:
-        # `base` puede ser Pydantic/BaseModel o dict; normalizamos a dict
-        if hasattr(base, "model_dump"):
-            res = base.model_dump()
-        else:
-            res = dict(base)
-
-        proba = res.get("proba", None)
-        if isinstance(proba, (list, tuple, np.ndarray)) and len(proba) == 3:
-            res["label"] = _decide_with_rules_from_proba(proba)
-            # opcional: exponer los umbrales usados para trazabilidad (si tu schema lo permite)
-            res["decision_rule"] = {
-                "pos_min": _POS_MIN,
-                "neg_min": _NEG_MIN,
-                "neg_neu_margin": _NEG_NEU_MARGIN
-            }
-        return res
+        import torch  # opcional
     except Exception:
-        # ante cualquier imprevisto, devolvemos la salida base sin modificar
-        return base
+        torch = None
+
+    log = logging.getLogger(__name__)
+    debug = os.environ.get("NEUROCAMPUS_DEBUG", "0") == "1"
+
+    # ---- aquí ejecutas tu pipeline actual ----
+    try:
+        # IMPORTANTE: respeta tu implementación actual.
+        # Normalmente aquí ya existe algo como:
+        #   tpl = PlantillaPrediccion(...)
+        #   out = tpl.run_online(body)  / tpl.run(body) / tpl.predict(...)
+        # Ajusta SOLO estas 2 líneas si tu template usa otro método.
+        payload = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else body.dict(exclude_none=True)
+        out = predict_online(payload, correlation_id=getattr(req.state, "correlation_id", None))
+    
+    except Exception as e:
+        log.exception("prediccion_online failed (cid=%s)", getattr(req.state, "correlation_id", None))
+        detail = {"detail": "prediction_failed", "error": str(e)}
+        if debug:
+            detail["traceback"] = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=detail)
+
+    # ---- JSON-safe encoding (evita 500 por numpy/torch en la respuesta) ----
+    custom = {
+        np.integer: int,
+        np.floating: float,
+        np.ndarray: lambda a: a.tolist(),
+    }
+    if torch is not None:
+        custom[torch.Tensor] = lambda t: t.detach().cpu().tolist()
+
+    content = jsonable_encoder(out, custom_encoder=custom)
+    return JSONResponse(content=content)
+
 
 
 @router.post("/batch", response_model=PrediccionBatchResponse, status_code=201)

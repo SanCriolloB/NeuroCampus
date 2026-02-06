@@ -21,6 +21,13 @@ from torch import Tensor
 _LABEL_MAP = {"neg": 0, "neu": 1, "pos": 2}
 _INV_LABEL_MAP = {v: k for k, v in _LABEL_MAP.items()}
 
+_LABEL_MAP = {"neg": 0, "neu": 1, "pos": 2}
+_INV_LABEL_MAP = {0: "neg", 1: "neu", 2: "pos"}
+
+# FIX: default labels (evita NameError en save/meta)
+_DEFAULT_LABELS = ["neg", "neu", "pos"]
+
+
 # Patrón de columnas numéricas aceptadas
 _NUMERIC_PATTERNS = [
     r"^calif_\d+$",     # calif_1..N
@@ -259,6 +266,7 @@ class RBMGeneral:
         self._epoch: int = 0
         self.accept_teacher: bool = False
         self.accept_threshold: float = 0.8
+        self.labels = list(_DEFAULT_LABELS)
 
     # --------------------------
     # Carga de dataset sencillo
@@ -369,7 +377,19 @@ class RBMGeneral:
         if label_col is not None:
             y_raw = df[label_col].astype("string").fillna("").str.strip().str.lower()
         else:
-            y_raw = pd.Series([""] * len(df))
+            # Si no hay columna de etiqueta, pero sí probas p_* -> derivar etiqueta
+            if all(p in df.columns for p in _PROB_COLS):
+                y_raw = (
+                    df[_PROB_COLS]
+                    .astype(float)
+                    .idxmax(axis=1)
+                    .map({"p_neg": "neg", "p_neu": "neu", "p_pos": "pos"})
+                    .fillna("")
+                    .astype("string")
+                )
+            else:
+                # Sin labels ni probas: devolvemos y=None y NO filtramos a vacío
+                return X, None, feat_cols
 
         # Filtro por aceptación:
         # 1) si hay columna de aceptación -> filtrarla
@@ -455,6 +475,87 @@ class RBMGeneral:
 
         self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
         self._epoch = 0
+    # ---------- Mini-batches ----------
+    def _iter_minibatches(self, X: Tensor, y: Optional[Tensor]):
+        idx = torch.randperm(X.shape[0], device=X.device)
+        for start in range(0, len(idx), int(self.batch_size)):
+            sel = idx[start:start + int(self.batch_size)]
+            yield X[sel], (None if y is None else y[sel])
+
+    # ---------- Entrenamiento (compatible con PlantillaEntrenamiento) ----------
+    def train_step(self, epoch: int, hparams: Optional[Dict] = None, y: any = None):
+        """
+        Ejecuta 1 época de entrenamiento.
+
+        Compatible con PlantillaEntrenamiento, que intenta llamar:
+          - train_step(epoch, hparams, y=y)
+          - train_step(epoch, hparams)
+          - train_step(epoch)
+        """
+        assert self.rbm is not None and self.opt_rbm is not None and self.X is not None, (
+            "RBMGeneral no está inicializado. Asegúrate de que setup(data_ref, hparams) se ejecutó."
+        )
+        assert self.head is not None and self.opt_head is not None, (
+            "RBMGeneral.head/opt_head no inicializados. Revisa setup()."
+        )
+
+        self._epoch = int(epoch)
+        t0 = time.perf_counter()
+
+        rbm_losses: List[float] = []
+        rbm_grad_norms: List[float] = []
+        cls_losses: List[float] = []
+
+        # --- RBM update ---
+        self.rbm.train()
+        for _ in range(max(1, int(getattr(self, "epochs_rbm", 1)))):
+            for xb, _ in self._iter_minibatches(self.X, self.y):
+                self.opt_rbm.zero_grad(set_to_none=True)
+
+                vk, _hk = self.rbm.contrastive_divergence_step(xb)
+                loss_rbm = self.rbm.free_energy(xb).mean() - self.rbm.free_energy(vk).mean()
+                loss_rbm.backward()
+
+                # grad norm (opcional, útil para UI/debug)
+                with torch.no_grad():
+                    sq = 0.0
+                    for p in self.rbm.parameters():
+                        if p.grad is not None:
+                            sq += float((p.grad.detach() ** 2).sum().cpu())
+                    rbm_grad_norms.append(float(sq ** 0.5))
+
+                self.opt_rbm.step()
+
+                # recon_error “amigable” (MSE entre v0 y vk)
+                with torch.no_grad():
+                    recon = torch.mean((vk - xb) ** 2).detach().cpu().item()
+                rbm_losses.append(float(recon))
+
+        # --- Head supervised (si hay y) ---
+        if self.y is not None:
+            self.head.train()
+            for xb, yb in self._iter_minibatches(self.X, self.y):
+                with torch.no_grad():
+                    H = self.rbm.hidden_probs(xb)
+                self.opt_head.zero_grad(set_to_none=True)
+                logits = self.head(H)
+                loss_cls = F.cross_entropy(logits, yb, ignore_index=3)
+                loss_cls.backward()
+                self.opt_head.step()
+                cls_losses.append(float(loss_cls.detach().cpu()))
+
+        time_epoch_ms = float((time.perf_counter() - t0) * 1000.0)
+
+        metrics = {
+            "epoch": float(epoch),
+            "recon_error": float(np.mean(rbm_losses)) if rbm_losses else 0.0,
+            "rbm_grad_norm": float(np.mean(rbm_grad_norms)) if rbm_grad_norms else 0.0,
+            "cls_loss": float(np.mean(cls_losses)) if cls_losses else 0.0,
+            "time_epoch_ms": time_epoch_ms,
+        }
+        metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
+        return metrics
+
 
     # --------------------------
     # Transformaciones y predict

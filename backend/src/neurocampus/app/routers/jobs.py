@@ -617,14 +617,19 @@ class FeaturesPrepareRequest(BaseModel):
     - dataset_id: id lógico (periodo o etiqueta) que define la carpeta de salida:
         artifacts/features/<dataset_id>/
 
-    - input_uri (opcional): fuente de datos etiquetados.
-      Si no se especifica, se intenta:
-        1) historico/unificado_labeled.parquet
+    - input_uri (opcional): fuente del dataset para construir el pack.
+      Si no se especifica (o viene vacío), se intenta en este orden:
+        1) data/processed/<dataset_id>.parquet
         2) data/labeled/<dataset_id>_beto.parquet
+        3) historico/unificado_labeled.parquet
+        4) datasets/<dataset_id>.parquet | datasets/<dataset_id>.csv
+
+    - force (opcional): si True, recalcula aunque ya exista train_matrix.parquet
     """
     dataset_id: str
     input_uri: Optional[str] = None
     output_dir: Optional[str] = None
+    force: bool = False
 
 
 class FeaturesPrepareJob(BaseModel):
@@ -638,6 +643,7 @@ class FeaturesPrepareJob(BaseModel):
     dataset_id: str
     input_uri: Optional[str] = None
     output_dir: Optional[str] = None
+    force: bool = False
     artifacts: Optional[dict] = None
     error: Optional[str] = None
 
@@ -678,23 +684,70 @@ def _list_features_jobs(limit: int = 50) -> list[dict]:
     return out[:limit]
 
 
-def _resolve_features_input(dataset_id: str, input_uri: Optional[str]) -> str:
-    """Resuelve la fuente de datos etiquetados para el feature-pack."""
-    if input_uri:
-        return input_uri
+def _strip_localfs(uri: str) -> str:
+    u = str(uri or "").strip()
+    return u[len("localfs://") :] if u.startswith("localfs://") else u
 
-    hist = BASE_DIR / "historico" / "unificado_labeled.parquet"
-    if hist.exists():
-        return "historico/unificado_labeled.parquet"
+
+def _resolve_features_input(dataset_id: str, input_uri: Optional[str]) -> str:
+    """Resuelve el dataset fuente para construir el feature-pack.
+
+    Orden (cuando input_uri no se especifica o viene vacío):
+      1) data/labeled/<dataset_id>_beto.parquet
+      2) data/processed/<dataset_id>.parquet
+      3) historico/unificado_labeled.parquet
+      4) datasets/<dataset_id>.parquet | datasets/<dataset_id>.csv
+    """
+    if input_uri is not None and str(input_uri).strip() != "":
+        ref = _strip_localfs(str(input_uri))
+        p = Path(ref)
+        if not p.is_absolute():
+            p = (BASE_DIR / p).resolve()
+            try:
+                ref = str(p.relative_to(BASE_DIR.resolve())).replace("\\", "/")
+            except Exception:
+                ref = str(p)
+        if not p.exists():
+            raise FileNotFoundError(f"input_uri no existe: {p}")
+        return ref
 
     labeled = DATA_LABELED_DIR / f"{dataset_id}_beto.parquet"
     if labeled.exists():
         return f"data/labeled/{dataset_id}_beto.parquet"
 
+    processed = DATA_PROCESSED_DIR / f"{dataset_id}.parquet"
+    if processed.exists():
+        return f"data/processed/{dataset_id}.parquet"
+
+    hist = BASE_DIR / "historico" / "unificado_labeled.parquet"
+    if hist.exists():
+        return "historico/unificado_labeled.parquet"
+
+    raw_parq = DATASETS_DIR / f"{dataset_id}.parquet"
+    if raw_parq.exists():
+        return f"datasets/{dataset_id}.parquet"
+
+    raw_csv = DATASETS_DIR / f"{dataset_id}.csv"
+    if raw_csv.exists():
+        return f"datasets/{dataset_id}.csv"
+
     raise FileNotFoundError(
-        "No se encontró input etiquetado para feature-pack. "
-        "Corre BETO (data/labeled/<periodo>_beto.parquet) o genera historico/unificado_labeled.parquet."
+        "No se encontró input para feature-pack.\n"
+        "Opciones válidas (en orden):\n"
+        "- data/labeled/<dataset_id>_beto.parquet\n"
+        "- data/processed/<dataset_id>.parquet\n"
+        "- historico/unificado_labeled.parquet\n"
+        "- datasets/<dataset_id>.parquet | datasets/<dataset_id>.csv\n"
     )
+
+
+
+
+def _rel_project(p: Path) -> str:
+    try:
+        return str(p.resolve().relative_to(BASE_DIR.resolve())).replace("\\", "/")
+    except Exception:
+        return str(p)
 
 
 def _run_features_prepare_job(job_id: str) -> None:
@@ -706,20 +759,41 @@ def _run_features_prepare_job(job_id: str) -> None:
 
     try:
         dataset_id = str(job["dataset_id"])
+        force = bool(job.get("force", False))
+
+        # Resolver input_uri (robusto: processed -> labeled -> histórico -> datasets)
         input_uri = _resolve_features_input(dataset_id, job.get("input_uri"))
 
-        out_dir = job.get("output_dir")
-        if not out_dir:
-            out_dir = str(BASE_DIR / "artifacts" / "features" / dataset_id)
+        # Resolver output_dir
+        out_dir = job.get("output_dir") or str(BASE_DIR / "artifacts" / "features" / dataset_id)
+        out_dir_path = Path(out_dir)
+        if not out_dir_path.is_absolute():
+            out_dir_path = (BASE_DIR / out_dir_path).resolve()
+        out_dir = str(out_dir_path)
 
-        # Import lazy (este módulo se crea en el Paso 4)
-        try:
-            from neurocampus.data.features_prepare import prepare_feature_pack
-        except Exception as e:
-            raise RuntimeError(
-                "No se pudo importar neurocampus.data.features_prepare.prepare_feature_pack. "
-                "Asegúrate de aplicar el Paso 4 antes de ejecutar este job."
-            ) from e
+        train_path = out_dir_path / "train_matrix.parquet"
+
+        # Payload de rutas esperado (útil aun si ya existía)
+        artifacts_expected = {
+            "train_matrix": _rel_project(train_path),
+            "teacher_index": _rel_project(out_dir_path / "teacher_index.json"),
+            "materia_index": _rel_project(out_dir_path / "materia_index.json"),
+            "bins": _rel_project(out_dir_path / "bins.json"),
+            "meta": _rel_project(out_dir_path / "meta.json"),
+        }
+
+        # Idempotencia: si ya existe y no es force, no recalcular
+        if train_path.exists() and not force:
+            job["status"] = "done"
+            job["finished_at"] = _now_iso()
+            job["input_uri"] = input_uri
+            job["output_dir"] = out_dir
+            job["artifacts"] = artifacts_expected
+            _save_features_job(job)
+            return
+
+        # Build real
+        from neurocampus.data.features_prepare import prepare_feature_pack
 
         artifacts = prepare_feature_pack(
             base_dir=BASE_DIR,
@@ -732,7 +806,7 @@ def _run_features_prepare_job(job_id: str) -> None:
         job["finished_at"] = _now_iso()
         job["input_uri"] = input_uri
         job["output_dir"] = out_dir
-        job["artifacts"] = artifacts
+        job["artifacts"] = artifacts or artifacts_expected
 
     except Exception as e:
         job["status"] = "failed"
@@ -759,9 +833,11 @@ def launch_features_prepare(req: FeaturesPrepareRequest, background: BackgroundT
         "dataset_id": req.dataset_id,
         "input_uri": req.input_uri,
         "output_dir": req.output_dir,
+        "force": bool(getattr(req, "force", False)),
         "artifacts": None,
         "error": None,
     }
+
     _save_features_job(job)
     background.add_task(_run_features_prepare_job, job_id)
     return FeaturesPrepareJob(**job)

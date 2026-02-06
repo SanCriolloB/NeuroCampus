@@ -63,6 +63,18 @@ def _normalize(s: str) -> str:
     return s
 
 
+def _clean_upper_series(s: pd.Series) -> pd.Series:
+    """Normaliza strings a MAYÚSCULAS de forma defensiva.
+
+    - strip espacios
+    - convierte placeholders ('nan', 'none', ...) a ''
+    - upper-case para estabilizar llaves (docente/materia)
+    """
+    s = s.fillna("").astype(str).str.strip()
+    s = s.mask(s.str.lower().isin({"nan", "none", "null", "<na>"}), "")
+    return s.str.upper()
+
+
 def _try_read_csv(path: str):
     """Intenta múltiples separadores/encodings para maximizar compatibilidad."""
     attempts = [
@@ -295,6 +307,9 @@ def main() -> None:
     calif_out = [c for c in out.columns if c.startswith("calif_")]
     if calif_out:
         out["rating"] = out[calif_out].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+        # Alias explícito para el pipeline de score docente (0..50)
+        out["score_base_0_50"] = pd.to_numeric(out["rating"], errors="coerce").fillna(0.0).clip(0.0, 50.0)
+
 
     for cand in ["y", "label", "sentimiento", "y_sentimiento", "target"]:
         if cand in df.columns:
@@ -304,9 +319,11 @@ def main() -> None:
     meta_kept = []
     default_meta = [
         "id", "profesor", "docente", "teacher",
+        "nombre_profesor", "nombre_docente",
         "materia", "asignatura", "subject",
-        "codigo_materia", "grupo", "cedula_profesor",
+        "codigo_materia", "nombre_materia", "grupo", "cedula_profesor",
     ]
+
     want = list(default_meta)
     if args.meta_list:
         want.extend([w.strip() for w in args.meta_list.split(",") if w.strip()])
@@ -322,8 +339,37 @@ def main() -> None:
             out[m] = df[col_orig].astype(str)
             meta_kept.append(m)
 
+    # --- Normalización robusta docente/materia (evita ambigüedad por case/espacios) ---
+    # 1) docente/profesor/teacher: dejar en MAYÚSCULAS
+    teacher_candidates = [
+        c
+        for c in ["profesor", "docente", "teacher", "nombre_profesor", "nombre_docente"]
+        if c in out.columns
+    ]
+    if teacher_candidates:
+        src = teacher_candidates[0]
+        out[src] = _clean_upper_series(out[src])
+        # Alias estables (para que el resto del sistema no dependa del nombre exacto)
+        if "profesor" not in out.columns:
+            out["profesor"] = out[src]
+        if "docente" not in out.columns:
+            out["docente"] = out[src]
+
+    # 2) materia/asignatura/subject/codigo_materia: dejar en MAYÚSCULAS (si es texto)
+    materia_candidates = [
+        c
+        for c in ["materia", "asignatura", "subject", "codigo_materia", "nombre_materia"]
+        if c in out.columns
+    ]
+    if materia_candidates:
+        src = materia_candidates[0]
+        out[src] = _clean_upper_series(out[src])
+        if "materia" not in out.columns:
+            out["materia"] = out[src]
+
     Path(args.dst).parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(args.dst, index=False)
+
 
     print({
         "dataset_id": dataset_id,

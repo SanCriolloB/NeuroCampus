@@ -120,12 +120,17 @@ class PlantillaPrediccion:
     def _fallback_vectorize_online(self, comentario: str, calificaciones: dict):
         """
         Fallback simple: arma un DataFrame 1xN con calificaciones.
-        Incluye varias variantes de nombre de columna para maximizar match con feat_cols_.
+
+        Normalización importante:
+        - Soporta llaves del request: pregunta_<n> y calif_<n>.
+        - Siempre crea columnas canónicas calif_<n>, porque los modelos RBM
+        suelen entrenarse con esas columnas.
         """
         import pandas as pd
+        import re
 
         calificaciones = calificaciones or {}
-        row = {}
+        row: dict[str, Any] = {}
 
         for k, v in calificaciones.items():
             try:
@@ -133,61 +138,89 @@ class PlantillaPrediccion:
             except Exception:
                 continue
 
-            # nombres "probables" en datasets/features
-            row[k] = fv
-            row[f"x_{k}"] = fv
-            row[f"calif_{k}"] = fv
+            key = str(k)
+            row[key] = fv
+
+            m = re.match(r"^(pregunta|calif)_(\d+)$", key)
+            if m:
+                row[f"calif_{m.group(2)}"] = fv
+
+            m2 = re.match(r"^calif_pregunta_(\d+)$", key)
+            if m2:
+                row[f"calif_{m2.group(1)}"] = fv
 
         if comentario is not None:
             row["comentario"] = str(comentario)
 
         return pd.DataFrame([row])
 
-    def _fallback_infer(self, artifacts: dict, X: Any, family=None) -> dict:
-        model = artifacts.get("model")
+
+    def _fallback_infer(self, artifacts: Any, X, family: str = "sentiment_desempeno") -> Dict[str, Any]:
+        """
+        Fallback infer:
+        - Extrae `model` desde artifacts (dict o wrapper)
+        - Ejecuta predict_proba sobre DataFrame
+        - Devuelve un dict compatible con `posprocesado.format_output`
+        """
+        if isinstance(artifacts, dict) and artifacts.get("error"):
+            raise RuntimeError(f"Error cargando artifacts (family={family}): {artifacts['error']}")
+
+        model = None
+        if isinstance(artifacts, dict):
+            model = artifacts.get("model")
+        if model is None:
+            model = self._extract_model(artifacts)
+
         if model is None:
             raise RuntimeError("No hay 'model' en artifacts (champion no cargó).")
 
-        labels = artifacts.get("labels") or ["neg", "neu", "pos"]
+        labels = ["neg", "neu", "pos"]
+        if isinstance(artifacts, dict) and artifacts.get("labels"):
+            try:
+                labels = list(artifacts.get("labels"))
+            except Exception:
+                labels = ["neg", "neu", "pos"]
 
-        # 1) Infer proba
+        p = None
         if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(X)
-        elif hasattr(model, "predict_df"):
-            # Si solo existiera predict_df, lo soportamos, pero sin proba real:
-            pred = model.predict_df(X)  # debería devolver label
-            # fallback neutro
-            return {"labels": labels, "scores": {"neg": 0.0, "neu": 1.0, "pos": 0.0}, "label_top": "neu", "confidence": 1.0}
+            p = model.predict_proba(X)
+        elif hasattr(model, "predict_proba_df"):
+            p = model.predict_proba_df(X)
         else:
-            raise RuntimeError(f"Modelo no tiene predict_proba/predict_df: {type(model)}")
+            raise RuntimeError("El model no expone predict_proba/predict_proba_df")
 
-        proba = np.asarray(proba)
+        # normalizar a vector 1D
+        try:
+            if hasattr(p, "ndim") and getattr(p, "ndim") == 2:
+                p = p[0]
+            p = list(p)
+        except Exception:
+            p = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]
 
-        # Nos quedamos con el primer ítem (online = 1)
-        if proba.ndim == 2:
-            if proba.shape[0] == 0:
-                scores = {"neg": 0.0, "neu": 1.0, "pos": 0.0}
-                return {"labels": labels, "scores": scores, "label_top": "neu", "confidence": 1.0}
-            p = proba[0]
-        else:
-            p = proba
+        scores_any = {labels[i]: float(p[i]) for i in range(min(len(labels), len(p)))}
 
-        # 2) Construir scores dict NO vacío
-        scores = {labels[i]: float(p[i]) for i in range(min(len(labels), len(p)))}
-
-        if not scores:
-            scores = {"neg": 0.0, "neu": 1.0, "pos": 0.0}
+        scores = {
+            "neg": float(scores_any.get("neg", 0.0)),
+            "neu": float(scores_any.get("neu", 0.0)),
+            "pos": float(scores_any.get("pos", 0.0)),
+        }
+        s = sum(scores.values()) or 1.0
+        scores = {k: v / s for k, v in scores.items()}
 
         label_top = max(scores, key=scores.get)
-        confidence = float(scores[label_top])
+        confidence = float(scores.get(label_top, 0.0))
 
         return {
-            "labels": labels,
+            "labels": ["neg", "neu", "pos"],
             "proba": [scores["neg"], scores["neu"], scores["pos"]],
             "scores": scores,
+            # Claves esperadas por format_output
+            "sentiment_scores": scores,
+            "materia_scores": {},
             "label_top": label_top,
             "confidence": confidence,
         }
+
 
     def _fallback_postprocess(self, raw):
         """

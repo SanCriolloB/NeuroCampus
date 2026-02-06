@@ -15,45 +15,93 @@ from neurocampus.models.strategies.modelo_rbm_restringida import RBMRestringida
 # Configuración de “campeón” (champion)
 # -----------------------------------------------------------------------------
 
-ARTIFACTS_DIR = Path("artifacts")
-CHAMPIONS_ROOT = ARTIFACTS_DIR / "champions"
+# -----------------------------------------------------------------------------
+# Configuración de artifacts/champions
+# -----------------------------------------------------------------------------
+# make be-dev ejecuta Uvicorn desde ./backend (cd backend), por lo que los
+# paths relativos "artifacts/..." se rompían. Reusamos la resolución estable
+# de neurocampus.utils.runs_io (BASE_DIR + NC_ARTIFACTS_DIR env override).
+from neurocampus.utils.runs_io import (
+    ARTIFACTS_DIR as NC_ARTIFACTS_DIR,
+    CHAMPIONS_DIR as NC_CHAMPIONS_DIR,
+)
 
-# Compat/fallback (soporte de tu código previo)
-LEGACY_CHAMPION_JSON = Path("artifacts/champions/sentiment_desempeno/current.json")
+ARTIFACTS_DIR = NC_ARTIFACTS_DIR
+CHAMPIONS_ROOT = NC_CHAMPIONS_DIR
+
+# Compat/fallback (soporte de código legacy)
+LEGACY_CHAMPION_JSON = CHAMPIONS_ROOT / "sentiment_desempeno" / "current.json"
 
 
 # -----------------------------------------------------------------------------
 # Utilidades internas
 # -----------------------------------------------------------------------------
-def _find_latest_champion_json(dataset_id: str | None = None) -> Path | None:
-    # Si me dan dataset_id explícito: uso ese champion.json
+def _slug_family(family: str | None) -> str:
+    """Slug seguro para nombrar artifacts por family (para futura extensión)."""
+    import re
+    s = str(family or "").strip().lower()
+    s = re.sub(r"[^a-z0-9._-]+", "_", s)
+    return s.strip("_") or "x"
+
+
+def _find_latest_champion_json(
+    dataset_id: str | None = None,
+    family: str = "sentiment_desempeno",
+):
+    """Localiza el champion.json.
+
+    Política:
+    - Si viene dataset_id: preferir champion_<family>.json y luego champion.json.
+    - Si NO viene dataset_id: elegir el champion más reciente (mtime),
+      preferiendo archivos family-específicos si existen.
+    """
+    fam = _slug_family(family)
+
     if dataset_id:
+        p = CHAMPIONS_ROOT / dataset_id / f"champion_{fam}.json"
+        if p.exists():
+            return p
         p = CHAMPIONS_ROOT / dataset_id / "champion.json"
         return p if p.exists() else None
 
-    # Si NO: tomo el champion.json más reciente por mtime
-    candidates = list(CHAMPIONS_ROOT.glob("*/champion.json"))
+    candidates = list(CHAMPIONS_ROOT.glob(f"*/champion_{fam}.json"))
+    if not candidates:
+        candidates = list(CHAMPIONS_ROOT.glob("*/champion.json"))
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def _load_model_from_champion_json(champion_json: Path):
-    champ = json.loads(champion_json.read_text(encoding="utf-8"))
+def _load_model_from_champion_json(champion_json):
+    import json
+    from pathlib import Path
+    from neurocampus.models.strategies.modelo_rbm_general import RBMGeneral
+    from neurocampus.models.strategies.modelo_rbm_restringida import RBMRestringida
 
-    dataset_id = champ.get("dataset_id") or champ.get("metrics", {}).get("dataset_id") or champion_json.parent.name
+    champ = json.loads(Path(champion_json).read_text(encoding="utf-8"))
+    dataset_id = champ.get("dataset_id") or champ.get("metrics", {}).get("dataset_id") or Path(champion_json).parent.name
     model_name = champ.get("model_name") or champ.get("metrics", {}).get("model_name")
     model_path = champ.get("path") or champ.get("metrics", {}).get("path")
+    labels = champ.get("labels") or champ.get("metrics", {}).get("labels") or ["neg", "neu", "pos"]
 
     if not model_name:
         raise ValueError(f"champion.json sin model_name: {champion_json}")
 
-    # 1) path absoluto/guardado por el promote
-    model_dir = Path(model_path) if model_path else (CHAMPIONS_ROOT / dataset_id / model_name)
+    # 1) path explícito (si existe). Puede venir como Windows path; si no existe, se ignora.
+    model_dir = None
+    if model_path:
+        p = Path(str(model_path))
+        for cand in (p, ARTIFACTS_DIR.parent / p, ARTIFACTS_DIR / p):
+            try:
+                if cand.exists():
+                    model_dir = cand
+                    break
+            except Exception:
+                pass
 
-    # 2) fallback por si el path guardado es raro
-    if not model_dir.exists():
-        model_dir = CHAMPIONS_ROOT / dataset_id / model_name
+    # 2) fallback por estructura estándar: champions/<dataset>/<model_name>
+    if model_dir is None or not model_dir.exists():
+        model_dir = CHAMPIONS_ROOT / str(dataset_id) / str(model_name)
 
     if not model_dir.exists():
         raise FileNotFoundError(f"No existe model_dir={model_dir} (desde {champion_json})")
@@ -65,26 +113,41 @@ def _load_model_from_champion_json(champion_json: Path):
     else:
         raise ValueError(f"model_name no soportado en predicción: {model_name}")
 
-    return dataset_id, model_name, model_dir, model
-
+    return dataset_id, model_name, model_dir, model, labels
 
 
 def _load_artifacts_from_job(
     job_id: str | None,
     family: str = "sentiment_desempeno",
-    dataset_id: str | None = None) -> dict:
+    dataset_id: str | None = None,
+) -> dict:
+    """Loader de artifacts para predicción.
 
-    cj = _find_latest_champion_json(dataset_id=dataset_id)
+    Contrato actual del endpoint online:
+      - Puede venir job_id o no (opcional).
+      - NO viene dataset_id en el schema actual.
+
+    Política:
+      - Si dataset_id se pasa (futuro/compat), cargar champion de ese dataset.
+      - Si NO, usar el champion más reciente disponible.
+      - job_id se mantiene para futura selección por run/job, pero por ahora NO
+        cambia la selección del champion.
+    """
+    cj = _find_latest_champion_json(dataset_id=dataset_id, family=family)
 
     if cj is None:
         return {
             "job_id": job_id,
             "family": family,
-            "error": f"No hay champion.json en {CHAMPIONS_ROOT}",
+            "dataset_id": dataset_id,
+            "error": (
+                f"No hay champion.json para family='{family}' en {CHAMPIONS_ROOT} "
+                f"(cwd={Path.cwd()})"
+            ),
         }
 
     try:
-        ds, mn, model_dir, model = _load_model_from_champion_json(cj)
+        ds, mn, model_dir, model, labels = _load_model_from_champion_json(cj)
         return {
             "job_id": job_id,
             "family": family,
@@ -93,13 +156,15 @@ def _load_artifacts_from_job(
             "champion_json": str(cj),
             "model_dir": str(model_dir),
             "model": model,
-            "labels": ["neg", "neu", "pos"],
+            "labels": labels,
             "error": None,
         }
     except Exception as e:
         return {
             "job_id": job_id,
             "family": family,
+            "dataset_id": dataset_id,
+            "champion_json": str(cj),
             "error": str(e),
         }
 

@@ -524,6 +524,13 @@ def main() -> None:
         "text_feats_out_dir": args.text_feats_out_dir,
     }
 
+    # Asegurar que el meta de score se persista en el .meta.json
+    # (si score_meta no existe por alguna razón, no rompe)
+    try:
+        meta.update(score_meta)
+    except NameError:
+        pass
+
     with open(args.dst + ".meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 

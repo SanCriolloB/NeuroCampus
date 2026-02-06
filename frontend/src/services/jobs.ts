@@ -65,17 +65,17 @@ export function launchBetoPreproc(params: {
   text_feats?: "none" | "tfidf_lsa" | null;
   text_feats_out_dir?: string | null;
   empty_text_policy?: "neutral" | "zero" | null;
+  force_cargar_dataset?: boolean | null;
 }) {
   const body = {
     dataset: params.dataset,
     text_col: params.text_col ?? null,
     keep_empty_text: params.keep_empty_text ?? true,
     min_tokens: params.min_tokens ?? 1,
-
-    // Nuevos (opcionales; si son null/undefined, backend aplica defaults)
     text_feats: params.text_feats ?? null,
     text_feats_out_dir: params.text_feats_out_dir ?? null,
     empty_text_policy: params.empty_text_policy ?? null,
+    force_cargar_dataset: Boolean(params.force_cargar_dataset ?? false),
   };
 
   return api.post<BetoPreprocJob>("/jobs/preproc/beto/run", body).then((r) => r.data);

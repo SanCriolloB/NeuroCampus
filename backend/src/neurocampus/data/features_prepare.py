@@ -53,7 +53,19 @@ def _detect_materia_col(df: pd.DataFrame) -> Optional[str]:
 
 def _detect_score_col(df: pd.DataFrame) -> Optional[str]:
     """Detecta columna score/rating 0..50."""
-    return _pick_first(df, ["rating", "score_0_50", "calificacion", "score"])
+    return _pick_first(
+        df,
+        [
+            # Preferir el score compuesto (Ruta 2: docente–materia)
+            "score_total_0_50",
+            # Fallbacks compatibles
+            "score_base_0_50",
+            "rating",
+            "score_0_50",
+            "calificacion",
+            "score",
+        ],
+    )
 
 
 def _build_index(values: pd.Series) -> Dict[str, int]:

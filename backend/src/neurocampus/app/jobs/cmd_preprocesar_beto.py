@@ -363,9 +363,12 @@ def main() -> None:
     # 1) Cargar datos
     df = pd.read_parquet(args.src) if args.src.lower().endswith(".parquet") else pd.read_csv(args.src)
 
-    # Auditabilidad: preservar has_text del processed (preliminar) antes de recalcularlo en BETO
+    # Auditabilidad: conservar has_text del processed (preliminar) antes de recalcularlo en BETO
+    # - processed.has_text suele ser "texto no vacío" (limpieza básica).
+    # - labeled.has_text es la fuente de verdad (limpieza/tokenización/min_tokens + policy NO_TEXT).
     if "has_text" in df.columns and "has_text_processed" not in df.columns:
         df["has_text_processed"] = pd.to_numeric(df["has_text"], errors="coerce").fillna(0).astype(int)
+
 
     # 2) Selección de columnas de texto (tolerante)
     text_cols = _cols_from_arg_or_auto(args.text_col, df)

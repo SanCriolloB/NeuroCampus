@@ -363,6 +363,10 @@ def main() -> None:
     # 1) Cargar datos
     df = pd.read_parquet(args.src) if args.src.lower().endswith(".parquet") else pd.read_csv(args.src)
 
+    # Auditabilidad: preservar has_text del processed (preliminar) antes de recalcularlo en BETO
+    if "has_text" in df.columns and "has_text_processed" not in df.columns:
+        df["has_text_processed"] = pd.to_numeric(df["has_text"], errors="coerce").fillna(0).astype(int)
+
     # 2) Selección de columnas de texto (tolerante)
     text_cols = _cols_from_arg_or_auto(args.text_col, df)
     if text_cols is None:
@@ -498,6 +502,13 @@ def main() -> None:
         calib_q=float(args.score_calib_q),
         beta_fixed=(float(args.score_beta) if args.score_beta is not None else None),
     )
+
+    # Fallback de auditabilidad: garantizar sentiment_delta explícito (aunque se refactorice el score_total)
+    if "sentiment_delta" not in df.columns:
+        p_pos = pd.to_numeric(df.get("p_pos", 0.0), errors="coerce").fillna(0.0)
+        p_neg = pd.to_numeric(df.get("p_neg", 0.0), errors="coerce").fillna(0.0)
+        df["sentiment_delta"] = (p_pos - p_neg).astype(float)
+
 
     # 5) Guardado + meta
     Path(args.dst).parent.mkdir(parents=True, exist_ok=True)

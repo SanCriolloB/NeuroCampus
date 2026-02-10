@@ -774,7 +774,12 @@ def _champion_score(metrics: Dict[str, Any]) -> tuple[int, float]:
         return (0, -float(metrics["loss"]))
     return (-1, float("-inf"))
 
-
+def champion_score(metrics: dict[str, Any]) -> tuple[int, float]:
+    """
+    Helper público para comparar runs de forma consistente con la lógica de champion.
+    (Evita duplicar lógica en routers/jobs/sweeps).
+    """
+    return _champion_score(metrics)
 
 
 def _dataset_dir_candidates(dataset_id: str, family: str | None = None) -> list[Path]:

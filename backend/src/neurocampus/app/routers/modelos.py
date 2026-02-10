@@ -1856,18 +1856,21 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
         }
         summary_path = _write_sweep_summary(sweep_id, payload)
 
+        # --- IMPORTANTE: cerrar el job sweep (si no, queda "running" con progress=1.0) ---
+        st["status"] = "completed"
+        st["progress"] = 1.0
         st["sweep_summary_path"] = str(summary_path)
         st["sweep_best_overall"] = best_overall
         st["sweep_best_by_model"] = best_by_model
-        st["sweep_best_overall"] = best_overall
-        st["sweep_best_by_model"] = best_by_model
-        _ESTADOS[sweep_id] = st
+        st["champion_promoted"] = bool(champion_run_id)
+        st["time_total_ms"] = int((time.time() - started) * 1000)
 
-    except Exception as e:
+    except Exception as exc:
         st["status"] = "failed"
-        st["error"] = str(e)
-        st["time_total_ms"] = float((time.perf_counter() - t0) * 1000.0)
-        _ESTADOS[sweep_id] = st
+        st["progress"] = 1.0
+        st["error"] = str(exc)
+        st["time_total_ms"] = int((time.time() - started) * 1000)
+        _logger.exception("Sweep failed: %s", exc)
 
 
 @router.post(
@@ -2171,6 +2174,48 @@ def get_sweep_summary(sweep_id: str) -> SweepSummary:
             summary_path=str(p) if p.exists() else None,
         )
     payload = json.loads(p.read_text(encoding="utf-8"))
+    payload["summary_path"] = str(p)
+
+    # Compatibilidad por si existen llaves antiguas en summary.json
+    if "best_overall" not in payload and "sweep_best_overall" in payload:
+        payload["best_overall"] = payload.get("sweep_best_overall")
+    if "best_by_model" not in payload and "sweep_best_by_model" in payload:
+        payload["best_by_model"] = payload.get("sweep_best_by_model")
+
+    from ...utils.runs_io import champion_score  # noqa: WPS433
+
+    def _hydrate_candidate(cand: Any, default_model_name: Optional[str] = None) -> Any:
+        if not isinstance(cand, dict):
+            return cand
+
+        if default_model_name and not cand.get("model_name"):
+            cand["model_name"] = default_model_name
+
+        metrics = cand.get("metrics")
+        if isinstance(metrics, dict):
+            if not cand.get("model_name") and metrics.get("model_name"):
+                cand["model_name"] = metrics.get("model_name")
+            if not cand.get("run_id") and metrics.get("run_id"):
+                cand["run_id"] = metrics.get("run_id")
+
+            if cand.get("score") is None:
+                try:
+                    tier, sc = champion_score(metrics or {})
+                    cand["score"] = [int(tier), float(sc)]
+                except Exception:
+                    pass
+
+        return cand
+
+    bbm = payload.get("best_by_model") or {}
+    if isinstance(bbm, dict):
+        for k, v in list(bbm.items()):
+            bbm[k] = _hydrate_candidate(v, default_model_name=k)
+        payload["best_by_model"] = bbm
+
+    bo = payload.get("best_overall")
+    payload["best_overall"] = _hydrate_candidate(bo)
+
 
     # Normalización robusta:
     # - Si best_overall no viene o viene vacío, derivarlo desde best_by_model (ya calculado)

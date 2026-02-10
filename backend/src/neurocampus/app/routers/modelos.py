@@ -27,12 +27,14 @@ Correcciones clave
 
 from __future__ import annotations
 
+from turtle import st
 from typing import Any, Dict, Optional, Type
 
 import re
 import os
 import time
 import uuid
+import math
 import inspect
 import logging
 import json
@@ -267,13 +269,52 @@ def _default_sweep_grid() -> list[dict[str, Any]]:
 def _sweeps_dir() -> Path:
     return (BASE_DIR / "artifacts" / "sweeps").resolve()
 
-
 def _write_sweep_summary(sweep_id: str, payload: dict[str, Any]) -> Path:
     d = _sweeps_dir() / str(sweep_id)
     d.mkdir(parents=True, exist_ok=True)
     p = d / "summary.json"
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return p
+
+def _recompute_sweep_winners(candidates: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
+    """
+    Recomputar best_overall y best_by_model leyendo metrics.json de cada run.
+    - Si un candidato no tiene métricas comparables (p.ej. sin val_rmse en regresión),
+      su score cae al peor valor.
+    """
+    from ...utils.runs_io import champion_score, load_run_metrics  # noqa: WPS433
+
+    best_overall: dict[str, Any] | None = None
+    best_by_model: dict[str, dict[str, Any]] = {}
+
+    for it in candidates:
+        if it.get("status") != "completed" or not it.get("run_id"):
+            continue
+
+        metrics = load_run_metrics(str(it["run_id"]))
+        it["metrics"] = metrics
+
+        tier, sc = champion_score(metrics or {})
+        # Normalizar a float finito (JSON/UI)
+        try:
+            sc = float(sc)
+        except Exception:
+            sc = -1e30
+        if not math.isfinite(sc):
+            sc = -1e30
+
+        it["score"] = [int(tier), float(sc)]
+
+        m = str(it.get("model_name") or "")
+        prev = best_by_model.get(m)
+        if (prev is None) or (tuple(it["score"]) > tuple(prev.get("score") or (-999, -1e30))):
+            best_by_model[m] = dict(it)
+
+        if (best_overall is None) or (tuple(it["score"]) > tuple(best_overall.get("score") or (-999, -1e30))):
+            best_overall = dict(it)
+
+    return best_overall, best_by_model
+
 
 def _create_strategy(modelo: str) -> Any:
     """
@@ -1709,20 +1750,56 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
                     best_overall = dict(it)
 
 
-        # 4) Decidir si actualiza champion (solo si mejora al champion actual)
+        # 4) Recomputar best_overall / best_by_model desde artifacts (fuente de verdad)
+        from ...utils.runs_io import (  # noqa: WPS433
+            champion_score,
+            load_current_champion,
+            load_run_metrics,
+            promote_run_to_champion,
+        )
+
+        best_overall = None
+        best_by_model = {}
+
+        for it in cand_state:
+            if it.get("status") != "completed" or not it.get("run_id"):
+                continue
+
+            metrics = load_run_metrics(str(it["run_id"]))
+            it["metrics"] = metrics
+
+            tier, score = champion_score(metrics or {})
+            # evitar no-finitos (JSON/UI)
+            if not isinstance(score, (int, float)) or not math.isfinite(float(score)):
+                score = -1e30
+
+            it["score"] = [int(tier), float(score)]
+
+            m = str(it.get("model_name"))
+            prev = best_by_model.get(m)
+            if (prev is None) or (tuple(it["score"]) > tuple(prev.get("score") or (-999, -1e30))):
+                best_by_model[m] = dict(it)
+
+            if (best_overall is None) or (tuple(it["score"]) > tuple(best_overall.get("score") or (-999, -1e30))):
+                best_overall = dict(it)
+
+        # 5) Decidir si actualiza champion (solo si mejora al champion actual)
         champion_updated = False
         champion_run_id = None
 
         if best_overall and req.auto_promote_champion and best_overall.get("run_id"):
             ds = str(req.dataset_id)
             fam = str(req.family)
+
             current = load_current_champion(dataset_id=ds, family=fam)
             cur_score = None
             if current and isinstance(current.get("metrics"), dict):
-                cs = champion_score(current["metrics"])
-                cur_score = [cs[0], cs[1]]
+                ct, cs = champion_score(current["metrics"])
+                if not isinstance(cs, (int, float)) or not math.isfinite(float(cs)):
+                    cs = -1e30
+                cur_score = [int(ct), float(cs)]
 
-            best_score = best_overall.get("score")
+            best_score = best_overall.get("score") or [-999, -1e30]
             should_promote = (cur_score is None) or (tuple(best_score) > tuple(cur_score))
 
             if should_promote:
@@ -1736,8 +1813,9 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
                 champion_run_id = str(best_overall["run_id"])
 
         finished_at = dt.datetime.utcnow().isoformat() + "Z"
+        best_overall, best_by_model = _recompute_sweep_winners(cand_state)
 
-        # 5) Persistir summary.json
+        # 6) Persistir summary.json
         payload = {
             "sweep_id": sweep_id,
             "dataset_id": req.dataset_id,
@@ -1746,8 +1824,8 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
             "started_at": started_at,
             "finished_at": finished_at,
             "n_candidates": len(cand_state),
-            "n_completed": sum(1 for x in cand_state if x["status"] == "completed"),
-            "n_failed": sum(1 for x in cand_state if x["status"] == "failed"),
+            "n_completed": sum(1 for x in cand_state if x.get("status") == "completed"),
+            "n_failed": sum(1 for x in cand_state if x.get("status") == "failed"),
             "best_overall": best_overall,
             "best_by_model": best_by_model,
             "champion_updated": champion_updated,
@@ -1756,9 +1834,9 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
         }
         summary_path = _write_sweep_summary(sweep_id, payload)
 
-        st["status"] = "completed"
-        st["time_total_ms"] = float((time.perf_counter() - t0) * 1000.0)
         st["sweep_summary_path"] = str(summary_path)
+        st["sweep_best_overall"] = best_overall
+        st["sweep_best_by_model"] = best_by_model
         st["sweep_best_overall"] = best_overall
         st["sweep_best_by_model"] = best_by_model
         _ESTADOS[sweep_id] = st
@@ -2061,6 +2139,17 @@ def get_sweep_summary(sweep_id: str) -> SweepSummary:
             summary_path=str(p) if p.exists() else None,
         )
     payload = json.loads(p.read_text(encoding="utf-8"))
+    # Self-healing: si best_overall quedó vacío/nulo, recomputar desde artifacts
+    bo = payload.get("best_overall")
+    if (bo is None) or (isinstance(bo, dict) and not bo.get("run_id")):
+        candidates = payload.get("candidates") or []
+        best_overall, best_by_model = _recompute_sweep_winners(candidates)
+        payload["best_overall"] = best_overall
+        payload["best_by_model"] = best_by_model
+        payload["candidates"] = candidates
+        # Reescribir para consistencia offline/UI
+        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
     return SweepSummary(**payload)
 
 

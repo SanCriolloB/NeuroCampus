@@ -141,3 +141,37 @@ def f1_macro(
         f1s.append(float(f1))
 
     return float(np.mean(f1s)) if f1s else 0.0
+
+# -------------------------------------------------------------------
+# Métricas ligeras para regresión (score_docente 0–50)
+# -------------------------------------------------------------------
+
+def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Mean Absolute Error."""
+    yt = np.asarray(y_true, dtype=np.float32)
+    yp = np.asarray(y_pred, dtype=np.float32)
+    if yt.size == 0:
+        return 0.0
+    return float(np.mean(np.abs(yt - yp)))
+
+
+def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Root Mean Squared Error."""
+    yt = np.asarray(y_true, dtype=np.float32)
+    yp = np.asarray(y_pred, dtype=np.float32)
+    if yt.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean((yt - yp) ** 2)))
+
+
+def r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """R² (coeficiente de determinación)."""
+    yt = np.asarray(y_true, dtype=np.float32)
+    yp = np.asarray(y_pred, dtype=np.float32)
+    if yt.size == 0:
+        return 0.0
+    ss_res = float(np.sum((yt - yp) ** 2))
+    ss_tot = float(np.sum((yt - float(np.mean(yt))) ** 2))
+    if ss_tot <= 1e-12:
+        return 0.0
+    return float(1.0 - (ss_res / ss_tot))

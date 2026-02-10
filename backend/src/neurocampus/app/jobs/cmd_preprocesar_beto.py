@@ -155,6 +155,7 @@ def _normalize_tfidf_params(min_df: Optional[float], max_df: Optional[float]) ->
     _default_min_df: int = 3
     _default_max_df: Optional[float] = None
 
+    # siempre definimos outputs
     min_df_out: float | int = min_df if min_df is not None else _default_min_df
     max_df_out: Optional[float] = max_df if max_df is not None else _default_max_df
 
@@ -173,6 +174,90 @@ def _normalize_tfidf_params(min_df: Optional[float], max_df: Optional[float]) ->
         max_df_out = None
 
     return min_df_out, max_df_out
+
+
+
+def _compute_score_total_0_50(
+    df: pd.DataFrame,
+    *,
+    delta_max: float,
+    calib_q: float,
+    beta_fixed: Optional[float],
+) -> dict:
+    """Calcula score_total_0_50 a partir de score_base + ajuste por sentimiento.
+
+    Reglas principales (ver plan):
+    - score_base_0_50: promedio calif_*. En ausencia, usa rating. Clamp 0..50.
+    - señal: (p_pos - p_neg) * sentiment_conf
+    - delta_points = clip(beta * señal, -delta_max, +delta_max)
+    - beta se calibra por dataset: beta = delta_max / q95(|señal|) sobre filas con has_text==1
+    - NO_TEXT: has_text==0 => señal 0 (o muy cerca) => delta 0, no sesga.
+
+    Returns:
+        meta dict para auditar la calibración.
+    """
+    out_meta: dict = {}
+
+    # 1) Base score (0..50)
+    if "score_base_0_50" not in df.columns:
+        if "rating" in df.columns:
+            base = pd.to_numeric(df["rating"], errors="coerce").fillna(0.0)
+        else:
+            calif_cols = [c for c in df.columns if str(c).startswith("calif_")]
+            if calif_cols:
+                base = df[calif_cols].apply(pd.to_numeric, errors="coerce").mean(axis=1).fillna(0.0)
+            else:
+                base = pd.Series(0.0, index=df.index)
+
+        df["score_base_0_50"] = base.clip(0.0, 50.0)
+    else:
+        df["score_base_0_50"] = pd.to_numeric(df["score_base_0_50"], errors="coerce").fillna(0.0).clip(0.0, 50.0)
+
+    # 2) Señal de sentimiento (robusta)
+    p_pos = pd.to_numeric(df.get("p_pos", 0.0), errors="coerce").fillna(0.0)
+    p_neg = pd.to_numeric(df.get("p_neg", 0.0), errors="coerce").fillna(0.0)
+    conf = pd.to_numeric(df.get("sentiment_conf", 0.0), errors="coerce").fillna(0.0).clip(0.0, 1.0)
+
+    sent_delta = (p_pos - p_neg).astype(float)
+    sent_signal = (sent_delta * conf).astype(float)
+
+    df["sentiment_delta"] = sent_delta
+    df["sentiment_signal"] = sent_signal
+
+    # 3) Calibración automática de beta
+    beta_source = "fixed" if beta_fixed is not None else f"q{calib_q}"
+    if beta_fixed is not None:
+        beta = float(beta_fixed)
+        qv = float("nan")
+    else:
+        if "has_text" in df.columns:
+            mask = df["has_text"].fillna(0).astype(int).astype(bool)
+        else:
+            mask = pd.Series(True, index=df.index)
+
+        vals = sent_signal[mask].to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            beta = 0.0
+            qv = 0.0
+        else:
+            qv = float(np.quantile(np.abs(vals), float(calib_q)))
+            beta = 0.0 if qv <= 1e-9 else float(float(delta_max) / qv)
+
+    # 4) Delta en puntos y score final
+    delta_points = (beta * sent_signal).clip(-float(delta_max), float(delta_max))
+    df["sentiment_delta_points"] = delta_points
+
+    base = pd.to_numeric(df["score_base_0_50"], errors="coerce").fillna(0.0).clip(0.0, 50.0)
+    df["score_total_0_50"] = (base + delta_points).clip(0.0, 50.0)
+
+    out_meta["score_delta_max"] = float(delta_max)
+    out_meta["score_calib_q"] = float(calib_q)
+    out_meta["score_beta"] = float(beta)
+    out_meta["score_beta_source"] = str(beta_source)
+    out_meta["score_calib_abs_q"] = (float(qv) if qv == qv else None)
+    return out_meta
+
 
 
 def main() -> None:
@@ -234,12 +319,33 @@ def main() -> None:
         help="Política para filas sin texto. neutral=legacy; zero=NO_TEXT (p*=0, accepted=0).",
     )
 
+    # --- NUEVO: score_total_0_50 (calificaciones + ajuste por sentimiento) ---
+    ap.add_argument(
+        "--score-delta-max",
+        type=float,
+        default=8.0,
+        help="Máximo ajuste en puntos para el score_total_0_50 (ej 8.0).",
+    )
+    ap.add_argument(
+        "--score-calib-q",
+        type=float,
+        default=0.95,
+        help="Quantil para calibrar beta automáticamente con |sent_signal| (ej 0.95).",
+    )
+    ap.add_argument(
+        "--score-beta",
+        type=float,
+        default=None,
+        help="Si se define, usa beta fijo (omite calibración por quantil).",
+    )
+
     ap.add_argument(
         "--tfidf-min-df",
         type=float,
         default=None,
         help="min_df para TF-IDF (entero >=1 o fracción 0-1).",
     )
+
     ap.add_argument(
         "--tfidf-max-df",
         type=float,
@@ -256,6 +362,13 @@ def main() -> None:
 
     # 1) Cargar datos
     df = pd.read_parquet(args.src) if args.src.lower().endswith(".parquet") else pd.read_csv(args.src)
+
+    # Auditabilidad: conservar has_text del processed (preliminar) antes de recalcularlo en BETO
+    # - processed.has_text suele ser "texto no vacío" (limpieza básica).
+    # - labeled.has_text es la fuente de verdad (limpieza/tokenización/min_tokens + policy NO_TEXT).
+    if "has_text" in df.columns and "has_text_processed" not in df.columns:
+        df["has_text_processed"] = pd.to_numeric(df["has_text"], errors="coerce").fillna(0).astype(int)
+
 
     # 2) Selección de columnas de texto (tolerante)
     text_cols = _cols_from_arg_or_auto(args.text_col, df)
@@ -385,6 +498,21 @@ def main() -> None:
     if "comentario" not in df.columns:
         df["comentario"] = df["_texto_clean"]
 
+    # 4.5) Score total (0..50) ajustado por sentimiento (después de p_* y sentiment_conf)
+    score_meta = _compute_score_total_0_50(
+        df,
+        delta_max=float(args.score_delta_max),
+        calib_q=float(args.score_calib_q),
+        beta_fixed=(float(args.score_beta) if args.score_beta is not None else None),
+    )
+
+    # Fallback de auditabilidad: garantizar sentiment_delta explícito (aunque se refactorice el score_total)
+    if "sentiment_delta" not in df.columns:
+        p_pos = pd.to_numeric(df.get("p_pos", 0.0), errors="coerce").fillna(0.0)
+        p_neg = pd.to_numeric(df.get("p_neg", 0.0), errors="coerce").fillna(0.0)
+        df["sentiment_delta"] = (p_pos - p_neg).astype(float)
+
+
     # 5) Guardado + meta
     Path(args.dst).parent.mkdir(parents=True, exist_ok=True)
     if args.dst.lower().endswith(".parquet"):
@@ -409,6 +537,13 @@ def main() -> None:
         "tfidf_max_df": args.tfidf_max_df,
         "text_feats_out_dir": args.text_feats_out_dir,
     }
+
+    # Asegurar que el meta de score se persista en el .meta.json
+    # (si score_meta no existe por alguna razón, no rompe)
+    try:
+        meta.update(score_meta)
+    except NameError:
+        pass
 
     with open(args.dst + ".meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

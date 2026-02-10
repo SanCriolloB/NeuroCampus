@@ -54,7 +54,7 @@ ModeloName = Literal["rbm_general", "rbm_restringida", "dbm_manual"]
 - ``dbm_manual``: DBM (experimental / opcional)
 """
 
-DataSource = Literal["feature_pack", "labeled", "unified_labeled"]
+DataSource = Literal["feature_pack", "pair_matrix", "labeled", "unified_labeled"]
 """Fuente de datos para entrenamiento."""
 
 TargetMode = Literal["sentiment_probs", "sentiment_label", "score_only"]
@@ -78,6 +78,41 @@ TeacherMateriaMode = Literal["embed", "onehot", "none"]
 - ``onehot``: one-hot (solo viable si cardinalidad es pequeña).
 - ``none``: desactiva explícitamente el uso de docente/materia.
 """
+# ---------------------------------------------------------------------------
+# Extensiones Ruta 2 (families)
+# ---------------------------------------------------------------------------
+
+Family = Literal["sentiment_desempeno", "score_docente"]
+"""Familia de modelos.
+
+- ``sentiment_desempeno``: clasificación (pipeline actual).
+- ``score_docente``: regresión 0–50 por par docente–materia (Ruta 2).
+"""
+
+TaskType = Literal["classification", "regression"]
+"""Tipo de tarea (derivable desde ``family``)."""
+
+InputLevel = Literal["row", "pair"]
+"""Nivel de entrada del modelo.
+
+- ``row``: 1 fila = 1 registro (encuesta/comentario) (sentiment).
+- ``pair``: 1 fila = 1 par (teacher_id, materia_id) (score_docente).
+"""
+
+DataPlan = Literal["dataset_only", "recent_window", "recent_window_plus_replay"]
+"""Plan de datos incremental.
+
+- ``dataset_only``: solo dataset actual.
+- ``recent_window``: últimos K periodos.
+- ``recent_window_plus_replay``: ventana reciente + replay histórico (muestra).
+"""
+
+ReplayStrategy = Literal["uniform", "by_period"]
+"""Cómo muestrear el histórico para replay."""
+
+WarmStartFrom = Literal["none", "champion", "run_id"]
+"""Origen de warm-start."""
+
 
 JobStatus = Literal["queued", "running", "completed", "failed", "unknown"]
 """Estados posibles reportados por el job de entrenamiento."""
@@ -127,6 +162,84 @@ class EntrenarRequest(BaseModel):
     modelo: ModeloName = Field(
         description="Tipo de modelo a entrenar (rbm_general | rbm_restringida | dbm_manual)."
     )
+
+    # -----------------------------
+    # Familia / tipo de tarea (Ruta 2)
+    # -----------------------------
+    family: Family = Field(
+        default="sentiment_desempeno",
+        description="Familia del entrenamiento (sentiment_desempeno | score_docente).",
+    )
+
+    # Opcionales: se derivan automáticamente desde family si se omiten.
+    task_type: Optional[TaskType] = Field(
+        default=None,
+        description="Tipo de tarea (classification | regression). Se deriva desde family si se omite.",
+    )
+
+    input_level: Optional[InputLevel] = Field(
+        default=None,
+        description="Nivel de entrada (row | pair). Se deriva desde family si se omite.",
+    )
+
+    target_col: Optional[str] = Field(
+        default=None,
+        description=(
+            "Columna target explícita (solo aplica a family=score_docente). "
+            "Si se omite, el backend debe usar la indicada por pair_meta/feature meta (score_total_0_50 preferido)."
+        ),
+    )
+
+    # -----------------------------
+    # Config incremental (solo score_docente)
+    # -----------------------------
+    data_plan: Optional[DataPlan] = Field(
+        default=None,
+        description=(
+            "Plan incremental de datos (dataset_only | recent_window | recent_window_plus_replay). "
+            "Si se omite y family=score_docente, se asume recent_window_plus_replay."
+        ),
+    )
+
+    window_k: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Tamaño de ventana reciente (K periodos) para score_docente. "
+            "Si se omite, se infiere desde ventana_n o usa un default seguro."
+        ),
+    )
+
+    replay_size: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Tamaño del replay histórico (n filas/pares muestreados). Solo score_docente.",
+    )
+
+    replay_strategy: ReplayStrategy = Field(
+        default="uniform",
+        description="Estrategia de muestreo para replay histórico (uniform | by_period).",
+    )
+
+    recency_lambda: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Factor de decaimiento por recencia (opcional; solo score_docente).",
+    )
+
+    warm_start_from: Optional[WarmStartFrom] = Field(
+        default=None,
+        description=(
+            "Warm-start para score_docente (none | champion | run_id). "
+            "Si se omite, el backend puede usar champion cuando sea compatible."
+        ),
+    )
+
+    warm_start_run_id: Optional[str] = Field(
+        default=None,
+        description="run_id a usar como warm-start cuando warm_start_from='run_id'.",
+    )
+
 
     # -----------------------------
     # Identidad del dataset (nuevo)
@@ -252,16 +365,85 @@ class EntrenarRequest(BaseModel):
     @model_validator(mode="after")
     def _sync_dataset_id_and_periodo(self) -> "EntrenarRequest":
         """
-        Sincroniza ``dataset_id`` y ``periodo_actual`` para compatibilidad.
+        Sincroniza ``dataset_id`` y ``periodo_actual`` para compatibilidad y
+        deriva defaults de Ruta 2 (families).
 
         - Si viene ``dataset_id`` y no viene ``periodo_actual``, copia dataset_id -> periodo_actual.
         - Si viene ``periodo_actual`` y no viene ``dataset_id``, copia periodo_actual -> dataset_id.
+        - ``task_type`` e ``input_level`` se derivan desde ``family`` si se omiten.
+        - Para ``score_docente``: define defaults razonables para plan incremental (window+replay+warm-start).
         """
+        # Sync dataset_id <-> periodo_actual (legacy)
         if self.dataset_id and not self.periodo_actual:
             self.periodo_actual = self.dataset_id
         if self.periodo_actual and not self.dataset_id:
             self.dataset_id = self.periodo_actual
+
+        # Derivar task_type / input_level desde family
+        if self.family == "score_docente":
+            if self.task_type is None:
+                self.task_type = "regression"
+            if self.input_level is None:
+                self.input_level = "pair"
+
+            if self.task_type != "regression":
+                raise ValueError("family='score_docente' requiere task_type='regression'")
+            if self.input_level != "pair":
+                raise ValueError("family='score_docente' requiere input_level='pair'")
+
+            # Defaults de plan incremental
+            if self.data_plan is None:
+                self.data_plan = "recent_window_plus_replay"
+
+            # window_k: si viene metodologia='ventana' usar ventana_n; si no, usar un default seguro.
+            if self.window_k is None:
+                if self.metodologia == "ventana" and self.ventana_n:
+                    self.window_k = int(self.ventana_n)
+                else:
+                    self.window_k = 4
+
+            # replay_size: si el plan incluye replay y no viene, usar un default razonable.
+            if self.data_plan == "recent_window_plus_replay":
+                if self.replay_size is None:
+                    self.replay_size = 5000
+            else:
+                if self.replay_size is None:
+                    self.replay_size = 0
+
+            # warm-start default para score_docente: champion (si es compatible)
+            if self.warm_start_from is None:
+                self.warm_start_from = "champion"
+
+            if self.warm_start_from == "run_id" and not self.warm_start_run_id:
+                raise ValueError("warm_start_run_id es requerido cuando warm_start_from='run_id'")
+
+        else:
+            # sentiment_desempeno (default)
+            if self.task_type is None:
+                self.task_type = "classification"
+            if self.input_level is None:
+                self.input_level = "row"
+
+            if self.task_type != "classification":
+                raise ValueError("family='sentiment_desempeno' requiere task_type='classification'")
+            if self.input_level != "row":
+                raise ValueError("family='sentiment_desempeno' requiere input_level='row'")
+
+            if self.data_plan is None:
+                self.data_plan = "dataset_only"
+            if self.warm_start_from is None:
+                self.warm_start_from = "none"
+            if self.window_k is None:
+                self.window_k = int(self.ventana_n) if (self.metodologia == "ventana" and self.ventana_n) else 1
+            if self.replay_size is None:
+                self.replay_size = 0
+
+        # Coherencia replay
+        if self.data_plan in ("recent_window_plus_replay",) and (self.replay_size or 0) <= 0:
+            raise ValueError("data_plan incluye replay pero replay_size <= 0")
+
         return self
+
 
 
 class EpochItem(BaseModel):
@@ -339,13 +521,19 @@ class EstadoResponse(BaseModel):
 class RunSummary(BaseModel):
     """Resumen ligero de un run para listados."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(protected_namespaces=())
 
     run_id: str
     model_name: str
     dataset_id: Optional[str] = None
+    family: Optional[Family] = None
+    task_type: Optional[TaskType] = None
+    input_level: Optional[InputLevel] = None
+    target_col: Optional[str] = None
+    data_plan: Optional[DataPlan] = None
     created_at: str
     metrics: Dict[str, Any] = Field(default_factory=dict)
+
 
 
 class RunDetails(BaseModel):
@@ -355,20 +543,58 @@ class RunDetails(BaseModel):
 
     run_id: str
     dataset_id: Optional[str] = None
+    family: Optional[Family] = None
+    task_type: Optional[TaskType] = None
+    input_level: Optional[InputLevel] = None
+    target_col: Optional[str] = None
+    data_plan: Optional[DataPlan] = None
     metrics: Dict[str, Any]
     config: Optional[Dict[str, Any]] = None
     artifact_path: Optional[str] = None
 
 
+
 class ChampionInfo(BaseModel):
-    """Información del modelo champion."""
+    """Información del champion actual (por dataset y opcionalmente family)."""
+    model_config = ConfigDict(protected_namespaces=())
+    model_name: Optional[ModeloName] = None
+    dataset_id: str
 
-    model_config = ConfigDict(extra="ignore")
+    # Nuevo layout
+    family: Optional[Family] = None
 
-    model_name: str
-    dataset_id: Optional[str] = None
-    metrics: Dict[str, Any] = Field(default_factory=dict)
+    # Contexto del run
+    task_type: Optional[TaskType] = None
+    input_level: Optional[InputLevel] = None
+    target_col: Optional[str] = None
+    data_plan: Optional[DataPlan] = None
+
+    # ✅ Nuevo: run fuente del champion (debe venir de champion.json o fallback a metrics.run_id)
+    source_run_id: Optional[str] = None
+
+    metrics: Optional[Dict[str, Any]] = None
     path: str
+
+    @model_validator(mode="after")
+    def _fill_source_run_id(self):
+        """
+        Robustez:
+        - Si champion.json no trae source_run_id (o fue creado en versiones viejas),
+          lo inferimos desde metrics.run_id para no romper el contrato.
+        - Esto evita nulls en API cuando el loader sí trae métricas.
+        """
+        if not self.source_run_id:
+            m = self.metrics or {}
+            if isinstance(m, dict):
+                rid = m.get("run_id")
+            else:
+                rid = getattr(m, "run_id", None)
+            if rid:
+                self.source_run_id = str(rid)
+        return self
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -384,14 +610,49 @@ class ReadinessResponse(BaseModel):
     labeled_exists: bool
     unified_labeled_exists: bool
     feature_pack_exists: bool
+    # Ruta 2: pair-level artifacts (opcionales para compatibilidad)
+    pair_matrix_exists: Optional[bool] = Field(default=None, description="True si existe pair_matrix.parquet para el dataset.")
+    score_col: Optional[str] = Field(default=None, description="Columna objetivo detectada desde meta del feature-pack/pair-meta.")
+    pair_meta: Optional[Dict[str, Any]] = Field(default=None, description="Contenido (o resumen) de pair_meta.json si está disponible.")
+    labeled_score_meta: Optional[Dict[str, Any]] = Field(default=None, description="Metadata del score_total (beta, delta_max, etc.) si está disponible.")
     paths: Dict[str, str] = Field(default_factory=dict)
 
 
+
 class PromoteChampionRequest(BaseModel):
-    """Request para promover un run existente a champion manualmente."""
+    """Request para promover un run existente a champion manualmente.
 
-    model_config = ConfigDict(extra="ignore")
+    Este request debe apuntar a un **run ya entrenado** (run_id) y opcionalmente
+    permitir especificar family/task/input_level/target_col/data_plan.
 
-    dataset_id: str
-    run_id: str
-    model_name: Optional[str] = None
+    Nota: `metrics` y `path` NO pertenecen al request (son parte del response / champion.json).
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    dataset_id: str = Field(description="Dataset/periodo al que pertenece el run (ej. '2025-1').")
+    run_id: str = Field(description="ID del run a promover (carpeta en artifacts/runs/<run_id>).")
+    model_name: str = Field(description="Nombre lógico del modelo (ej. 'rbm_restringida').")
+
+    # Ruta 2 (families): opcional, pero se recomienda enviarlo para evitar ambigüedad
+    family: Optional[Family] = Field(
+        default=None,
+        description="Familia del champion (sentiment_desempeno | score_docente). Si se omite, el backend puede inferirlo del run.",
+    )
+    task_type: Optional[TaskType] = Field(
+        default=None,
+        description="Tipo de tarea (classification | regression). Idealmente se infiere del run.",
+    )
+    input_level: Optional[InputLevel] = Field(
+        default=None,
+        description="Nivel de entrada (row | pair). Idealmente se infiere del run.",
+    )
+    target_col: Optional[str] = Field(
+        default=None,
+        description="Columna target efectiva del entrenamiento (p.ej. y_sentimiento o target_score). Idealmente se infiere del run.",
+    )
+    data_plan: Optional[DataPlan] = Field(
+        default=None,
+        description="Plan de datos usado (dataset_only | recent_window | recent_window_plus_replay). Idealmente se infiere del run.",
+    )
+

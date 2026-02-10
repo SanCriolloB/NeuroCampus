@@ -64,3 +64,6 @@ backend/.venv/
 
 # Jobs locales (estado/polling)
 jobs/preproc_beto/*.json
+
+# NeuroCampus: runtime job outputs
+jobs/features_prepare/*.json

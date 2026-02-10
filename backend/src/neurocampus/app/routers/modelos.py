@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Type
 
+import re
 import os
 import time
 import uuid
@@ -824,6 +825,101 @@ def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"No se pudo leer el dataset ({p.name}): {e}") from e
 
+def _period_key(ds: str) -> tuple[int, int]:
+    """
+    Ordena dataset_id tipo 'YYYY-N' (ej. 2025-1, 2024-3).
+    Si no parsea, lo manda al inicio.
+    """
+    m = re.match(r"^\s*(\d{4})-(\d{1,2})\s*$", str(ds))
+    if not m:
+        return (0, 0)
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def _list_pair_matrix_datasets() -> list[str]:
+    base = (BASE_DIR / "artifacts" / "features").resolve()
+    if not base.exists():
+        return []
+    out: list[str] = []
+    for p in base.iterdir():
+        if not p.is_dir():
+            continue
+        if (p / "pair_matrix.parquet").exists():
+            out.append(p.name)
+    return sorted(out, key=_period_key)
+
+
+def _materialize_score_docente_pair_selection(req: EntrenarRequest, job_id: str) -> str:
+    """
+    Construye un parquet temporal uniendo pair_matrix de varios periodos según data_plan:
+      - recent_window: concat de últimos window_k periodos (<= dataset_id actual)
+      - recent_window_plus_replay: concat de ventana + muestra de periodos antiguos (replay_size)
+    """
+    dataset_id = _dataset_id(req)
+    plan = str(getattr(req, "data_plan", "dataset_only") or "dataset_only").lower()
+    window_k = int(getattr(req, "window_k", None) or 4)
+    replay_size = int(getattr(req, "replay_size", None) or 0)
+    replay_strategy = str(getattr(req, "replay_strategy", "uniform") or "uniform").lower()
+
+    all_ds = _list_pair_matrix_datasets()
+    if not all_ds:
+        raise HTTPException(status_code=404, detail="No hay pair_matrix disponibles en artifacts/features/*/pair_matrix.parquet")
+
+    cur_k = _period_key(dataset_id)
+    eligible = [d for d in all_ds if _period_key(d) <= cur_k]
+    if not eligible:
+        eligible = all_ds[:]  # fallback
+
+    recent = eligible[-window_k:] if window_k > 0 else eligible[-1:]
+    if dataset_id not in recent and dataset_id in eligible:
+        recent = (recent + [dataset_id])[-window_k:]
+
+    older = [d for d in eligible if d not in recent]
+
+    def _read_pair(ds: str) -> pd.DataFrame:
+        p = (BASE_DIR / "artifacts" / "features" / ds / "pair_matrix.parquet").resolve()
+        if not p.exists():
+            raise HTTPException(status_code=404, detail=f"pair_matrix no encontrado para {ds}: {p}")
+        df = pd.read_parquet(p)
+        if "periodo" not in df.columns:
+            df = df.copy()
+            df["periodo"] = ds
+        return df
+
+    df_recent = pd.concat([_read_pair(d) for d in recent], ignore_index=True)
+
+    df_replay = None
+    if plan == "recent_window_plus_replay" and replay_size > 0 and older:
+        df_pool = pd.concat([_read_pair(d) for d in older], ignore_index=True)
+        if len(df_pool) > 0:
+            n = min(replay_size, len(df_pool))
+            if replay_strategy == "by_period" and "periodo" in df_pool.columns:
+                chunks = []
+                periods = sorted(df_pool["periodo"].astype(str).unique().tolist(), key=_period_key)
+                per = max(1, n // max(1, len(periods)))
+                for per_ds in periods:
+                    sub = df_pool[df_pool["periodo"].astype(str) == per_ds]
+                    if len(sub) == 0:
+                        continue
+                    take = min(per, len(sub))
+                    chunks.append(sub.sample(n=take, random_state=7, replace=False))
+                df_replay = pd.concat(chunks, ignore_index=True) if chunks else df_pool.sample(n=n, random_state=7, replace=False)
+            else:
+                df_replay = df_pool.sample(n=n, random_state=7, replace=False)
+
+    df_sel = df_recent if df_replay is None else pd.concat([df_recent, df_replay], ignore_index=True)
+
+    # Alinear columnas (union) para evitar errores si algún periodo trae columnas extra
+    cols = sorted(set(df_sel.columns.tolist()))
+    df_sel = df_sel.reindex(columns=cols)
+
+    tmp_dir = (BASE_DIR / "data" / ".tmp").resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_ref = tmp_dir / f"pair_sel_{job_id}.parquet"
+    df_sel.to_parquet(tmp_ref, index=False)
+    return str(tmp_ref.resolve())
+
+
 
 def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
     """
@@ -845,7 +941,15 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
                     "Activa auto_prepare=true al entrenar o llama a POST /modelos/feature-pack/prepare."
                 ),
             )
+
+        # score_docente: materializar selección multi-periodo si aplica
+        fam = str(getattr(req, "family", "") or "").lower()
+        plan = str(getattr(req, "data_plan", "dataset_only") or "dataset_only").lower()
+        if fam == "score_docente" and data_source in ("pair_matrix", "pairs", "pair") and plan in ("recent_window", "recent_window_plus_replay"):
+            return _materialize_score_docente_pair_selection(req, job_id)
+
         return str(pack_path.resolve())
+
 
 
     df = _read_dataframe_any(data_ref)
@@ -1263,7 +1367,10 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         # Warm-start: resolver warm_start_run_id -> warm_start_path
         # ------------------------------------------------------------
         try:
+            warm_from = str(run_hparams.get("warm_start_from") or "").lower().strip()
             warm_run_id = run_hparams.get("warm_start_run_id")
+
+            # 1) warm-start explícito por run_id (comportamiento actual)
             if warm_run_id:
                 # Importar RUNS_DIR desde runs_io (si no está ya importado)
                 from ...utils.runs_io import RUNS_DIR  # noqa: WPS433
@@ -1271,9 +1378,48 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 warm_dir = (RUNS_DIR / str(warm_run_id)).resolve()
                 if warm_dir.exists():
                     run_hparams["warm_start_path"] = str(warm_dir)
+                    run_hparams["warm_start_from"] = "run_id"
+
+            # 2) warm-start por champion (misma family), si no se resolvió por run_id
+            if not run_hparams.get("warm_start_path") and warm_from == "champion":
+                fam = str(getattr(req, "family", "") or "").lower().strip()
+                ds = _dataset_id(req)
+
+                from ...utils.runs_io import (  # noqa: WPS433
+                    CHAMPIONS_DIR,
+                    load_current_champion,
+                    load_dataset_champion,
+                )
+
+                # Preferir champion del MISMO dataset_id + family
+                ch = load_current_champion(dataset_id=ds, family=fam)
+
+                # Fallback opcional: champion más reciente <= ds (si existe helper _period_key)
+                if not ch:
+                    fam_dir = (CHAMPIONS_DIR / fam).resolve()
+                    if fam_dir.exists():
+                        candidates = [p.name for p in fam_dir.iterdir() if p.is_dir()]
+
+                        period_key = globals().get("_period_key")
+                        if callable(period_key):
+                            candidates = sorted(candidates, key=period_key)
+                            candidates = [c for c in candidates if period_key(c) <= period_key(ds)]
+                        else:
+                            # fallback simple si aún no definiste _period_key
+                            candidates = sorted(candidates)
+
+                        if candidates:
+                            latest = candidates[-1]
+                            ch = load_dataset_champion(latest, family=fam)
+
+                if ch and ch.get("path"):
+                    run_hparams["warm_start_path"] = str(ch["path"])
+                    run_hparams["warm_start_from"] = "champion"
+
         except Exception:
             # Nunca tumbar el entrenamiento por warm-start
             pass
+
 
 
         out = tpl.run(

@@ -33,13 +33,17 @@ import os
 import time
 import uuid
 import inspect
+import logging
+logger = logging.getLogger(__name__)
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
+from neurocampus.utils.runs_io import load_current_champion
+from neurocampus.app.schemas.modelos import ChampionInfo
 
 from ..schemas.modelos import (
     EntrenarRequest,
@@ -55,6 +59,7 @@ from ..schemas.modelos import (
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
 from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
+from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
 
 from ...observability.bus_eventos import BUS
 
@@ -145,6 +150,83 @@ def _abs_path(ref: str) -> Path:
         p = (BASE_DIR / p).resolve()
     return p
 
+def _call_with_accepted_kwargs(fn, **kwargs):
+    """
+    Llama `fn(**kwargs)` pero filtrando claves que `fn` no acepta.
+    Esto evita errores tipo: got an unexpected keyword argument 'family'.
+    """
+    try:
+        sig = inspect.signature(fn)
+        params = sig.parameters
+        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        if has_varkw:
+            return fn(**kwargs)
+        filtered = {k: v for k, v in kwargs.items() if k in params}
+        return fn(**filtered)
+    except Exception:
+        # fallback: si no se puede inspeccionar, intenta con kwargs tal cual
+        return fn(**kwargs)
+
+
+def _read_json_if_exists(ref: str) -> Optional[Dict[str, Any]]:
+    p = _abs_path(ref)
+    if not p.exists():
+        return None
+    try:
+        import json as _json
+        return _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _extract_labeled_score_meta(labeled_ref: str) -> Optional[Dict[str, Any]]:
+    """Extrae meta del score_total desde el labeled (si existe)."""
+    p = _abs_path(labeled_ref)
+    if not p.exists():
+        return None
+
+    cols_wanted = [
+        "score_delta_max",
+        "score_calib_q",
+        "score_beta",
+        "score_beta_source",
+        "score_calib_abs_q",
+    ]
+
+    cols_existing: list[str] = []
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+        schema_cols = pq.ParquetFile(p).schema.names
+        cols_existing = [c for c in cols_wanted if c in schema_cols]
+        if not cols_existing:
+            return None
+        df = pq.read_table(p, columns=cols_existing).to_pandas()
+    except Exception:
+        # Fallback: lee completo (datasets suelen ser manejables)
+        try:
+            df = pd.read_parquet(p)
+        except Exception:
+            return None
+        cols_existing = [c for c in cols_wanted if c in df.columns]
+        if not cols_existing:
+            return None
+        df = df[cols_existing]
+
+    meta: Dict[str, Any] = {}
+    for c in cols_existing:
+        try:
+            s = df[c].dropna()
+            if len(s) == 0:
+                continue
+            val = s.iloc[0]
+            if isinstance(val, (np.generic,)):
+                val = val.item()
+            meta[c] = val
+        except Exception:
+            continue
+
+    return meta or None
+
 
 # ---------------------------------------------------------------------------
 # FIX A: Factory de estrategias (CLASES, no instancias)
@@ -153,6 +235,7 @@ def _abs_path(ref: str) -> Path:
 _STRATEGY_CLASSES: Dict[str, Type[Any]] = {
     "rbm_general": RBMGeneral,
     "rbm_restringida": RBMRestringida,
+    "dbm_manual": DBMManualPlantillaStrategy,
 }
 
 
@@ -160,7 +243,7 @@ def _create_strategy(modelo: str) -> Any:
     """
     Crea una instancia NUEVA de estrategia por job (FIX A).
 
-    :param modelo: nombre lógico del modelo ("rbm_general" | "rbm_restringida")
+    :param modelo: nombre lógico del modelo ("rbm_general" | "rbm_restringida" | "dbm_manual")
     :raises HTTPException: si el modelo no está soportado
     """
     key = str(modelo or "").strip().lower()
@@ -208,6 +291,49 @@ def _normalize_hparams(hparams: Dict[str, Any] | None) -> Dict[str, Any]:
         return {}
     return {str(k).lower(): v for k, v in hparams.items()}
 
+def _maybe_set(d: Dict[str, Any], key: str, value: Any) -> None:
+    """Setea d[key]=value solo si value no es None y key no existe."""
+    if value is None:
+        return
+    if key not in d:
+        d[key] = value
+
+
+def _infer_target_col(req: "EntrenarRequest", resolved_run_hparams: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    Inferencia robusta de target_col para que:
+    - El training/evaluación sepan qué columna usar
+    - El snapshot (metrics.json params.req.target_col) no quede en null
+    """
+    # 1) si viene explícito, respétalo
+    explicit = getattr(req, "target_col", None)
+    if explicit:
+        return explicit
+
+    rh = resolved_run_hparams or {}
+
+    family = str(getattr(req, "family", None) or "sentiment_desempeno").lower()
+    task_type = str(getattr(req, "task_type", None) or rh.get("task_type") or "").lower()
+    target_mode = str(getattr(req, "target_mode", None) or rh.get("target_mode") or "").lower()
+    data_source = str(getattr(req, "data_source", None) or rh.get("data_source") or "").lower()
+
+    # 2) reglas por family (prioritario)
+    if family == "sentiment_desempeno":
+        # tu feature-pack ya construye y_sentimiento (y también p_neg/p_neu/p_pos)
+        # y_sentimiento es el target "clase" para evaluación
+        return "y_sentimiento"
+
+    if family == "score_docente":
+        # pair_matrix usa target_score (como ya viste en metrics.json de regression)
+        return "target_score"
+
+    # 3) fallback por task_type (si family llega vacío)
+    if task_type == "classification":
+        return "y_sentimiento"
+    if task_type == "regression":
+        return "target_score"
+
+    return None
 
 def _prune_hparams_for_ui(hparams_norm: Dict[str, Any]) -> Dict[str, Any]:
     """Elimina claves 'reservadas' de hparams para mostrarlas en UI sin pisar campos del request.
@@ -381,6 +507,10 @@ def _dataset_id(req: EntrenarRequest) -> Optional[str]:
 def _resolve_by_data_source(req: EntrenarRequest) -> str:
     """
     Resuelve el input principal del entrenamiento según `data_source`.
+
+    Extensión Ruta 2:
+    - Si `family=score_docente`, el default lógico es consumir `pair_matrix.parquet`
+      (1 fila = 1 par docente–materia).
     """
     data_ref = getattr(req, "data_ref", None)
     if data_ref:
@@ -390,9 +520,16 @@ def _resolve_by_data_source(req: EntrenarRequest) -> str:
     if not ds:
         raise HTTPException(status_code=400, detail="Falta dataset_id/periodo_actual para resolver data_source.")
 
+    family = str(getattr(req, "family", "sentiment_desempeno") or "sentiment_desempeno").lower()
     data_source = str(getattr(req, "data_source", "feature_pack")).lower()
 
+    if data_source in ("pair_matrix", "pairs", "pair"):
+        return f"artifacts/features/{ds}/pair_matrix.parquet"
+
     if data_source == "feature_pack":
+        # Para score_docente, el "pack" relevante es el pair_matrix (Ruta 2)
+        if family == "score_docente":
+            return f"artifacts/features/{ds}/pair_matrix.parquet"
         return f"artifacts/features/{ds}/train_matrix.parquet"
 
     if data_source == "unified_labeled":
@@ -409,6 +546,7 @@ def _resolve_by_data_source(req: EntrenarRequest) -> str:
         return _relpath(p)
     except Exception:
         return f"data/labeled/{ds}_beto.parquet"
+
 
 
 def _ensure_unified_labeled() -> None:
@@ -453,16 +591,24 @@ def _ensure_feature_pack(dataset_id: str, input_uri: str, *, force: bool = False
     out = out_dir / "train_matrix.parquet"
 
     # Rutas esperadas (las devolvemos siempre, existan o no, para UI/debug).
+    pair_path = out_dir / "pair_matrix.parquet"
+    pair_meta_path = out_dir / "pair_meta.json"
+
     artifacts_rel: Dict[str, str] = {
         "train_matrix": _relpath(out),
         "teacher_index": _relpath(out_dir / "teacher_index.json"),
         "materia_index": _relpath(out_dir / "materia_index.json"),
         "bins": _relpath(out_dir / "bins.json"),
         "meta": _relpath(out_dir / "meta.json"),
+        # Ruta 2
+        "pair_matrix": _relpath(pair_path),
+        "pair_meta": _relpath(pair_meta_path),
     }
 
-    if out.exists() and not force:
+
+    if out.exists() and pair_path.exists() and pair_meta_path.exists() and not force:
         return artifacts_rel
+
 
     try:
         from neurocampus.data.features_prepare import prepare_feature_pack
@@ -498,44 +644,118 @@ def _ensure_feature_pack(dataset_id: str, input_uri: str, *, force: bool = False
             ),
         )
 
+    # Ruta 2: pair artifacts deben existir también (compat con runs score_docente)
+    if not pair_path.exists() or not pair_meta_path.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "prepare_feature_pack no creó pair_matrix.parquet/pair_meta.json. "
+                "Asegúrate de tener implementado el builder de pair_matrix en features_prepare.py."
+            ),
+        )
+
+
     return artifacts_rel
+
+def _req_get(req, name: str, default=None):
+    v = getattr(req, name, None)
+    if v is not None:
+        return v
+    h = getattr(req, "hparams", None) or {}
+    return h.get(name, default)
+
+def _read_json_safe(p: Path):
+    try:
+        if not p.exists():
+            return None
+        import json
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _feature_pack_meta_path(ds: str) -> Path:
+    return BASE_DIR / "artifacts" / "features" / ds / "meta.json"
+
+def _feature_pack_has_sentiment(ds: str) -> bool:
+    meta = _read_json_safe(_feature_pack_meta_path(ds)) or {}
+    sent_cols = meta.get("sentiment_cols") or []
+    cols = meta.get("columns") or []
+    return (len(sent_cols) >= 3) and ("y_sentimiento" in cols)
+
+def _should_rebuild_feature_pack(dataset_id: str, *, family: str, data_source: str) -> bool:
+    """Decide si hay que reconstruir artifacts/features/<ds>/... por incompatibilidad.
+
+    Regla robusta:
+    - sentiment_desempeno requiere blocks.sentiment=True en meta.json (si existe labeled).
+    - score_docente requiere que pair_meta.target_col NO sea score_base_0_50 si tenemos labeled disponible.
+    """
+    try:
+        ds = str(dataset_id)
+        fam = (family or "").lower()
+        src = (data_source or "").lower()
+
+        feat_dir = BASE_DIR / "artifacts" / "features" / ds
+        meta_path = feat_dir / "meta.json"
+        pair_meta_path = feat_dir / "pair_meta.json"
+
+        # 1) Sentiment: si el pack no tiene sentiment block, no hay labels -> rebuild
+        if fam == "sentiment_desempeno" and src in ("feature_pack",):
+            if meta_path.exists():
+                meta = json.load(open(meta_path, "r", encoding="utf-8"))
+                blocks = meta.get("blocks") or {}
+                if not bool(blocks.get("sentiment", False)):
+                    return True
+            return False
+
+        # 2) Score docente: si pair_meta usa score_base pero existe labeled, rebuild para intentar score_total
+        if fam == "score_docente" and src in ("pair_matrix", "pairs", "pair"):
+            labeled_path = None
+            try:
+                labeled_path = resolve_labeled_path(ds)
+            except Exception:
+                labeled_path = None
+            if labeled_path is not None and labeled_path.exists() and pair_meta_path.exists():
+                pm = json.load(open(pair_meta_path, "r", encoding="utf-8"))
+                if (pm.get("target_col") or "").lower() == "score_base_0_50":
+                    return True
+            return False
+
+        return False
+    except Exception:
+        # Si algo falla leyendo meta, NO forzamos rebuild por defecto.
+        return False
 
 
 def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
-    """Ejecuta preparación automática si `auto_prepare=True` y `data_ref` no existe.
-
-    El objetivo es minimizar acciones manuales antes de entrenar:
-
-    - Si ``data_source='unified_labeled'`` y falta el archivo, intenta construirlo.
-    - Si ``data_source='feature_pack'`` y falta el feature-pack, intenta construirlo.
-
-    Notas de diseño:
-
-    - Para ``feature_pack`` preferimos usar como insumo ``data/processed/<dataset_id>.parquet``
-      (salida de la pestaña **Data**) porque suele existir antes que el ``labeled``.
-    - Para metodologías ``acumulado`` / ``ventana`` se usa ``historico/unificado_labeled.parquet``
-      como fuente (si está disponible), porque ya contiene el histórico consolidado.
-
-    :param req: Request de entrenamiento.
-    :param data_ref: Ruta/URI principal resuelta según `data_source`.
+    """Ejecuta preparación automática si `auto_prepare=True` y el artefacto requerido no existe
+    (o existe pero es incompatible/incompleto para la family solicitada).
     """
     auto_prepare = bool(getattr(req, "auto_prepare", False))
     if not auto_prepare:
-        return
-
-    p = _abs_path(data_ref)
-    if p.exists():
         return
 
     ds = _dataset_id(req)
     data_source = str(getattr(req, "data_source", "feature_pack")).lower()
     metodologia = str(getattr(req, "metodologia", "periodo_actual")).lower()
 
+    # family puede venir top-level o dentro de hparams (retro-compat)
+    hparams = getattr(req, "hparams", None) or {}
+    family = str(getattr(req, "family", None) or hparams.get("family") or "").lower()
+
+    # Si ya existe, solo reconstruimos si detectamos “pack incompleto/incompatible”
+    p = _abs_path(data_ref)
+    if p.exists():
+        if data_source in ("feature_pack", "pair_matrix", "pairs", "pair") and _should_rebuild_feature_pack(str(ds), family=family, data_source=data_source):
+            pass  # seguimos para reconstruir con force=True
+        else:
+            return
+
     if data_source == "unified_labeled":
         _ensure_unified_labeled()
         return
 
-    if data_source == "feature_pack":
+    if data_source in ("feature_pack", "pair_matrix", "pairs", "pair"):
         if not ds:
             raise HTTPException(status_code=400, detail="auto_prepare requiere dataset_id/periodo_actual.")
 
@@ -543,32 +763,43 @@ def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
         if metodologia in ("acumulado", "ventana"):
             _ensure_unified_labeled()
             input_uri = "historico/unificado_labeled.parquet"
+            force_fp = False
         else:
-            # Caso normal: intentamos con processed (Data tab) -> labeled -> datasets
-            processed = BASE_DIR / "data" / "processed" / f"{ds}.parquet"
-            if processed.exists():
-                input_uri = _relpath(processed)
-            else:
-                try:
-                    labeled_path = resolve_labeled_path(str(ds))
-                    input_uri = _relpath(labeled_path)
-                except Exception:
-                    raw = BASE_DIR / "datasets" / f"{ds}.parquet"
-                    if raw.exists():
-                        input_uri = _relpath(raw)
-                    else:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                f"No se encontró un dataset fuente para construir feature-pack de {ds}. "
-                                "Opciones:\n"
-                                "- Procesa/carga el dataset en la pestaña Data (debe generar data/processed/<ds>.parquet)\n"
-                                "- O genera labeled (data/labeled/<ds>_beto.parquet)\n"
-                                "- O asegúrate de tener datasets/<ds>.parquet"
-                            ),
-                        )
+            # Caso normal: preferimos LABELED si existe (trae BETO y score_total_0_50 cuando aplica)
+            force_fp = False
 
-        _ensure_feature_pack(str(ds), input_uri=input_uri)
+            labeled_path = None
+            try:
+                labeled_path = resolve_labeled_path(str(ds))
+            except Exception:
+                labeled_path = None
+
+            processed = BASE_DIR / "data" / "processed" / f"{ds}.parquet"
+            raw = BASE_DIR / "datasets" / f"{ds}.parquet"
+
+            if labeled_path is not None and labeled_path.exists():
+                input_uri = _relpath(labeled_path)
+            elif processed.exists():
+                input_uri = _relpath(processed)
+            elif raw.exists():
+                input_uri = _relpath(raw)
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"No se encontró un dataset fuente para construir feature-pack de {ds}. "
+                        "Opciones:\n"
+                        "- Procesa/carga el dataset en la pestaña Data (data/processed/<ds>.parquet)\n"
+                        "- O genera labeled BETO (data/labeled/<ds>_beto.parquet)\n"
+                        "- O asegúrate de tener datasets/<ds>.parquet"
+                    ),
+                )
+
+            # Si el pack actual no sirve para la family, forzamos rebuild.
+            if _should_rebuild_feature_pack(str(ds), family=family, data_source=data_source):
+                force_fp = True
+
+        _ensure_feature_pack(str(ds), input_uri=input_uri, force=force_fp)
         return
 
     raise HTTPException(
@@ -578,6 +809,7 @@ def _auto_prepare_if_needed(req: EntrenarRequest, data_ref: str) -> None:
             "Genera primero data/labeled/<dataset>_beto.parquet desde la pestaña Datos."
         ),
     )
+
 
 
 def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
@@ -602,17 +834,19 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
 
     data_source = str(getattr(req, "data_source", "feature_pack")).lower()
 
-    if data_source == "feature_pack":
+    if data_source in ("feature_pack", "pair_matrix", "pairs", "pair"):
         pack_path = _abs_path(data_ref)
         if not pack_path.exists():
+            kind = "pair_matrix" if data_source in ("pair_matrix", "pairs", "pair") else "feature_pack"
             raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Feature-pack no encontrado: {pack_path}. "
-                "Activa auto_prepare=true al entrenar o llama a POST /modelos/feature-pack/prepare."
-            ),
-        )
+                status_code=404,
+                detail=(
+                    f"Artefacto de features no encontrado ({kind}): {pack_path}. "
+                    "Activa auto_prepare=true al entrenar o llama a POST /modelos/feature-pack/prepare."
+                ),
+            )
         return str(pack_path.resolve())
+
 
     df = _read_dataframe_any(data_ref)
 
@@ -648,23 +882,17 @@ def _build_run_hparams(req: EntrenarRequest, job_id: str) -> Dict[str, Any]:
     Construye hparams para el training garantizando:
 
     - NO incluir valores None (para evitar que el strategy reciba None y lo degrade a 'none').
-    - Defaults consistentes con el flujo nuevo:
-      - data_source=feature_pack
-      - target_mode=sentiment_probs
-      - split_mode=temporal
-      - val_ratio=0.2
-      - include_teacher_materia=True
-      - teacher_materia_mode='embed' (si include_teacher_materia=True)
+    - Defaults consistentes con el flujo nuevo.
     - Los campos explícitos del request tienen prioridad sobre req.hparams.
 
-    :param req: Request de entrenamiento.
-    :param job_id: Correlation/job id.
-    :return: Dict de hparams listo para pasar a PlantillaEntrenamiento.run().
+    Extensión Ruta 2 (score_docente):
+    - default data_source = pair_matrix
+    - default target_mode = score_total_0_50 (solo informativo; el target real lo dicta pair_meta)
+    - se pasan flags family/task/input_level/target_col e incremental config (window/replay/warm-start)
     """
     hp = _normalize_hparams(getattr(req, "hparams", None))
 
     # Evitar que hparams contenga claves reservadas del request (p.ej. epochs)
-    # ya que el número de épocas lo controla `req.epochs`.
     hp.pop("epochs", None)
 
     def put(key: str, value: Any) -> None:
@@ -674,9 +902,39 @@ def _build_run_hparams(req: EntrenarRequest, job_id: str) -> Dict[str, Any]:
 
     put("job_id", job_id)
 
+    family = str(getattr(req, "family", "sentiment_desempeno") or "sentiment_desempeno").lower()
+    put("family", family)
+    put("task_type", getattr(req, "task_type", None))
+    put("input_level", getattr(req, "input_level", None))
+    put("target_col", getattr(req, "target_col", None))
+
+    # Incremental config (si existe en el schema)
+    put("data_plan", getattr(req, "data_plan", None))
+    put("window_k", getattr(req, "window_k", None))
+    put("replay_size", getattr(req, "replay_size", None))
+    put("replay_strategy", getattr(req, "replay_strategy", None))
+    put("recency_lambda", getattr(req, "recency_lambda", None))
+    put("warm_start_from", getattr(req, "warm_start_from", None))
+    put("warm_start_run_id", getattr(req, "warm_start_run_id", None))
+
     # Defaults defensivos (si el request viene con None)
-    data_source = getattr(req, "data_source", None) or "feature_pack"
-    target_mode = getattr(req, "target_mode", None) or "sentiment_probs"
+    data_source = getattr(req, "data_source", None)
+    if data_source is None:
+        data_source = "pair_matrix" if family == "score_docente" else "feature_pack"
+
+    target_mode = getattr(req, "target_mode", None)
+
+    # Evitar confusión UI:
+    # - score_docente debe quedar con target_mode=score_only (aunque el schema default sea sentiment_probs)
+    if family == "score_docente":
+        if (target_mode is None) or (str(target_mode).lower() in ("sentiment_probs", "sentiment_label")):
+            target_mode = "score_only"
+    else:
+        # sentiment_desempeno: si alguien envía score_only por error, normalizamos al default
+        if (target_mode is None) or (str(target_mode).lower() == "score_only"):
+            target_mode = "sentiment_probs"
+
+
     split_mode = getattr(req, "split_mode", None) or "temporal"
     val_ratio = getattr(req, "val_ratio", None)
     if val_ratio is None:
@@ -691,15 +949,16 @@ def _build_run_hparams(req: EntrenarRequest, job_id: str) -> Dict[str, Any]:
     if (tm_mode is None) and bool(include_tm):
         tm_mode = "embed"
 
-    put("data_source", data_source)
+    put("data_source", str(data_source).lower())
     put("target_mode", target_mode)
     put("split_mode", split_mode)
-    put("val_ratio", val_ratio)
+    put("val_ratio", float(val_ratio))
     put("include_teacher_materia", bool(include_tm))
     # Importante: SOLO poner teacher_materia_mode si no es None
     put("teacher_materia_mode", tm_mode)
 
     return hp
+
 
 def _evaluate_model_metrics(
     model: Any,
@@ -835,7 +1094,13 @@ def _evaluate_model_metrics(
     summary="Verifica insumos para entrenar (labeled / unified_labeled / feature_pack)",
 )
 def readiness(dataset_id: str) -> ReadinessResponse:
-    """Verifica existencia de artefactos mínimos para entrenar un dataset_id."""
+    """Verifica existencia de artefactos mínimos para entrenar un dataset_id.
+
+    Extensión Ruta 2:
+    - Reporta pair_matrix/pair_meta (1 fila = 1 par docente–materia)
+    - Reporta score_col (target) desde pair_meta/meta.json
+    - Expone meta de calibración del score_total desde el labeled (si existe)
+    """
     try:
         labeled_path = resolve_labeled_path(dataset_id)
         labeled_ref = _relpath(labeled_path)
@@ -848,15 +1113,43 @@ def readiness(dataset_id: str) -> ReadinessResponse:
     unified_ok = _abs_path(unified_ref).exists()
 
     feat_ref = f"artifacts/features/{dataset_id}/train_matrix.parquet"
+    feat_meta_ref = f"artifacts/features/{dataset_id}/meta.json"
     feat_ok = _abs_path(feat_ref).exists()
+
+    pair_ref = f"artifacts/features/{dataset_id}/pair_matrix.parquet"
+    pair_meta_ref = f"artifacts/features/{dataset_id}/pair_meta.json"
+    pair_ok = _abs_path(pair_ref).exists()
+
+    pair_meta = _read_json_if_exists(pair_meta_ref) if _abs_path(pair_meta_ref).exists() else None
+    pack_meta = _read_json_if_exists(feat_meta_ref) if _abs_path(feat_meta_ref).exists() else None
+
+    score_col = None
+    if isinstance(pair_meta, dict):
+        score_col = pair_meta.get("target_col")
+    if not score_col and isinstance(pack_meta, dict):
+        score_col = pack_meta.get("score_col")
+
+    labeled_score_meta = _extract_labeled_score_meta(labeled_ref) if labeled_ok else None
 
     return ReadinessResponse(
         dataset_id=dataset_id,
         labeled_exists=bool(labeled_ok),
         unified_labeled_exists=bool(unified_ok),
         feature_pack_exists=bool(feat_ok),
-        paths={"labeled": labeled_ref, "unified_labeled": unified_ref, "feature_pack": feat_ref},
+        pair_matrix_exists=bool(pair_ok),
+        score_col=score_col,
+        pair_meta=pair_meta,
+        labeled_score_meta=labeled_score_meta,
+        paths={
+            "labeled": labeled_ref,
+            "unified_labeled": unified_ref,
+            "feature_pack": feat_ref,
+            "feature_pack_meta": feat_meta_ref,
+            "pair_matrix": pair_ref,
+            "pair_meta": pair_meta_ref,
+        },
     )
+
 
 
 def _temporal_split(n: int, val_ratio: float) -> tuple[np.ndarray, np.ndarray]:
@@ -966,6 +1259,23 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         # hparams robusto (sin None + defaults)
         run_hparams = _build_run_hparams(req, job_id)
 
+        # ------------------------------------------------------------
+        # Warm-start: resolver warm_start_run_id -> warm_start_path
+        # ------------------------------------------------------------
+        try:
+            warm_run_id = run_hparams.get("warm_start_run_id")
+            if warm_run_id:
+                # Importar RUNS_DIR desde runs_io (si no está ya importado)
+                from ...utils.runs_io import RUNS_DIR  # noqa: WPS433
+
+                warm_dir = (RUNS_DIR / str(warm_run_id)).resolve()
+                if warm_dir.exists():
+                    run_hparams["warm_start_path"] = str(warm_dir)
+        except Exception:
+            # Nunca tumbar el entrenamiento por warm-start
+            pass
+
+
         out = tpl.run(
             selected_ref,
             req.epochs,
@@ -986,23 +1296,27 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             st.update(out)
 
         if out.get("status") == "completed":
-            # 1) Calcular métricas REALES (accuracy/f1/confusion) sobre el mismo dataset
-            #    y con el mismo filtrado del modelo (_prepare_xy).
-            try:
-                df_eval = pd.read_parquet(str(selected_ref))
-                eval_metrics = _evaluate_post_training_metrics(estrategia, df_eval, run_hparams)
+            # 1) Métricas post-entrenamiento (solo clasificación legacy).
+            #    Para score_docente (regresión) las métricas se reportan desde la estrategia (Paso 5)
+            #    y/o se computan con el esquema de validación temporal específico.
+            family = str(getattr(req, "family", "sentiment_desempeno") or "sentiment_desempeno").lower()
+            if family != "score_docente":
+                try:
+                    df_eval = pd.read_parquet(str(selected_ref))
+                    eval_metrics = _evaluate_post_training_metrics(estrategia, df_eval, run_hparams)
 
-                merged = dict(out.get("metrics") or {})
-                merged.update(eval_metrics)
+                    merged = dict(out.get("metrics") or {})
+                    merged.update(eval_metrics)
 
-                out["metrics"] = merged
-                st["metrics"] = merged
-            except Exception as e_eval:
-                # No tumbar el run por evaluación: deja rastro para debug
-                merged = dict(out.get("metrics") or {})
-                merged["eval_error"] = str(e_eval)
-                out["metrics"] = merged
-                st["metrics"] = merged
+                    out["metrics"] = merged
+                    st["metrics"] = merged
+                except Exception as e_eval:
+                    # No tumbar el run por evaluación: deja rastro para debug
+                    merged = dict(out.get("metrics") or {})
+                    merged["eval_error"] = str(e_eval)
+                    out["metrics"] = merged
+                    st["metrics"] = merged
+
 
             # 2) Persistir run (CON métricas reales ya mergeadas)
             ds = _dataset_id(req) or "unknown"
@@ -1027,12 +1341,19 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 estrategia.save(str(run_dir))
 
             # 4) Actualizar champion usando métricas reales
-            upd = maybe_update_champion(
+            upd = _call_with_accepted_kwargs(
+                maybe_update_champion,
                 dataset_id=str(ds),
                 model_name=str(req.modelo),
                 metrics=out.get("metrics") or {},
                 source_run_id=run_id,
+                family=getattr(req, "family", None),
+                task_type=getattr(req, "task_type", None),
+                input_level=getattr(req, "input_level", None),
+                target_col=getattr(req, "target_col", None),
+                data_plan=getattr(req, "data_plan", None),
             )
+
 
             st["run_id"] = run_id
             st["artifact_path"] = str(run_dir)
@@ -1091,32 +1412,34 @@ def prepare_feature_pack_endpoint(
         if not _abs_path(src_ref).exists():
             raise HTTPException(status_code=404, detail=f"input_uri no existe: {_abs_path(src_ref)}")
     else:
-        # Resolver automáticamente el origen.
+        # Resolver automáticamente el origen. Preferimos:
+        # 1) labeled BETO (si existe)  -> incluye p_neg/p_neu/p_pos y permite evaluación real
+        # 2) processed (Data Tab)
+        # 3) datasets/<ds>.parquet
         candidates = []
-        candidates.append(BASE_DIR / "data" / "processed" / f"{ds}.parquet")
         try:
-            labeled = resolve_labeled_path(ds)
+            labeled = resolve_labeled_path(str(ds))
             candidates.append(labeled)
         except Exception:
             pass
+        candidates.append(BASE_DIR / "data" / "processed" / f"{ds}.parquet")
         candidates.append(BASE_DIR / "datasets" / f"{ds}.parquet")
 
-        src_ref = None
-        for c in candidates:
-            if c.exists():
-                src_ref = _relpath(c)
-                break
-
-        if not src_ref:
+        src = next((p for p in candidates if p.exists()), None)
+        if not src:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"No se pudo resolver input_uri para {ds}. "
-                    "Primero procesa el dataset (data/processed), o genera labeled, o coloca el parquet en datasets/."
+                    f"No se encontró dataset fuente para feature-pack de {ds}. Opciones:\n"
+                    "- Genera labeled BETO (data/labeled/<ds>_beto.parquet)\n"
+                    "- O procesa/carga el dataset en Data (data/processed/<ds>.parquet)\n"
+                    "- O asegúrate de tener datasets/<ds>.parquet"
                 ),
             )
+        src_ref = _relpath(src)
 
-    return _ensure_feature_pack(ds, input_uri=src_ref, force=bool(force))
+    return _ensure_feature_pack(str(ds), input_uri=src_ref, force=force)
+
 
 
 @router.post("/entrenar", response_model=EntrenarResponse)
@@ -1134,6 +1457,25 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
     # Defaults consistentes (y sin None) para reflejar en UI
     resolved_run_hparams = _build_run_hparams(req, job_id)
 
+    # --- NUEVO: inferir target_col de forma consistente ---
+    inferred_target_col = _infer_target_col(req, resolved_run_hparams)
+
+    # --- NUEVO: asegurar que el training reciba metadata mínima en hparams (sin meter None) ---
+    _maybe_set(hp_norm_raw, "family", getattr(req, "family", None))
+    _maybe_set(hp_norm_raw, "task_type", getattr(req, "task_type", None))
+    _maybe_set(hp_norm_raw, "input_level", getattr(req, "input_level", None))
+    _maybe_set(hp_norm_raw, "data_plan", getattr(req, "data_plan", None))
+
+    # defaults ya resueltos (si aplican)
+    _maybe_set(hp_norm_raw, "data_source", resolved_run_hparams.get("data_source"))
+    _maybe_set(hp_norm_raw, "target_mode", resolved_run_hparams.get("target_mode"))
+    _maybe_set(hp_norm_raw, "split_mode", resolved_run_hparams.get("split_mode"))
+
+    # target_col inferido (clave para evaluación/snapshot)
+    _maybe_set(hp_norm_raw, "target_col", inferred_target_col)
+
+
+
     # IMPORTANTE (Item 1):
     # - No permitir que hp_norm_ui contenga 'epochs' (u otros reservados) que pisen req.epochs.
     # - Colocar epochs AL FINAL del dict params para que siempre sea el valor del request.
@@ -1143,6 +1485,18 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
         "periodo_actual": getattr(req, "periodo_actual", None),
         "metodologia": getattr(req, "metodologia", "periodo_actual"),
         "ventana_n": getattr(req, "ventana_n", None),
+        # Ruta 2 (families)
+        "family": getattr(req, "family", "sentiment_desempeno"),
+        "task_type": getattr(req, "task_type", None),
+        "input_level": getattr(req, "input_level", None),
+        "target_col": inferred_target_col,
+        # incremental (solo aplica a score_docente; se muestra si viene)
+        "data_plan": getattr(req, "data_plan", None),
+        "window_k": getattr(req, "window_k", None),
+        "replay_size": getattr(req, "replay_size", None),
+        "replay_strategy": getattr(req, "replay_strategy", None),
+        "warm_start_from": getattr(req, "warm_start_from", None),
+        "warm_start_run_id": getattr(req, "warm_start_run_id", None),
         # reflejar defaults consistentes (y ya “limpios”)
         "data_source": resolved_run_hparams.get("data_source", "feature_pack"),
         "target_mode": resolved_run_hparams.get("target_mode", "sentiment_probs"),
@@ -1156,6 +1510,7 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
         # Item 1: epochs del request SIEMPRE
         "epochs": req.epochs,
     }
+
 
     _ESTADOS[job_id] = {
         "job_id": job_id,
@@ -1172,10 +1527,16 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
     }
 
     # Normaliza hparams, preservando el resto del request intacto
+    update_payload: Dict[str, Any] = {"hparams": hp_norm_raw}
+
+    # Persistimos también target_col inferido en el request (para que quede en params.req.target_col)
+    if inferred_target_col is not None:
+        update_payload["target_col"] = inferred_target_col
+
     try:
-        req_norm = req.model_copy(update={"hparams": hp_norm_raw})
+        req_norm = req.model_copy(update=update_payload)
     except AttributeError:
-        req_norm = req.copy(update={"hparams": hp_norm_raw})
+        req_norm = req.copy(update=update_payload)
 
     bg.add_task(_run_training, job_id, req_norm)
     return EntrenarResponse(job_id=job_id, status="running", message="Entrenamiento lanzado")
@@ -1194,19 +1555,31 @@ def estado(job_id: str) -> EstadoResponse:
     summary="Promueve un run existente a champion (manual)",
 )
 def promote_champion(req: PromoteChampionRequest) -> ChampionInfo:
-    """Promueve manualmente un run existente a champion usando runs_io."""
+    """
+    Promueve un run a champion.
+
+    - Si el request trae `family`, se pasa a la capa runs_io.
+    - Si runs_io no acepta `family` todavía, no rompe (helper filtra).
+    """
     try:
-        champ = promote_run_to_champion(
+        champ = _call_with_accepted_kwargs(
+            promote_run_to_champion,
             dataset_id=req.dataset_id,
             run_id=req.run_id,
             model_name=req.model_name,
+            family=getattr(req, "family", None),
         )
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo promover champion: {e}") from e
 
-    return ChampionInfo(**champ)
+        # FIX: fallback defensivo para source_run_id (misma lógica que GET /champion)
+        if isinstance(champ, dict) and not champ.get("source_run_id"):
+            m = champ.get("metrics") or {}
+            if isinstance(m, dict) and m.get("run_id"):
+                champ = dict(champ)
+                champ["source_run_id"] = m.get("run_id")
+
+        return ChampionInfo(**champ)
+    except Exception as e:
+        raise HTTPException(status_code=409, detail=f"No se pudo promover champion: {e}")
 
 
 @router.get(
@@ -1219,11 +1592,29 @@ def get_runs(
     dataset: Optional[str] = None,
     dataset_id: Optional[str] = None,
     periodo: Optional[str] = None,
-) -> list[RunSummary]:
-    """Devuelve un resumen de runs encontrados en artifacts/runs."""
+    family: Optional[str] = None,  # <-- NUEVO
+) -> List[RunSummary]:
+    """Devuelve un resumen de runs encontrados en artifacts/runs.
+
+    Extensión Ruta 2:
+    - Permite filtrar por `family` (sentiment_desempeno | score_docente).
+    - Compatibilidad: si un run legacy no tiene `family`, se asume sentiment_desempeno.
+    """
     ds = dataset_id or dataset or periodo
-    runs = list_runs(model_name=model_name, dataset_id=ds)
+
+    runs = _call_with_accepted_kwargs(list_runs, model_name=model_name, dataset_id=ds, periodo=ds, family=family)
+
+    if family:
+        fam = str(family).lower()
+        filtered = []
+        for r in (runs or []):
+            rf = (r.get("family") or "sentiment_desempeno")
+            if str(rf).lower() == fam:
+                filtered.append(r)
+        runs = filtered
+
     return [RunSummary(**r) for r in runs]
+
 
 
 @router.get(
@@ -1245,20 +1636,69 @@ def get_run_details(run_id: str) -> RunDetails:
     summary="Devuelve info del modelo campeón actual (por dataset o legacy)",
 )
 def get_champion(
-    model_name: Optional[str] = None,
-    dataset: Optional[str] = None,
     dataset_id: Optional[str] = None,
+    dataset: Optional[str] = None,
     periodo: Optional[str] = None,
-) -> ChampionInfo:
-    """Devuelve el campeón actual."""
+    model_name: str = "rbm_restringida",
+    family: Optional[str] = None,
+):
     ds = dataset_id or dataset or periodo
+    if not ds:
+        raise HTTPException(status_code=400, detail="dataset_id (o dataset/periodo) es requerido")
 
-    if ds:
-        champ = load_dataset_champion(ds)
-        if champ and (not model_name or champ.get("model_name") == model_name):
-            return ChampionInfo(**champ)
+    # 1) Cargar champion (usa wrapper si existe y acepta kwargs)
+    try:
+        champ = _call_with_accepted_kwargs(
+            load_current_champion,
+            dataset_id=str(ds),
+            model_name=model_name,
+            family=family,
+        )
+        # fallback por si tu load_current_champion no acepta family/model_name en alguna versión
+        if champ is None:
+            champ = _call_with_accepted_kwargs(
+                load_dataset_champion,
+                dataset_id=str(ds),
+                family=family,
+            )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        # Importante: no dejar que esto se vaya como 500 "text/plain" opaco
+        raise HTTPException(status_code=500, detail=f"No se pudo cargar champion: {e}")
 
-    champ = load_current_champion(model_name=model_name, dataset_id=ds)
     if not champ:
-        raise HTTPException(status_code=404, detail="No hay campeón registrado")
-    return ChampionInfo(**champ)
+        raise HTTPException(
+            status_code=404,
+            detail=f"No hay champion para dataset_id={ds}" + (f" y family={family}" if family else ""),
+        )
+
+    # 2) Backfill mínimo de campos críticos (sin tocar lo que ya viene bien)
+    # family (prioridad: champ > query)
+    champ_family = champ.get("family") or family
+    if champ_family:
+        champ["family"] = champ_family
+
+    # source_run_id (si falta, derivar de metrics.run_id)
+    if not champ.get("source_run_id"):
+        champ["source_run_id"] = (champ.get("metrics") or {}).get("run_id")
+
+    # path es OBLIGATORIO en ChampionInfo => si falta, lo calculamos
+    if not champ.get("path"):
+        artifacts_dir = BASE_DIR / "artifacts" / "champions"
+        ds_dir = (artifacts_dir / champ_family / str(ds)) if champ_family else (artifacts_dir / str(ds))
+
+        mn = champ.get("model_name") or model_name
+        model_dir = ds_dir / str(mn) if mn else None
+
+        # Mantener comportamiento: si existe el directorio del modelo úsalo, si no usa ds_dir
+        if model_dir and model_dir.exists():
+            champ["path"] = str(model_dir)
+        else:
+            champ["path"] = str(ds_dir)
+
+    # 3) Validar explícitamente aquí para evitar response-validation 500 opaco
+    try:
+        return ChampionInfo(**champ)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Champion inválido para ChampionInfo: {e}")

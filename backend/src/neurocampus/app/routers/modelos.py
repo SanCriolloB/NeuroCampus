@@ -1662,10 +1662,14 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
             else:
                 item["status"] = "completed"
                 item["run_id"] = child.get("run_id")
-                # metrics en estado del child puede no contener TODO; para sweep usamos lo que guardó el job
-                item["metrics"] = child.get("metrics") or {}
 
-                sc = champion_score(item["metrics"] or {})
+                # Fuente de verdad: metrics.json del run
+                from ...utils.runs_io import load_run_metrics  # noqa: WPS433
+
+                metrics = load_run_metrics(str(item["run_id"]))
+                item["metrics"] = metrics
+
+                sc = champion_score(metrics or {})
                 item["score"] = [sc[0], sc[1]]
 
                 # best por modelo
@@ -1682,6 +1686,28 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
             st["progress"] = float(i) / float(max(1, len(cand_state)))
             st["status"] = "running"
             _ESTADOS[sweep_id] = st
+
+        # Hardening: si por cualquier razón no se setearon best_* durante el loop,
+        # recomputar desde cand_state ya completado
+        if best_overall is None:
+            for it in cand_state:
+                if it.get("status") != "completed" or not it.get("run_id"):
+                    continue
+                if not it.get("metrics"):
+                    from ...utils.runs_io import load_run_metrics  # noqa: WPS433
+                    it["metrics"] = load_run_metrics(str(it["run_id"]))
+                if not it.get("score"):
+                    sc = champion_score(it["metrics"] or {})
+                    it["score"] = [sc[0], sc[1]]
+
+                m = it["model_name"]
+                prev = best_by_model.get(m)
+                if (prev is None) or (tuple(it["score"]) > tuple(prev["score"])):
+                    best_by_model[m] = dict(it)
+
+                if (best_overall is None) or (tuple(it["score"]) > tuple(best_overall["score"])):
+                    best_overall = dict(it)
+
 
         # 4) Decidir si actualiza champion (solo si mejora al champion actual)
         champion_updated = False

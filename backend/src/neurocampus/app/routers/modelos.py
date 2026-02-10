@@ -2139,16 +2139,24 @@ def get_sweep_summary(sweep_id: str) -> SweepSummary:
             summary_path=str(p) if p.exists() else None,
         )
     payload = json.loads(p.read_text(encoding="utf-8"))
-    # Self-healing: si best_overall quedó vacío/nulo, recomputar desde artifacts
+
+    # Normalización robusta:
+    # - Si best_overall no viene o viene vacío, derivarlo desde best_by_model (ya calculado)
     bo = payload.get("best_overall")
     if (bo is None) or (isinstance(bo, dict) and not bo.get("run_id")):
-        candidates = payload.get("candidates") or []
-        best_overall, best_by_model = _recompute_sweep_winners(candidates)
-        payload["best_overall"] = best_overall
-        payload["best_by_model"] = best_by_model
-        payload["candidates"] = candidates
-        # Reescribir para consistencia offline/UI
-        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        bbm = payload.get("best_by_model") or {}
+        if isinstance(bbm, dict) and bbm:
+            def _score_tuple(v: dict[str, Any]) -> tuple[int, float]:
+                s = v.get("score") or [-999, -1e30]
+                try:
+                    return (int(s[0]), float(s[1]))
+                except Exception:
+                    return (-999, -1e30)
+
+            payload["best_overall"] = max(bbm.values(), key=_score_tuple)
+
+            # Persistir la corrección para UI/offline (idempotente)
+            p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return SweepSummary(**payload)
 

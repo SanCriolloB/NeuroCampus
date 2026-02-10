@@ -247,6 +247,11 @@ def _build_pair_matrix(
     pair["n_docente"] = pd.to_numeric(pair.get("n_docente"), errors="coerce").fillna(0).astype(int)
     pair["n_materia"] = pd.to_numeric(pair.get("n_materia"), errors="coerce").fillna(0).astype(int)
 
+    # Asegurar columna de trazabilidad temporal para incremental window / split temporal
+    if "periodo" not in pair.columns:
+        pair = pair.copy()
+        pair["periodo"] = str(dataset_id)
+
     meta: Dict[str, Any] = {
         "dataset_id": str(dataset_id),
         "created_at": dt.datetime.utcnow().isoformat() + "Z",
@@ -256,6 +261,8 @@ def _build_pair_matrix(
         "tfidf_dims": int(len(tfidf_cols)),
         "has_text": bool(has_text),
         "has_accept": bool(has_accept),
+        "has_periodo": True,
+        "periodo_col": "periodo",
         "n_pairs": int(len(pair)),
         "n_docentes": int(pair["teacher_id"].nunique(dropna=True)) if "teacher_id" in pair.columns else 0,
         "n_materias": int(pair["materia_id"].nunique(dropna=True)) if "materia_id" in pair.columns else 0,
@@ -272,6 +279,7 @@ def _build_pair_matrix(
     }
 
     return pair, meta
+
 
 
 def prepare_feature_pack(

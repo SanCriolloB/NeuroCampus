@@ -787,6 +787,8 @@ def _run_features_prepare_job(job_id: str) -> None:
         out_dir = str(out_dir_path)
 
         train_path = out_dir_path / "train_matrix.parquet"
+        pair_path = out_dir_path / "pair_matrix.parquet"
+        pair_meta_path = out_dir_path / "pair_meta.json"
 
         # Payload de rutas esperado (útil aun si ya existía)
         artifacts_expected = {
@@ -795,10 +797,13 @@ def _run_features_prepare_job(job_id: str) -> None:
             "materia_index": _rel_project(out_dir_path / "materia_index.json"),
             "bins": _rel_project(out_dir_path / "bins.json"),
             "meta": _rel_project(out_dir_path / "meta.json"),
+            # Ruta 2 (pair-level)
+            "pair_matrix": _rel_project(pair_path),
+            "pair_meta": _rel_project(pair_meta_path),
         }
 
         # Idempotencia: si ya existe y no es force, no recalcular
-        if train_path.exists() and not force:
+        if train_path.exists() and pair_path.exists() and pair_meta_path.exists() and not force:
             job["status"] = "done"
             job["finished_at"] = _now_iso()
             job["input_uri"] = input_uri

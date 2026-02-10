@@ -1154,7 +1154,10 @@ def promote_run_to_champion(
     legacy_model_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(run_dir, legacy_model_dir, dirs_exist_ok=True)
 
-    return champion
+    # Para API/UI: retornar champion enriquecido con metrics (sin hacer champion.json pesado)
+    champion_api = dict(champion)
+    champion_api["metrics"] = metrics
+    return champion_api
 
 
 

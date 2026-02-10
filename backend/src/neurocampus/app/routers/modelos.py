@@ -1681,7 +1681,7 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
                 cand_req = base_req.model_copy(update={
                     "modelo": item["model_name"],
                     "hparams": item["hparams"],
-                    "data_ref": str(selected_ref),   # fuerza el mismo dataset para todos
+                    "data_ref": str(selected_ref),
                     "auto_prepare": False,
                 })
             except AttributeError:
@@ -1692,8 +1692,30 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
                     "auto_prepare": False,
                 })
 
-            # correr “un entrenamiento normal” y capturar resultado desde _ESTADOS del child
-            _run_training(child_job_id, cand_req)
+            # --- Normalización igual que /modelos/entrenar (para que params.req quede consistente) ---
+            # Usa la misma función que el flujo normal de entrenamiento.
+            resolved = _build_run_hparams(cand_req, child_job_id)
+
+            # Inferir target_col (si aplica) de forma consistente con el endpoint /modelos/entrenar
+            inferred_target_col = _infer_target_col(cand_req, resolved)
+            update_payload = {
+                "hparams": (cand_req.hparams or {}),
+                "data_source": resolved.get("data_source"),
+                "target_mode": resolved.get("target_mode"),
+                "split_mode": resolved.get("split_mode"),
+                "val_ratio": resolved.get("val_ratio"),
+                "include_teacher_materia": resolved.get("include_teacher_materia"),
+                "teacher_materia_mode": resolved.get("teacher_materia_mode"),
+            }
+            if inferred_target_col is not None:
+                update_payload["target_col"] = inferred_target_col
+
+            try:
+                cand_req_norm = cand_req.model_copy(update=update_payload)
+            except AttributeError:
+                cand_req_norm = cand_req.copy(update=update_payload)
+
+            _run_training(child_job_id, cand_req_norm)
 
             child = _ESTADOS.get(child_job_id) or {}
             status = child.get("status")

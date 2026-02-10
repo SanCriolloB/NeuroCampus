@@ -196,6 +196,16 @@ def _try_read_json(path: Path) -> dict[str, Any] | None:
     except Exception:
         return None
 
+def load_run_metrics(run_id: str) -> Dict[str, Any]:
+    """
+    Carga artifacts/runs/<run_id>/metrics.json.
+    Fuente de verdad para métricas (evita depender de _ESTADOS).
+    """
+    p = (RUNS_DIR / str(run_id) / "metrics.json").resolve()
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
+
 
 def _extract_req_from_params(params: Any) -> dict[str, Any]:
     """params puede venir como {'req': {...}} o directamente {...}."""

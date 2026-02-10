@@ -485,6 +485,98 @@ class EntrenarResponse(BaseModel):
     status: Literal["queued", "running"] = Field(default="queued")
     message: str = Field(default="Entrenamiento lanzado")
 
+# ---------------------------------------------------------------------------
+# Sweep (orquestación batch: modelo × hiperparámetros)
+# ---------------------------------------------------------------------------
+
+class SweepCandidate(BaseModel):
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    model_name: ModeloName
+    hparams: Dict[str, Any] = Field(default_factory=dict)
+
+    status: JobStatus = Field(default="queued")
+    child_job_id: Optional[str] = None
+    run_id: Optional[str] = None
+    metrics: Optional[Dict[str, Any]] = None
+    score: Optional[List[Any]] = None  # serializable: [tier, score]
+    error: Optional[str] = None
+
+
+class SweepEntrenarRequest(BaseModel):
+    """
+    Lanza un sweep (barrido) entrenando múltiples modelos y múltiples hparams.
+
+    - Usa SOLO modelos existentes (rbm_general, rbm_restringida, dbm_manual).
+    - Reutiliza el mismo flujo de entrenamiento/evaluación que /modelos/entrenar.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    dataset_id: str
+    family: Family = "score_docente"
+    task_type: Optional[TaskType] = None
+    input_level: Optional[InputLevel] = None
+
+    data_source: DataSource = "pair_matrix"
+    epochs: int = 5
+
+    # incremental (score_docente)
+    data_plan: Optional[DataPlan] = None
+    window_k: Optional[int] = None
+    replay_size: Optional[int] = None
+    replay_strategy: ReplayStrategy = "uniform"
+    recency_lambda: Optional[float] = None
+
+    warm_start_from: Optional[WarmStartFrom] = None
+    warm_start_run_id: Optional[str] = None
+
+    # selección
+    modelos: List[ModeloName] = Field(min_length=1)
+
+    # base hparams (se mezclan con cada combinación)
+    base_hparams: Dict[str, Any] = Field(default_factory=dict)
+
+    # grid global (aplica a todos los modelos si no hay override por modelo)
+    hparams_grid: Optional[List[Dict[str, Any]]] = None
+
+    # override por modelo: {"rbm_general":[{...},{...}], "dbm_manual":[{...}]}
+    hparams_by_model: Optional[Dict[str, List[Dict[str, Any]]]] = None
+
+    # comportamiento
+    auto_promote_champion: bool = True
+    max_total_runs: int = 50
+
+
+class SweepEntrenarResponse(BaseModel):
+    sweep_id: str
+    status: Literal["queued", "running"] = "queued"
+    message: str = "Sweep lanzado"
+
+
+class SweepSummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sweep_id: str
+    dataset_id: str
+    family: Family
+    status: JobStatus
+
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+    n_candidates: int = 0
+    n_completed: int = 0
+    n_failed: int = 0
+
+    best_overall: Optional[SweepCandidate] = None
+    best_by_model: Dict[str, SweepCandidate] = Field(default_factory=dict)
+
+    champion_updated: Optional[bool] = None
+    champion_run_id: Optional[str] = None
+
+    summary_path: Optional[str] = None
+    candidates: List[SweepCandidate] = Field(default_factory=list)
+
 
 class EstadoResponse(BaseModel):
     """
@@ -510,6 +602,12 @@ class EstadoResponse(BaseModel):
     artifact_path: Optional[str] = Field(default=None, description="Ruta al directorio de artifacts del run.")
     champion_promoted: Optional[bool] = Field(default=None, description="True si el run fue promovido a champion.")
     time_total_ms: Optional[float] = Field(default=None, description="Tiempo total del job (ms).")
+
+    # Sweep (opcional)
+    job_type: Optional[Literal["train", "sweep"]] = Field(default=None)
+    sweep_summary_path: Optional[str] = Field(default=None)
+    sweep_best_overall: Optional[Dict[str, Any]] = Field(default=None)
+    sweep_best_by_model: Optional[Dict[str, Any]] = Field(default=None)
 
     error: Optional[str] = Field(default=None, description="Mensaje de error si falló.")
 

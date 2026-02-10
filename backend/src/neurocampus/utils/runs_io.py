@@ -53,7 +53,7 @@ Compatibilidad
 """
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List
 
 import re
 import yaml
@@ -71,8 +71,231 @@ BASE_DIR = Path(__file__).resolve().parents[4]  # .../backend/src/neurocampus/ut
 ARTIFACTS_DIR = Path(os.getenv("NC_ARTIFACTS_DIR", BASE_DIR / "artifacts"))
 RUNS_DIR = ARTIFACTS_DIR / "runs"
 CHAMPIONS_DIR = ARTIFACTS_DIR / "champions"
-
+RUNS_DIR = BASE_DIR / "artifacts" / "runs"
 _DATASET_STEM_RE = re.compile(r"^(?P<base>.+?)(_beto.*)?$", re.IGNORECASE)
+LEGACY_CHAMPIONS_DIR = ARTIFACTS_DIR / "champions"
+LEGACY_CHAMPIONS_DIR_MODELS = LEGACY_CHAMPIONS_DIR / "models"
+
+# ---------------------------------------------------------------------------
+# Helpers base (faltantes en el archivo actual)
+# ---------------------------------------------------------------------------
+
+def _try_load_json(p: Path) -> dict[str, Any] | None:
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+def ensure_dir(p: Path) -> Path:
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def now_utc_iso() -> str:
+    return dt.datetime.utcnow().isoformat() + "Z"
+
+
+def slug(text: str) -> str:
+    """
+    Slug estable para nombres de carpeta/archivo.
+    (Se usa en champions/<family>/<dataset_id> y runs)
+    """
+    s = str(text or "").strip().lower()
+    s = re.sub(r"[^a-z0-9._-]+", "_", s)
+    return s.strip("_") or "x"
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f) or {}
+
+
+def _abs_path(p: str | Path) -> Path:
+    pp = Path(p)
+    return pp if pp.is_absolute() else (BASE_DIR / pp)
+
+def _norm_str(x: Any) -> str | None:
+    if x is None:
+        return None
+    s = str(x).strip()
+    return s if s else None
+
+
+def _deep_get(d: Any, *keys: str) -> Any:
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def _extract_req_field(metrics: dict[str, Any], field: str) -> Any:
+    """
+    Intenta leer un campo desde:
+      - top-level metrics[field]
+      - metrics['params']['req'][field]
+    """
+    if not isinstance(metrics, dict):
+        return None
+    if field in metrics:
+        return metrics.get(field)
+    return _deep_get(metrics, "params", "req", field)
+
+
+# ---------------------------------------------------------------------------
+# Champions family-aware + metadata estable en runs
+# ---------------------------------------------------------------------------
+
+def _family_slug(family: Optional[str]) -> Optional[str]:
+    fam = (family or "").strip()
+    return _slug(fam) if fam else None
+
+
+def _champions_ds_dir(dataset_id: str, family: Optional[str] = None) -> Path:
+    """Directorio de champions para un dataset.
+
+    Si `family` es provista, usamos la estructura:
+        artifacts/champions/<family>/<dataset_id>/
+
+    Caso legacy (sin family):
+        artifacts/champions/<dataset_id>/
+    """
+    ds_slug = _slug(dataset_id)
+    if family:
+        fam_slug = _slug(str(family))
+        return CHAMPIONS_DIR / fam_slug / ds_slug
+    return CHAMPIONS_DIR / ds_slug
+
+
+
+def _ensure_champions_ds_dir(dataset_id: str, family: str | None = None) -> Path:
+    return ensure_dir(_champions_ds_dir(dataset_id, family=family))
+
+
+def _champions_family_root(family: str) -> Path:
+    """champions/<family> (sin crear)."""
+    fam = _family_slug(family)
+    if not fam:
+        raise ValueError("family vacío para champions/<family>")
+    return CHAMPIONS_DIR / fam
+
+
+def _ensure_champions_family_root(family: str) -> Path:
+    return ensure_dir(_champions_family_root(family))
+
+
+def _try_read_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return _read_json(path)
+    except Exception:
+        return None
+
+
+def _extract_req_from_params(params: Any) -> dict[str, Any]:
+    """params puede venir como {'req': {...}} o directamente {...}."""
+    if isinstance(params, dict):
+        if isinstance(params.get("req"), dict):
+            return params["req"]
+        return params
+    return {}
+
+
+def _extract_run_context_from_metrics(metrics_payload: dict[str, Any]) -> dict[str, Any]:
+    """Saca contexto estable desde params.req (o fallback a top-level)."""
+    params = metrics_payload.get("params") or {}
+    req = _extract_req_from_params(params)
+
+    def pick(key: str) -> Any:
+        v = req.get(key)
+        return v if v is not None else metrics_payload.get(key)
+
+    ctx = {
+        "family": pick("family"),
+        "task_type": pick("task_type"),
+        "input_level": pick("input_level"),
+        "target_col": pick("target_col"),
+        "data_plan": pick("data_plan"),
+        "data_source": pick("data_source"),
+        "target_mode": pick("target_mode"),
+        "split_mode": pick("split_mode"),
+        "val_ratio": pick("val_ratio"),
+        # incremental / warm-start (si aplica)
+        "window_k": req.get("window_k"),
+        "replay_size": req.get("replay_size"),
+        "replay_strategy": req.get("replay_strategy"),
+        "warm_start_from": req.get("warm_start_from"),
+        "warm_start_run_id": req.get("warm_start_run_id"),
+    }
+    return ctx
+
+
+def _data_meta_from_data_ref(data_ref: str | None) -> dict[str, Any] | None:
+    """
+    Metadata mínima para auditoría/compatibilidad.
+    - feature_pack -> lee meta.json
+    - pair_matrix  -> lee pair_meta.json
+    """
+    if not data_ref:
+        return None
+
+    p = _abs_path(data_ref)
+    if not p.exists():
+        return None
+
+    meta: dict[str, Any] = {"data_ref_basename": p.name}
+
+    if p.name == "train_matrix.parquet":
+        m = _try_read_json(p.parent / "meta.json")
+        if m:
+            meta.update(
+                {
+                    "input_uri": m.get("input_uri"),
+                    "created_at": m.get("created_at"),
+                    "tfidf_dims": m.get("tfidf_dims"),
+                    "blocks": m.get("blocks"),
+                    "has_text": m.get("has_text"),
+                    "has_accept": m.get("has_accept"),
+                    "n_columns": (len(m["columns"]) if isinstance(m.get("columns"), list) else None),
+                }
+            )
+
+    if p.name == "pair_matrix.parquet":
+        pm = _try_read_json(p.parent / "pair_meta.json")
+        if pm:
+            meta.update(
+                {
+                    "created_at": pm.get("created_at"),
+                    "tfidf_dims": pm.get("tfidf_dims"),
+                    "blocks": pm.get("blocks"),
+                    "target_col_pair": pm.get("target_col"),
+                    "n_pairs": pm.get("n_pairs"),
+                    "n_par_stats": pm.get("n_par_stats") if isinstance(pm.get("n_par_stats"), dict) else None,
+                }
+            )
+
+    meta = {k: v for k, v in meta.items() if v is not None}
+    return meta or None
+
+
+def _enrich_run_metrics_payload(payload: dict[str, Any]) -> None:
+    """
+    Agrega al top-level: family/task_type/input_level/target_col/data_plan (+ extras)
+    y data_meta (tfidf_dims, blocks, etc.). No rompe si no hay nada.
+    """
+    ctx = _extract_run_context_from_metrics(payload)
+    for k, v in ctx.items():
+        if v is not None:
+            payload[k] = v
+
+    dm = _data_meta_from_data_ref(payload.get("data_ref"))
+    if dm is not None:
+        payload["data_meta"] = dm
 
 
 def ensure_artifacts_dirs() -> None:
@@ -133,6 +356,50 @@ def _write_json(path: Path, payload: Any) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
+def _ensure_source_run_id(
+    champ: Dict[str, Any],
+    ds_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Asegura `source_run_id` en el dict champion de forma robusta.
+
+    - Si falta `source_run_id`, lo deriva de:
+      (champ.metrics.run_id) o (champ.run_id)
+    - Si `ds_dir` está disponible, intenta persistir el campo en champion.json,
+      pero NUNCA debe tumbar el endpoint si falla la escritura.
+    """
+    if not isinstance(champ, dict):
+        return champ
+
+    # 1) Normalizar `source_run_id`
+    if not champ.get("source_run_id"):
+        fallback = None
+        metrics = champ.get("metrics") or {}
+        if isinstance(metrics, dict):
+            fallback = metrics.get("run_id")
+        fallback = fallback or champ.get("run_id")
+
+        if fallback:
+            champ["source_run_id"] = fallback
+
+    # 2) Persistir (best-effort) si hay ds_dir
+    if ds_dir is not None and champ.get("source_run_id"):
+        try:
+            champion_path = ds_dir / "champion.json"
+            if champion_path.exists():
+                payload = _try_read_json(champion_path) or {}
+                if isinstance(payload, dict) and not payload.get("source_run_id"):
+                    payload["source_run_id"] = champ["source_run_id"]
+                    _write_json(champion_path, payload)
+        except Exception:
+            # Nunca debe tumbar el servicio por intentar "sanear" metadata
+            pass
+
+    return champ
+
+
+
+
 
 def _write_yaml(path: Path, payload: Any) -> None:
     """Escribe YAML (helper)."""
@@ -152,40 +419,29 @@ def save_run(
     history: list[dict[str, Any]] | None,
 ) -> Path:
     """
-    Persiste un run en ``artifacts/runs/<run_id>/``.
-
-    Archivos generados (Commit 3):
-    - ``metrics.json``: flattened para listados + metadata + history
-    - ``history.json``: lista de puntos por época (para UI)
-    - ``job_meta.json``: metadata de ejecución
-    - ``config.snapshot.yaml``: snapshot reproducible de request/params
-
-    .. note::
-       La estrategia (RBMGeneral/RBMRestringida) puede escribir pesos en el mismo
-       directorio (por ejemplo, ``rbm.pt``, ``head.pt``). Este helper no los crea,
-       pero sí deja el directorio listo.
-
-    :return: Path al directorio del run.
+    Persiste un run en artifacts/runs/<run_id>/ con:
+      - metrics.json (flatten + history + params + contexto estable + data_meta)
+      - history.json
+      - job_meta.json
+      - config.snapshot.yaml
     """
     ensure_artifacts_dirs()
 
-    run_dir = RUNS_DIR / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    created_at = dt.datetime.utcnow().isoformat() + "Z"
+    run_dir = ensure_dir(RUNS_DIR / run_id)
+    created_at = now_utc_iso()
 
     fm = dict(final_metrics or {})
     hist = list(history or [])
 
-    # loss: preferimos último loss del history si existe
+    # loss preferido: último loss del history
     last_loss = None
-    try:
-        if hist:
+    if hist:
+        try:
             last_loss = hist[-1].get("loss")
-    except Exception:
-        last_loss = None
+        except Exception:
+            last_loss = None
 
-    # time_sec: si hay time_epoch_ms en history, lo sumamos
+    # time_sec: suma time_epoch_ms si existe
     time_sec = None
     try:
         ms = 0.0
@@ -209,13 +465,13 @@ def save_run(
     }
     _write_json(run_dir / "job_meta.json", job_meta)
 
-    # (B) config.snapshot.yaml (params snapshot)
+    # (B) config.snapshot.yaml (snapshot reproducible)
     _write_yaml(run_dir / "config.snapshot.yaml", params or {})
 
-    # (C) history.json
+    # (C) history.json (para UI)
     _write_json(run_dir / "history.json", hist)
 
-    # (D) metrics.json (flattened + metadata + history)
+    # (D) metrics.json (payload principal)
     payload: dict[str, Any] = {
         "run_id": run_id,
         "job_id": job_id,
@@ -227,7 +483,7 @@ def save_run(
         "history": hist,
     }
 
-    # Flatten de métricas finales al root del JSON
+    # flatten final_metrics a top-level
     for k, v in fm.items():
         payload[k] = v
 
@@ -237,9 +493,15 @@ def save_run(
     if time_sec is not None and "time_sec" not in payload:
         payload["time_sec"] = float(time_sec)
 
-    _write_json(run_dir / "metrics.json", payload)
+    # contexto estable + data_meta (NO debe tumbar run si falla)
+    try:
+        _enrich_run_metrics_payload(payload)
+    except Exception:
+        pass
 
+    _write_json(run_dir / "metrics.json", payload)
     return run_dir
+
 
 
 def _dataset_id_from_any(value: Any) -> str | None:
@@ -320,68 +582,100 @@ def _infer_dataset_id(run_dir: Path, metrics: dict[str, Any]) -> str | None:
 
 
 def list_runs(
-    model_name: str | None = None,
-    dataset_id: str | None = None,
-    periodo: str | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Lista runs registrados en ``artifacts/runs``.
+    base_dir: Optional[Path] = None,
+    dataset_id: Optional[str] = None,
+    family: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Lista runs en artifacts/runs (más recientes primero).
 
-    Retorna un resumen amigable para la UI (tabla de runs), con métricas clave.
-
-    :param model_name: filtra por modelo (ej. 'rbm_general').
-    :param dataset_id: filtra por dataset.
-    :param periodo: alias de dataset_id (compatibilidad).
+    Retorna summaries listos para UI/API. Además de métricas, incluye *contexto*
+    (family, task_type, input_level, target_col, data_plan) inferido desde metrics.json
+    y/o params.req.
     """
-    if not RUNS_DIR.exists():
+    base = Path(base_dir) if base_dir is not None else BASE_DIR
+    runs_dir = base / "artifacts" / "runs"
+    if not runs_dir.exists():
         return []
 
-    ds_filter = dataset_id or periodo
-    runs: list[dict[str, Any]] = []
+    fam_norm = _slug(str(family)) if family else None
 
-    for run_dir in sorted(RUNS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if not run_dir.is_dir():
-            continue
+    # Orden: más reciente primero
+    run_dirs = sorted(
+        [p for p in runs_dir.iterdir() if p.is_dir()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
 
-        metrics_path = run_dir / "metrics.json"
-        if not metrics_path.exists():
+    out: list[dict] = []
+    for run_dir in run_dirs:
+        metrics_p = run_dir / "metrics.json"
+        if not metrics_p.exists():
             continue
 
         try:
-            with metrics_path.open("r", encoding="utf-8") as f:
-                metrics = json.load(f) or {}
+            metrics = json.loads(metrics_p.read_text(encoding="utf-8"))
         except Exception:
             continue
 
-        run_model = metrics.get("model_name") or metrics.get("model") or "rbm"
-        if model_name and run_model != model_name:
+        ds = metrics.get("dataset_id") or _infer_dataset_id(metrics, run_dir.name)
+        if dataset_id and ds != dataset_id:
             continue
 
-        run_dataset_id = _infer_dataset_id(run_dir, metrics)
-        if ds_filter and run_dataset_id != ds_filter:
+        ctx = _extract_run_context_from_metrics(metrics)
+        if fam_norm and _slug(str(ctx.get("family") or "")) != fam_norm:
             continue
 
-        created_at = dt.datetime.utcfromtimestamp(run_dir.stat().st_mtime).isoformat() + "Z"
-
-        summary = {
-            "run_id": run_dir.name,
-            "model_name": run_model,
-            "dataset_id": run_dataset_id,
-            "created_at": created_at,
-            "metrics": {
-                # val_* preferido si existe (commit 4),
-                # pero no rompe si aún no se produce
-                "val_f1_macro": metrics.get("val_f1_macro"),
-                "f1_macro": metrics.get("f1_macro"),
-                "val_accuracy": metrics.get("val_accuracy"),
-                "accuracy": metrics.get("accuracy"),
-                "loss": metrics.get("loss"),
-                "time_sec": metrics.get("time_sec"),
-            },
+        # Resumen base (top-level)
+        summary: dict[str, Any] = {
+            "run_id": metrics.get("run_id", run_dir.name),
+            "dataset_id": ds,
+            "model_name": metrics.get("model_name"),
+            "created_at": metrics.get("created_at"),
+            "artifact_path": str(run_dir),
+            "family": ctx.get("family"),
+            "task_type": ctx.get("task_type"),
+            "input_level": ctx.get("input_level"),
+            "target_col": ctx.get("target_col"),
+            "data_plan": ctx.get("data_plan"),
+            # Métricas UI-friendly
+            "metrics": {},
         }
-        runs.append(summary)
 
-    return runs
+        # Métricas comunes (si existen)
+        keep = [
+            "epoch",
+            "loss",
+            "loss_final",
+            "recon_error",
+            "recon_error_final",
+            "rbm_grad_norm",
+            "cls_loss",
+            "accuracy",
+            "f1_macro",
+            "val_accuracy",
+            "val_f1_macro",
+            "train_mae",
+            "train_rmse",
+            "train_r2",
+            "val_mae",
+            "val_rmse",
+            "val_r2",
+            "n_train",
+            "n_val",
+            "pred_min",
+            "pred_max",
+        ]
+        for k in keep:
+            if k in metrics and metrics[k] is not None:
+                summary["metrics"][k] = metrics[k]
+
+        out.append(summary)
+        if len(out) >= int(limit):
+            break
+
+    return out
+
 
 
 def load_run_details(run_id: str) -> dict[str, Any] | None:
@@ -449,82 +743,123 @@ def _champion_score(metrics: dict[str, Any]) -> tuple[int, float]:
     return (0, float("-inf"))
 
 
-def _dataset_dir_candidates(dataset_id: str) -> list[Path]:
+def _dataset_dir_candidates(dataset_id: str, family: str | None = None) -> list[Path]:
     """
-    Retorna posibles directorios para un dataset en champions.
-
-    Se mantiene compatibilidad si en algún momento se creó sin slug.
+    Candidatos de directorio para champions, soportando:
+      - layout nuevo: artifacts/champions/<family>/<dataset_id>/
+      - layout legacy: artifacts/champions/<dataset_id>/
+    Incluye también variantes con _slug(...) por compatibilidad.
     """
-    raw = CHAMPIONS_DIR / str(dataset_id)
-    slug = CHAMPIONS_DIR / _slug(dataset_id)
-    # mantener orden: primero raw, luego slug
-    return [raw, slug] if raw != slug else [raw]
+    ds_raw = (dataset_id or "").strip()
+    ds_slug = _slug(ds_raw) if ds_raw else ds_raw
 
+    fam_raw = (family or "").strip()
+    fam_slug = _slug(fam_raw) if fam_raw else fam_raw
 
-def load_dataset_champion(dataset_id: str) -> dict[str, Any] | None:
-    """
-    Devuelve el champion de un dataset.
+    candidates: list[Path] = []
 
-    Orden de búsqueda:
-      1) ``artifacts/champions/<dataset_id>/champion.json``
-      2) Fallback: escoger el mejor entre:
-         ``artifacts/champions/<dataset_id>/*/metrics.json``
+    # Nuevo layout por family (preferido)
+    if fam_raw:
+        for fam in [fam_raw, fam_slug]:
+            if not fam:
+                continue
+            for ds in [ds_raw, ds_slug]:
+                if not ds:
+                    continue
+                candidates.append(CHAMPIONS_DIR / fam / ds)
 
-    Retorna dict compatible con ChampionInfo:
-    ``{model_name, dataset_id, metrics, path}``.
-    """
-    for ds_dir in _dataset_dir_candidates(dataset_id):
-        champ_json = ds_dir / "champion.json"
-
-        # 1) Preferir champion.json
-        if champ_json.exists():
-            try:
-                champ = json.loads(champ_json.read_text(encoding="utf-8")) or {}
-                mname = champ.get("model_name")
-                metrics = champ.get("metrics") if isinstance(champ.get("metrics"), dict) else {}
-                if mname:
-                    model_dir = ds_dir / str(mname)
-                    return {
-                        "model_name": str(mname),
-                        "dataset_id": str(dataset_id),
-                        "metrics": metrics,
-                        "path": str(model_dir if model_dir.exists() else ds_dir),
-                    }
-            except Exception:
-                pass
-
-        # 2) Fallback por score
-        if not ds_dir.exists():
+    # Legacy layout (fallback)
+    for ds in [ds_raw, ds_slug]:
+        if not ds:
             continue
+        candidates.append(CHAMPIONS_DIR / ds)
 
-        best: dict[str, Any] | None = None
-        best_score = (0, float("-inf"))
+    # unique preservando orden
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in candidates:
+        key = str(p)
+        if key not in seen:
+            out.append(p)
+            seen.add(key)
 
-        for model_dir in ds_dir.glob("*"):
-            if not model_dir.is_dir():
-                continue
-            mp = model_dir / "metrics.json"
-            if not mp.exists():
-                continue
+    return out
+
+
+
+def load_dataset_champion(
+    dataset_id: str,
+    *,
+    family: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Carga el champion.json para un dataset (y opcionalmente por family)
+    soportando el layout nuevo:
+        artifacts/champions/<family>/<dataset_id>/champion.json
+    y manteniendo compatibilidad con layout legacy.
+
+    Garantiza campos derivados necesarios por schemas/routers:
+    - source_run_id (derivable desde metrics.run_id si falta)
+    - path (derivable desde el layout de champions aunque el json sea antiguo)
+    """
+    ds_dir = _champions_ds_dir(str(dataset_id), family=family)
+    champion_path = ds_dir / "champion.json"
+
+    champ = _try_read_json(champion_path)
+    if not champ:
+        return None
+
+    # Asegura source_run_id (si el champion.json es antiguo puede no traerlo)
+    champ = _ensure_source_run_id(champ, ds_dir=ds_dir)
+
+        # Hidrata metrics si champion.json es "liviano" (layout nuevo):
+    # Preferimos artifacts/runs/<source_run_id>/metrics.json
+    metrics = champ.get("metrics")
+    if not isinstance(metrics, dict) or not metrics.get("run_id"):
+        src = champ.get("source_run_id")
+        if src:
+            run_metrics_path = RUNS_DIR / str(src) / "metrics.json"
+            loaded = _try_read_json(run_metrics_path)
+            if isinstance(loaded, dict) and loaded.get("run_id"):
+                champ["metrics"] = loaded
+
+
+    # Asegura path (para ChampionInfo; si el champion.json es antiguo puede no traerlo)
+    if not champ.get("path"):
+        model_name = champ.get("model_name")
+
+        model_dir: Optional[Path] = None
+        if model_name:
+            cand = ds_dir / str(model_name)
+            if cand.exists() and cand.is_dir():
+                model_dir = cand
+
+        # Fallback: primera carpeta dentro de ds_dir (excluye champion.json)
+        if model_dir is None:
             try:
-                metrics = json.loads(mp.read_text(encoding="utf-8")) or {}
+                for child in ds_dir.iterdir():
+                    if child.is_dir():
+                        model_dir = child
+                        break
             except Exception:
-                continue
+                model_dir = None
 
-            score = _champion_score(metrics)
-            if score > best_score:
-                best_score = score
-                best = {
-                    "model_name": str(metrics.get("model_name") or model_dir.name),
-                    "dataset_id": str(dataset_id),
-                    "metrics": metrics,
-                    "path": str(model_dir),
-                }
+        # Último fallback: ds_dir
+        if model_dir is None:
+            model_dir = ds_dir
 
-        if best:
-            return best
+        champ["path"] = str(model_dir.resolve())
+        
+        # Fallback adicional: si aún no hay metrics, intenta leerlos del directorio del champion
+        metrics = champ.get("metrics")
+        if not isinstance(metrics, dict) or not metrics.get("run_id"):
+            mp = model_dir / "metrics.json"
+            loaded = _try_read_json(mp)
+            if isinstance(loaded, dict) and loaded.get("run_id"):
+                champ["metrics"] = loaded
 
-    return None
+
+    return champ
 
 
 def _copy_run_artifacts_to_dir(run_dir: Path, target_dir: Path) -> None:
@@ -547,10 +882,85 @@ def _copy_run_artifacts_to_dir(run_dir: Path, target_dir: Path) -> None:
             shutil.copy2(src, target_dir / fname)
 
     # Pesos / artefactos de modelo comunes
-    for fname in ("rbm.pt", "head.pt", "model.pt", "weights.pt", "vectorizer.json", "encoder.json"):
+    # Nota: meta.json es CRÍTICO para inferencia (feat_cols_, task_type, params de regresión, etc.)
+    for fname in ("rbm.pt", "head.pt", "model.pt", "weights.pt", "vectorizer.json", "encoder.json", "meta.json"):
         src = run_dir / fname
         if src.exists():
             shutil.copy2(src, target_dir / fname)
+
+
+def _extract_champion_context(metrics: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extrae campos clave (family/task_type/input_level/target_col/data_plan) de manera robusta
+    desde distintas variantes de estructura en metrics.json.
+
+    Soporta:
+      - metrics.<field>
+      - metrics.params.<field>
+      - metrics.params.req.<field>
+      - metrics.params.req.hparams.<field>
+      - metrics.params.hparams.<field>
+    """
+    def _as_dict(x: Any) -> dict[str, Any]:
+        return x if isinstance(x, dict) else {}
+
+    m = _as_dict(metrics)
+    params = _as_dict(m.get("params"))
+    req = _as_dict(params.get("req"))
+    hparams = _as_dict(req.get("hparams")) or _as_dict(params.get("hparams"))
+
+    def pick(*candidates: Any) -> Any:
+        for v in candidates:
+            if v is None:
+                continue
+            # aceptar strings no vacíos
+            if isinstance(v, str) and v.strip() == "":
+                continue
+            return v
+        return None
+
+    family = pick(
+        req.get("family"),
+        params.get("family"),
+        hparams.get("family"),
+        m.get("family"),
+    )
+
+    task_type = pick(
+        req.get("task_type"),
+        params.get("task_type"),
+        hparams.get("task_type"),
+        m.get("task_type"),
+    )
+
+    input_level = pick(
+        req.get("input_level"),
+        params.get("input_level"),
+        hparams.get("input_level"),
+        m.get("input_level"),
+    )
+
+    target_col = pick(
+        req.get("target_col"),
+        params.get("target_col"),
+        hparams.get("target_col"),
+        m.get("target_col"),
+    )
+
+    data_plan = pick(
+        req.get("data_plan"),
+        params.get("data_plan"),
+        hparams.get("data_plan"),
+        m.get("data_plan"),
+    )
+
+    return {
+        "family": family,
+        "task_type": task_type,
+        "input_level": input_level,
+        "target_col": target_col,
+        "data_plan": data_plan,
+    }
 
 
 def maybe_update_champion(
@@ -604,14 +1014,21 @@ def maybe_update_champion(
     promoted = new_score > cur_score
 
     if promoted:
+        ctx = _extract_champion_context(metrics or {})
         payload = {
             "model_name": model_name,
             "dataset_id": dataset_id,
+            "family": ctx.get("family"),
+            "task_type": ctx.get("task_type"),
+            "input_level": ctx.get("input_level"),
+            "target_col": ctx.get("target_col"),
+            "data_plan": ctx.get("data_plan"),
             "metrics": metrics,
             "source_run_id": source_run_id,
             "updated_at": dt.datetime.utcnow().isoformat() + "Z",
         }
         _write_json(ds_dir / "champion.json", payload)
+
 
     return {
         "dataset_id": dataset_id,
@@ -622,135 +1039,112 @@ def maybe_update_champion(
 
 
 def promote_run_to_champion(
-    *,
     dataset_id: str,
     run_id: str,
-    model_name: str | None = None,
-) -> dict[str, Any]:
-    """
-    Promueve un run existente a champion **manual**, copiando artefactos y actualizando
-    ``champion.json`` sin evaluar score.
-
-    Es útil para el endpoint opcional ``POST /modelos/champion/promote``.
-
-    :param dataset_id: dataset target.
-    :param run_id: run a promover.
-    :param model_name: si no se provee, se infiere desde metrics/job_meta o desde el nombre del run.
-    :raises FileNotFoundError: si el run no existe.
-    :return: dict compatible con ChampionInfo.
-    """
-    ensure_artifacts_dirs()
-
-    run_dir = RUNS_DIR / run_id
-    if not run_dir.exists():
-        raise FileNotFoundError(f"Run {run_id} no existe en {RUNS_DIR}")
-
-    # 1) leer metrics
+    model_name: Optional[str] = None,
+    *,
+    family: Optional[str] = None,
+) -> Dict[str, Any]:
+    run_dir = RUNS_DIR / str(run_id)
     metrics_path = run_dir / "metrics.json"
-    metrics = {}
-    if metrics_path.exists():
-        try:
-            metrics = json.loads(metrics_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            metrics = {}
 
-    # 2) inferir model_name si no viene
-    if not model_name:
-        # prioridad: metrics.json -> model_name
-        m = metrics.get("model_name") or metrics.get("model")
-        if isinstance(m, str) and m.strip():
-            model_name = m.strip()
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"No existe metrics.json en run: {metrics_path}")
 
-    if not model_name:
-        # fallback: parsear run_id: <dataset>__<model>__...
-        parts = run_id.split("__")
-        model_name = parts[1] if len(parts) >= 2 else "rbm_general"
+    with open(metrics_path, "r", encoding="utf-8") as f:
+        metrics = json.load(f)
 
-    # 3) copiar artefactos run -> champions/<dataset>/<model>
-    ds_dir = CHAMPIONS_DIR / _slug(dataset_id)
-    model_dir = ds_dir / _slug(model_name)
-    _copy_run_artifacts_to_dir(run_dir, model_dir)
+    # Inferir family si no viene explícita
+    req = (metrics.get("params") or {}).get("req") or {}
+    inferred_family = family or metrics.get("family") or req.get("family")
+    if not inferred_family:
+        raise ValueError("family es requerida para promover champion (no se pudo inferir desde metrics.json).")
 
-    # 4) escribir champion.json apuntando a este run
-    payload = {
-        "model_name": model_name,
-        "dataset_id": dataset_id,
-        "metrics": metrics,
-        "source_run_id": run_id,
-        "updated_at": dt.datetime.utcnow().isoformat() + "Z",
-    }
+    fam_slug = _slug(str(inferred_family))
+    ds = str(dataset_id)
+
+    # Modelo
+    inferred_model = model_name or metrics.get("model_name") or req.get("modelo") or "model"
+    inferred_model = str(inferred_model)
+
+    # === NUEVO LAYOUT (principal) ===
+    ds_dir = CHAMPIONS_DIR / fam_slug / ds
+    dst_dir = ds_dir / inferred_model
+
     ds_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(ds_dir / "champion.json", payload)
+    dst_dir.mkdir(parents=True, exist_ok=True)
 
-    return {
-        "model_name": str(model_name),
-        "dataset_id": str(dataset_id),
-        "metrics": metrics or {},
-        "path": str(model_dir),
+    # Copiar snapshot run -> champion dir
+    # (usa tu copytree/archivos existentes; este patrón es seguro en Win)
+    shutil.copytree(run_dir, dst_dir, dirs_exist_ok=True)
+
+    # Construir champion.json robusto
+    champion = {
+        "family": str(inferred_family),
+        "dataset_id": ds,
+        "model_name": inferred_model,
+        "task_type": metrics.get("task_type") or req.get("task_type"),
+        "input_level": metrics.get("input_level") or req.get("input_level"),
+        "target_col": metrics.get("target_col") or req.get("target_col"),
+        "data_plan": metrics.get("data_plan") or req.get("data_plan"),
+        "source_run_id": str(run_id),
+        "created_at": metrics.get("created_at") or dt.datetime.utcnow().isoformat() + "Z",
+        "path": str(dst_dir),
     }
+
+    champ_path = ds_dir / "champion.json"
+    with open(champ_path, "w", encoding="utf-8") as f:
+        json.dump(champion, f, ensure_ascii=False, indent=2)
+
+    # === (Opcional) LEGACY MIRROR ===
+    # Si aún tienes piezas antiguas leyendo artifacts/champions/<dataset_id>/champion.json,
+    # espejea también (no rompe el layout nuevo).
+    legacy_ds_dir = CHAMPIONS_DIR / ds
+    legacy_ds_dir.mkdir(parents=True, exist_ok=True)
+    with open(legacy_ds_dir / "champion.json", "w", encoding="utf-8") as f:
+        json.dump(champion, f, ensure_ascii=False, indent=2)
+
+    # También espejea snapshot (si lo necesitas)
+    legacy_model_dir = legacy_ds_dir / inferred_model
+    legacy_model_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(run_dir, legacy_model_dir, dirs_exist_ok=True)
+
+    return champion
+
 
 
 def load_current_champion(
-    model_name: str | None = None,
-    dataset_id: str | None = None,
-    periodo: str | None = None,
-) -> dict[str, Any] | None:
+    *,
+    dataset_id: Optional[str] = None,
+    periodo: Optional[str] = None,
+    model_name: Optional[str] = None,
+    family: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """
-    Devuelve info del campeón actual.
-
-    Soporta 2 estructuras:
-
-    (1) NUEVA (por dataset):
-        ``artifacts/champions/<dataset_id>/<model_name>/metrics.json``
-
-    (2) LEGACY (por modelo):
-        ``artifacts/champions/<model_name>/metrics.json``
-
-    Retorna dict compatible con ChampionInfo o None.
+    Wrapper de conveniencia usado por routers:
+    - Soporta dataset_id o periodo (alias)
+    - Soporta family (layout nuevo: artifacts/champions/<family>/<dataset_id>/...)
+      con fallback a layout legacy si tu loader lo implementa.
+    - Filtro opcional por model_name
     """
-    if not CHAMPIONS_DIR.exists():
+    ds = (dataset_id or periodo)
+    if not ds:
         return None
 
-    ds_filter = dataset_id or periodo
+    champ = load_dataset_champion(dataset_id=str(ds), family=family)
+    if not champ:
+        return None
 
-    # -------------------------
-    # Nuevo patrón por dataset
-    # -------------------------
-    if ds_filter:
-        # si no especifican model_name, preferir champion.json
-        champ = load_dataset_champion(ds_filter)
-        if champ and (not model_name or champ.get("model_name") == model_name):
-            return champ
-
-        # si especifican model_name, buscar directo
-        if model_name:
-            base = CHAMPIONS_DIR / _slug(ds_filter) / _slug(model_name)
-            mp = base / "metrics.json"
-            if mp.exists():
-                metrics = json.loads(mp.read_text(encoding="utf-8")) or {}
-                return {"model_name": model_name, "dataset_id": ds_filter, "metrics": metrics, "path": str(base)}
-            return None
-
-    # -------------------------
-    # Patrón legacy por modelo
-    # -------------------------
     if model_name:
-        candidate = CHAMPIONS_DIR / _slug(model_name)
-        mp = candidate / "metrics.json"
-        if mp.exists():
-            metrics = json.loads(mp.read_text(encoding="utf-8")) or {}
-            ds = _dataset_id_from_any(metrics.get("dataset_id") or metrics.get("dataset") or metrics.get("periodo"))
-            return {"model_name": model_name, "dataset_id": ds, "metrics": metrics, "path": str(candidate)}
-        return None
+        req_model = str(model_name).strip()
+        champ_model = champ.get("model_name") or champ.get("model")
+        if champ_model and str(champ_model).strip() != req_model:
+            return None
+    
+    # Robustez: si falta source_run_id pero hay metrics.run_id, derivarlo
+    _ensure_source_run_id(champ)
+            
+    return champ
 
-    for subdir in CHAMPIONS_DIR.glob("*"):
-        if not subdir.is_dir():
-            continue
-        mp = subdir / "metrics.json"
-        if not mp.exists():
-            continue
-        metrics = json.loads(mp.read_text(encoding="utf-8")) or {}
-        ds = _dataset_id_from_any(metrics.get("dataset_id") or metrics.get("dataset") or metrics.get("periodo"))
-        return {"model_name": subdir.name, "dataset_id": ds, "metrics": metrics, "path": str(subdir)}
 
-    return None
+

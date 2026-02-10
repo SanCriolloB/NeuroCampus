@@ -716,31 +716,65 @@ def load_run_details(run_id: str) -> dict[str, Any] | None:
 # Champion: score, snapshot, promote
 # ---------------------------------------------------------------------------
 
-def _champion_score(metrics: dict[str, Any]) -> tuple[int, float]:
+def _champion_score(metrics: Dict[str, Any]) -> tuple[int, float]:
     """
-    Calcula un score comparable para decidir campeón.
+    Retorna (tier, score). Mayor es mejor.
 
-    Prioridad:
-      1) val_f1_macro (más alto es mejor)
-      2) f1_macro (más alto es mejor)
-      3) val_accuracy (más alto es mejor)
-      4) accuracy (más alto es mejor)
-      5) loss (más bajo es mejor) -> score negativo
-
-    Retorna:
-      (tier, score) para comparar (tuple comparable).
+    Soporta:
+      - classification: maximiza val_f1_macro > f1_macro > val_accuracy > accuracy, y por último minimiza loss.
+      - regression (p.ej. score_docente): minimiza val_rmse > val_mae, maximiza val_r2; fallback a train_*.
     """
+    task_type = str(metrics.get("task_type") or "").lower().strip()
+
+    is_regression = (
+        task_type == "regression"
+        or any(
+            k in metrics
+            for k in (
+                "val_rmse",
+                "val_mae",
+                "val_r2",
+                "train_rmse",
+                "train_mae",
+                "train_r2",
+            )
+        )
+    )
+
+    if is_regression:
+        # En regresión: menor error es mejor → score negativo
+        if isinstance(metrics.get("val_rmse"), (int, float)):
+            return (60, -float(metrics["val_rmse"]))
+        if isinstance(metrics.get("val_mae"), (int, float)):
+            return (50, -float(metrics["val_mae"]))
+        if isinstance(metrics.get("val_r2"), (int, float)):
+            return (40, float(metrics["val_r2"]))
+
+        if isinstance(metrics.get("train_rmse"), (int, float)):
+            return (30, -float(metrics["train_rmse"]))
+        if isinstance(metrics.get("train_mae"), (int, float)):
+            return (20, -float(metrics["train_mae"]))
+        if isinstance(metrics.get("train_r2"), (int, float)):
+            return (10, float(metrics["train_r2"]))
+
+        if isinstance(metrics.get("loss"), (int, float)):
+            return (0, -float(metrics["loss"]))
+        return (-1, float("-inf"))
+
+    # --- classification (comportamiento actual) ---
     if isinstance(metrics.get("val_f1_macro"), (int, float)):
-        return (5, float(metrics["val_f1_macro"]))
+        return (4, float(metrics["val_f1_macro"]))
     if isinstance(metrics.get("f1_macro"), (int, float)):
-        return (4, float(metrics["f1_macro"]))
+        return (3, float(metrics["f1_macro"]))
     if isinstance(metrics.get("val_accuracy"), (int, float)):
-        return (3, float(metrics["val_accuracy"]))
+        return (2, float(metrics["val_accuracy"]))
     if isinstance(metrics.get("accuracy"), (int, float)):
-        return (2, float(metrics["accuracy"]))
+        return (1, float(metrics["accuracy"]))
     if isinstance(metrics.get("loss"), (int, float)):
-        return (1, -float(metrics["loss"]))
-    return (0, float("-inf"))
+        return (0, -float(metrics["loss"]))
+    return (-1, float("-inf"))
+
+
 
 
 def _dataset_dir_candidates(dataset_id: str, family: str | None = None) -> list[Path]:
@@ -967,75 +1001,86 @@ def maybe_update_champion(
     *,
     dataset_id: str,
     model_name: str,
-    metrics: dict[str, Any],
-    source_run_id: str | None = None,
-) -> dict[str, Any]:
+    metrics: Dict[str, Any],
+    source_run_id: Optional[str] = None,
+    family: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Registra/actualiza el champion del dataset si el nuevo run es mejor.
+    Compara contra el champion actual (por family/dataset si aplica) y actualiza si mejora.
 
-    Siempre escribe snapshot del modelo en::
-
-      artifacts/champions/<dataset_id>/<model_name>/metrics.json
-
-    Y si el nuevo run supera al champion actual, actualiza::
-
-      artifacts/champions/<dataset_id>/champion.json
-
-    Si ``source_run_id`` se provee y existe el run_dir, también copia
-    artefactos del run al directorio del champion del modelo.
-
-    :return: dict con {dataset_id, model_name, promoted, path}.
+    - Escribe SIEMPRE en layout nuevo: artifacts/champions/<family>/<dataset_id>/champion.json cuando family existe.
+    - Mantiene mirror legacy best-effort: artifacts/champions/<dataset_id>/champion.json
+      (útil para compat antigua; puede ser sobrescrito por otra family, igual que en promote()).
     """
-    ensure_artifacts_dirs()
+    # Infer family de forma robusta (compat)
+    req = (metrics.get("params") or {}).get("req") or {}
+    fam = (family or metrics.get("family") or req.get("family") or None)
+    fam = str(fam).strip().lower() if fam else None
 
-    ds_dir = CHAMPIONS_DIR / _slug(dataset_id)
-    ds_dir.mkdir(parents=True, exist_ok=True)
-
-    model_dir = ds_dir / _slug(model_name)
+    # Directorio principal (nuevo layout si hay family)
+    ds_dir = _ensure_champions_ds_dir(dataset_id, family=fam)
+    model_dir = (ds_dir / _slug(model_name)).resolve()
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # Guardar snapshot de métricas (siempre)
-    _write_json(model_dir / "metrics.json", metrics)
-
-    # Si hay run, copiar artefactos al snapshot del modelo (si existen)
-    if source_run_id:
-        run_dir = RUNS_DIR / source_run_id
-        if run_dir.exists():
-            _copy_run_artifacts_to_dir(run_dir, model_dir)
-
-    # Comparar contra champion actual
-    current = load_dataset_champion(dataset_id)
+    # Champion actual (por family)
+    current = load_dataset_champion(dataset_id, family=fam)
+    old_score = _champion_score((current or {}).get("metrics") or {}) if current else (-1, float("-inf"))
     new_score = _champion_score(metrics)
 
-    cur_score = (0, float("-inf"))
-    if current and isinstance(current.get("metrics"), dict):
-        cur_score = _champion_score(current["metrics"])
-
-    promoted = new_score > cur_score
+    promoted = (current is None) or (new_score > old_score)
 
     if promoted:
-        ctx = _extract_champion_context(metrics or {})
-        payload = {
-            "model_name": model_name,
-            "dataset_id": dataset_id,
-            "family": ctx.get("family"),
-            "task_type": ctx.get("task_type"),
-            "input_level": ctx.get("input_level"),
-            "target_col": ctx.get("target_col"),
-            "data_plan": ctx.get("data_plan"),
+        # Snapshot mínimo siempre (metrics)
+        _write_json(model_dir / "metrics.json", metrics)
+
+        # Copia run artifacts si existe source_run_id (mejor esfuerzo)
+        if source_run_id:
+            try:
+                run_dir = (RUNS_DIR / str(source_run_id)).resolve()
+                if run_dir.exists():
+                    _copy_run_to_champion(run_dir=run_dir, champion_model_dir=model_dir)
+            except Exception:
+                pass
+
+        payload: Dict[str, Any] = {
+            "family": fam,
+            "dataset_id": str(dataset_id),
+            "model_name": str(model_name),
+            "source_run_id": str(source_run_id) if source_run_id else None,
             "metrics": metrics,
-            "source_run_id": source_run_id,
+            "path": str(model_dir),
             "updated_at": dt.datetime.utcnow().isoformat() + "Z",
         }
         _write_json(ds_dir / "champion.json", payload)
 
+        # Mirror legacy (best-effort)
+        try:
+            legacy_ds_dir = _ensure_champions_ds_dir(dataset_id, family=None)
+            legacy_model_dir = (legacy_ds_dir / _slug(model_name)).resolve()
+            legacy_model_dir.mkdir(parents=True, exist_ok=True)
+
+            _write_json(legacy_model_dir / "metrics.json", metrics)
+            if source_run_id:
+                try:
+                    run_dir = (RUNS_DIR / str(source_run_id)).resolve()
+                    if run_dir.exists():
+                        _copy_run_to_champion(run_dir=run_dir, champion_model_dir=legacy_model_dir)
+                except Exception:
+                    pass
+
+            payload_legacy = dict(payload)
+            payload_legacy["path"] = str(legacy_model_dir)
+            _write_json(legacy_ds_dir / "champion.json", payload_legacy)
+        except Exception:
+            pass
 
     return {
-        "dataset_id": dataset_id,
-        "model_name": model_name,
-        "promoted": promoted,
-        "path": str(ds_dir),
+        "promoted": bool(promoted),
+        "old_score": old_score,
+        "new_score": new_score,
+        "champion_path": str((ds_dir / "champion.json").resolve()),
     }
+
 
 
 def promote_run_to_champion(

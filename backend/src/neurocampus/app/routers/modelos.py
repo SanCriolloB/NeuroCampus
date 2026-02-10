@@ -2001,7 +2001,17 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
     }
 
     # Normaliza hparams, preservando el resto del request intacto
-    update_payload: Dict[str, Any] = {"hparams": hp_norm_raw}
+    # + persistir defaults resueltos para trazabilidad (params.req.*)
+    update_payload: Dict[str, Any] = {
+        "hparams": hp_norm_raw,
+        # defaults “efectivos” (evita que params.req.target_mode quede como el default del schema)
+        "data_source": resolved_run_hparams.get("data_source"),
+        "target_mode": resolved_run_hparams.get("target_mode"),
+        "split_mode": resolved_run_hparams.get("split_mode"),
+        "val_ratio": resolved_run_hparams.get("val_ratio"),
+        "include_teacher_materia": resolved_run_hparams.get("include_teacher_materia"),
+        "teacher_materia_mode": resolved_run_hparams.get("teacher_materia_mode"),
+    }
 
     # Persistimos también target_col inferido en el request (para que quede en params.req.target_col)
     if inferred_target_col is not None:

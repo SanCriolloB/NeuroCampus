@@ -14,6 +14,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
+
+
 # ============================
 # Mapeos y utilidades
 # ============================
@@ -217,6 +223,56 @@ class _RBM(nn.Module):
             vk = self.sample_visible(hk)
         return vk, self.sample_hidden(vk)
 
+# ============================
+# Heads supervisados
+# ============================
+
+class _RegressionHead(nn.Module):
+    """Head de regresión para score_docente (0–50) con embeddings opcionales.
+
+    Nota: No crea un "modelo nuevo"; es solo la cabeza supervisada de la estrategia RBM.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_hidden: int,
+        n_teachers: int,
+        n_materias: int,
+        emb_dim: int = 16,
+        include_ids: bool = True,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+
+        self.include_ids = bool(include_ids)
+        self.emb_dim = int(emb_dim)
+
+        if self.include_ids:
+            self.teacher_emb = nn.Embedding(int(n_teachers), int(emb_dim))
+            self.materia_emb = nn.Embedding(int(n_materias), int(emb_dim))
+            in_dim = int(n_hidden) + 2 * int(emb_dim)
+        else:
+            self.teacher_emb = None
+            self.materia_emb = None
+            in_dim = int(n_hidden)
+
+        self.dropout = nn.Dropout(p=float(dropout)) if float(dropout) > 0 else None
+        self.linear = nn.Linear(in_dim, 1)
+
+    def forward(self, h: Tensor, teacher_id: Optional[Tensor] = None, materia_id: Optional[Tensor] = None) -> Tensor:
+        parts: List[Tensor] = [h]
+        if self.include_ids:
+            assert teacher_id is not None and materia_id is not None, "teacher_id/materia_id requeridos para include_ids=True"
+            parts.append(self.teacher_emb(teacher_id))  # type: ignore[arg-type]
+            parts.append(self.materia_emb(materia_id))  # type: ignore[arg-type]
+
+        x = torch.cat(parts, dim=1)
+        if self.dropout is not None:
+            x = self.dropout(x)
+        y = self.linear(x).squeeze(1)
+        return y
+
 
 # ============================
 # Estrategia General
@@ -267,6 +323,32 @@ class RBMGeneral:
         self.accept_teacher: bool = False
         self.accept_threshold: float = 0.8
         self.labels = list(_DEFAULT_LABELS)
+        # --- Ruta 2 / score_docente (regresión, pair-level) ---
+        self.task_type: str = "classification"  # "classification" | "regression"
+        self.target_col_: Optional[str] = None
+
+        self.include_teacher_materia_: bool = True
+        self.teacher_materia_mode_: str = "embed"  # "embed" | "numeric"
+        self.teacher_id_col_: str = "teacher_id"
+        self.materia_id_col_: str = "materia_id"
+        self.teacher_vocab_size_: int = 0
+        self.materia_vocab_size_: int = 0
+        self.embed_dim_: int = 16
+        self.target_scale_: float = 50.0  # si se escala target a 0..1, se des-escala con este factor
+
+        # tensores (regresión) con split
+        self.X_tr: Optional[Tensor] = None
+        self.y_tr: Optional[Tensor] = None
+        self.tid_tr: Optional[Tensor] = None
+        self.mid_tr: Optional[Tensor] = None
+
+        self.X_va: Optional[Tensor] = None
+        self.y_va: Optional[Tensor] = None
+        self.tid_va: Optional[Tensor] = None
+        self.mid_va: Optional[Tensor] = None
+
+        self.w_tr: Optional[Tensor] = None
+        self.w_va: Optional[Tensor] = None
 
     # --------------------------
     # Carga de dataset sencillo
@@ -421,6 +503,157 @@ class RBMGeneral:
 
         y_np = None if len(y_norm) == 0 else np.array([_LABEL_MAP[s] for s in y_norm.tolist()], dtype=np.int64)
         return X, y_np, feat_cols
+
+    # --------------------------
+    # Preparación para regresión (score_docente)
+    # --------------------------
+    def _period_key(self, v: Any) -> Tuple[int, int]:
+        """Convierte '2025-1' -> (2025,1) para orden temporal. Si falla, retorna (0,0)."""
+        try:
+            s = str(v)
+            parts = s.replace("_", "-").split("-")
+            y = int(parts[0]) if parts and parts[0].isdigit() else 0
+            sem = int(parts[1]) if len(parts) > 1 and str(parts[1]).isdigit() else 0
+            return (y, sem)
+        except Exception:
+            return (0, 0)
+
+    def _prepare_xy_regression(
+        self,
+        df: pd.DataFrame,
+        *,
+        target_col: str,
+        include_teacher_materia: bool,
+        teacher_materia_mode: str,
+        teacher_id_col: str,
+        materia_id_col: str,
+        loss_weight_col: Optional[str] = "n_par",
+    ) -> Tuple[np.ndarray, np.ndarray, List[str], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+        if target_col not in df.columns:
+            raise ValueError(f"target_col '{target_col}' no existe en el DataFrame")
+
+        y_raw = pd.to_numeric(df[target_col], errors="coerce")
+        mask = y_raw.notna()
+        if mask.sum() < len(df):
+            df = df[mask].reset_index(drop=True)
+            y_raw = y_raw[mask].reset_index(drop=True)
+
+        y = y_raw.astype(np.float32).to_numpy()
+
+        # Política: entrenar en escala 0..1 para estabilidad.
+        target_scale = float(getattr(self, "target_scale_", 50.0) or 50.0)
+        if np.nanmax(y) <= 1.5 and target_scale > 1.5:
+            target_scale = 1.0
+        self.target_scale_ = float(target_scale)
+        y_scaled = (y / float(target_scale)).astype(np.float32)
+
+        tid = None
+        mid = None
+        if include_teacher_materia and str(teacher_materia_mode).lower() == "embed":
+            if teacher_id_col not in df.columns or materia_id_col not in df.columns:
+                raise ValueError(f"teacher_id/materia_id requeridos para modo embed. Faltan columnas.")
+
+            tid = pd.to_numeric(df[teacher_id_col], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
+            mid = pd.to_numeric(df[materia_id_col], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
+
+            tmax = int(np.nanmax(tid)) if tid.size else -1
+            mmax = int(np.nanmax(mid)) if mid.size else -1
+            unk_t = tmax + 1
+            unk_m = mmax + 1
+            tid = np.where(tid < 0, unk_t, tid)
+            mid = np.where(mid < 0, unk_m, mid)
+
+            self.teacher_vocab_size_ = int(unk_t + 1)
+            self.materia_vocab_size_ = int(unk_m + 1)
+
+        # features numéricas
+        drop_cols = {target_col}
+        if include_teacher_materia and str(teacher_materia_mode).lower() == "embed":
+            if teacher_id_col in df.columns:
+                drop_cols.add(teacher_id_col)
+            if materia_id_col in df.columns:
+                drop_cols.add(materia_id_col)
+
+        num_df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+        num_df = num_df.select_dtypes(include=[np.number]).copy()
+        feat_cols = list(num_df.columns)
+        if not feat_cols:
+            raise ValueError("No hay columnas numéricas de features en pair_matrix (excluyendo ids/target).")
+
+        X = num_df.to_numpy(dtype=np.float32)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # pesos (opcional)
+        w = None
+        if loss_weight_col and (loss_weight_col in df.columns):
+            ww = pd.to_numeric(df[loss_weight_col], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+            w = np.log1p(np.clip(ww, 0.0, None)).astype(np.float32)
+            if float(np.max(w)) <= 0.0:
+                w = None
+
+        return X, y_scaled.astype(np.float32), feat_cols, tid, mid, w
+
+    def _split_train_val_indices(
+        self,
+        df: pd.DataFrame,
+        *,
+        split_mode: str,
+        val_ratio: float,
+        seed: int,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        n = int(len(df))
+        if n < 2:
+            return np.arange(n, dtype=np.int64), np.array([], dtype=np.int64)
+
+        val_ratio = min(max(float(val_ratio), 0.0), 0.9)
+        n_val = max(1, int(round(n * val_ratio)))
+
+        idx = np.arange(n, dtype=np.int64)
+        sm = str(split_mode or "").lower()
+
+        if sm == "temporal" and ("periodo" in df.columns):
+            order = np.argsort(df["periodo"].apply(self._period_key).to_numpy())
+            idx = idx[order]
+            return idx[: n - n_val], idx[n - n_val :]
+
+        rng = np.random.default_rng(int(seed))
+        rng.shuffle(idx)
+        return idx[: n - n_val], idx[n - n_val :]
+
+    def _try_warm_start(self, warm_start_dir: str) -> Dict[str, Any]:
+        info: Dict[str, Any] = {"warm_start": "skipped", "warm_start_dir": str(warm_start_dir)}
+        try:
+            in_dir = Path(str(warm_start_dir)).expanduser().resolve()
+            meta_path = in_dir / "meta.json"
+            rbm_path = in_dir / "rbm.pt"
+            head_path = in_dir / "head.pt"
+            if not meta_path.exists() or not rbm_path.exists() or not head_path.exists():
+                info["reason"] = "missing_files"
+                return info
+
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) or {}
+            prev_task = str(meta.get("task_type") or "classification").lower()
+            if prev_task != "regression":
+                info["reason"] = "previous_task_not_regression"
+                return info
+
+            prev_cols = meta.get("feat_cols_") or []
+            if not isinstance(prev_cols, list) or list(prev_cols) != list(self.feat_cols_):
+                info["reason"] = "feature_cols_mismatch"
+                return info
+
+            rbm_ckpt = torch.load(str(rbm_path), map_location=self.device)
+            head_ckpt = torch.load(str(head_path), map_location=self.device)
+
+            self.rbm.load_state_dict(rbm_ckpt["state_dict"], strict=True)
+            self.head.load_state_dict(head_ckpt["state_dict"], strict=True)
+
+            info["warm_start"] = "ok"
+            info["reason"] = None
+            return info
+        except Exception as e:
+            return {"warm_start": "error", "error": str(e), "warm_start_dir": str(warm_start_dir)}
+
 
     # --------------------------
     # setup() opcional (no usado por fit robusto, pero disponible)

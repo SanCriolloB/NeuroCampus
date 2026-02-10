@@ -19,29 +19,55 @@ class DBMManual:
         n_hidden2: int,
         lr: float = 0.01,
         cd_k: int = 1,
+        *,
+        seed: int = 42,
+        l2: float = 0.0,
+        clip_grad: float | None = 1.0,
+        binarize_input: bool = False,
+        input_bin_threshold: float = 0.5,
+        use_pcd: bool = False,
     ):
-        self.n_visible = n_visible
-        self.n_hidden1 = n_hidden1
-        self.n_hidden2 = n_hidden2
+        self.n_visible = int(n_visible)
+        self.n_hidden1 = int(n_hidden1)
+        self.n_hidden2 = int(n_hidden2)
 
         # Guardamos por si luego se usan en fases de fine-tuning
-        self.lr = lr
-        self.cd_k = cd_k
+        self.lr = float(lr)
+        self.cd_k = int(cd_k)
 
-        # RBMManual es un alias de RestrictedBoltzmannMachine,
-        # cuya firma es:
-        # __init__(n_visible, n_hidden=64, learning_rate=0.05, seed=42,
-        #          l2=0.0, clip_grad=1.0, binarize_input=False, input_bin_threshold=0.5)
+        self.seed = int(seed)
+        self.l2 = float(l2)
+        self.clip_grad = None if clip_grad is None else float(clip_grad)
+        self.binarize_input = bool(binarize_input)
+        self.input_bin_threshold = float(input_bin_threshold)
+        self.use_pcd = bool(use_pcd)
+
+        # RBMManual (RestrictedBoltzmannMachine) soporta cd_k/use_pcd/seed/etc.
         self.rbm_v_h1 = RBMManual(
-            n_visible=n_visible,
-            n_hidden=n_hidden1,
-            learning_rate=lr,
+            n_visible=self.n_visible,
+            n_hidden=self.n_hidden1,
+            learning_rate=self.lr,
+            seed=self.seed,
+            l2=self.l2,
+            clip_grad=self.clip_grad,
+            binarize_input=self.binarize_input,
+            input_bin_threshold=self.input_bin_threshold,
+            cd_k=self.cd_k,
+            use_pcd=self.use_pcd,
         )
 
+        # Para h1->h2: los "visibles" son probs en [0,1], normalmente NO binarizamos.
         self.rbm_h1_h2 = RBMManual(
-            n_visible=n_hidden1,
-            n_hidden=n_hidden2,
-            learning_rate=lr,
+            n_visible=self.n_hidden1,
+            n_hidden=self.n_hidden2,
+            learning_rate=self.lr,
+            seed=self.seed + 1,
+            l2=self.l2,
+            clip_grad=self.clip_grad,
+            binarize_input=False,
+            input_bin_threshold=0.5,
+            cd_k=self.cd_k,
+            use_pcd=self.use_pcd,
         )
 
     def pretrain(self, X: np.ndarray, epochs: int = 10, batch_size: int = 64):

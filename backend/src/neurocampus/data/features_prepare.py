@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from neurocampus.data.score_total import ensure_score_columns, load_sidecar_score_meta
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,8 @@ def _detect_score_col(df: pd.DataFrame) -> Optional[str]:
             "score_0_50",
             "calificacion",
             "score",
+            "score_total",
+            "score_base",
         ],
     )
 
@@ -319,9 +322,20 @@ def prepare_feature_pack(
     else:
         raise ValueError(f"Formato no soportado: {inp.suffix}")
 
+    # --- NUEVO: backward compat score_* ---
+    labeled_meta = load_sidecar_score_meta(inp)
+    df, score_col, score_debug = ensure_score_columns(
+        df,
+        labeled_meta=labeled_meta,
+        prefer_total=True,
+        allow_derive=True,
+    )
+
+
     teacher_col = _detect_teacher_col(df)
     materia_col = _detect_materia_col(df)
-    score_col = _detect_score_col(df)
+
+
 
     if teacher_col is None:
         raise ValueError("No se detectó columna de docente (ej: cedula_profesor/docente/profesor).")
@@ -440,6 +454,7 @@ def prepare_feature_pack(
                 "text_feat_cols": text_feat_cols,
                 "sentiment_cols": sentiment_cols,
                 "one_hot_cols": one_hot_cols,
+                "score_debug": score_debug,
             },
             ensure_ascii=False,
             indent=2,

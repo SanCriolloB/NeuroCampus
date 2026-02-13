@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Literal
 
-from pydantic import BaseModel, Field, model_validator, ConfigDict
+from pydantic import BaseModel, Field, model_validator, ConfigDict, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -753,4 +753,12 @@ class PromoteChampionRequest(BaseModel):
         default=None,
         description="Plan de datos usado (dataset_only | recent_window | recent_window_plus_replay). Idealmente se infiere del run.",
     )
+
+    @field_validator("run_id")
+    @classmethod
+    def _validate_run_id(cls, v: str) -> str:
+        s = str(v or "").strip()
+        if not s or s.lower() in {"null", "none", "nil"}:
+            raise ValueError("run_id inválido (vacío/null).")
+        return s
 

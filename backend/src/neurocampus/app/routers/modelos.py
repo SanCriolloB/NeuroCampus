@@ -188,18 +188,36 @@ def _read_json_if_exists(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def _extract_labeled_score_meta(labeled_ref: str) -> Optional[Dict[str, Any]]:
-    """Extrae meta del score_total desde el labeled (si existe)."""
+    """Extrae meta del score_total desde el labeled (si existe).
+
+    Prioridad:
+    1) Sidecar JSON: <labeled>.meta.json (fuente de verdad)
+    2) Fallback legacy: columnas dentro del parquet
+    """
     p = _abs_path(labeled_ref)
     if not p.exists():
         return None
 
-    cols_wanted = [
-        "score_delta_max",
-        "score_calib_q",
-        "score_beta",
-        "score_beta_source",
-        "score_calib_abs_q",
-    ]
+    # 1) Sidecar (preferido)
+    sidecar = Path(str(p) + ".meta.json")
+    if sidecar.exists():
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                keys = [
+                    "score_delta_max",
+                    "score_calib_q",
+                    "score_beta",
+                    "score_beta_source",
+                    "score_calib_abs_q",
+                    "score_version",
+                    "empty_text_policy",
+                    "keep_empty_text",
+                ]
+                out = {k: payload.get(k) for k in keys if k in payload}
+                return out or payload
+        except Exception:
+            pass
 
     cols_existing: list[str] = []
     try:
@@ -1449,6 +1467,8 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
     try:
         # 1) Resolver hparams/plan (fuente de verdad para ejecución)
         run_hparams = _build_run_hparams(req, job_id)
+        st["model"] = str(req.modelo)
+        st["params"] = dict(run_hparams)
 
         # 2) Normalizar request para snapshot/UI (que "params.req" sea consistente)
         inferred_target_col = _infer_target_col(req, run_hparams)
@@ -1519,6 +1539,7 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 "metrics": final_metrics,
                 "history": history,
                 "elapsed_s": float(time.perf_counter() - t0),
+                "time_total_ms": float(time.perf_counter() - t0) * 1000.0,
             }
         )
         _ESTADOS[job_id] = st
@@ -1535,14 +1556,9 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             logger.exception("No se pudo evaluar/promover champion para run_id=%s", run_id)
 
     except Exception as e:
-        logger.exception("Falló entrenamiento job_id=%s", job_id)
-        st.update(
-            {
-                "status": "failed",
-                "error": str(e),
-                "elapsed_s": float(time.perf_counter() - t0),
-            }
-        )
+        detail = e.detail if isinstance(e, HTTPException) else str(e)
+        st.update({"status": "failed", "error": str(detail), "elapsed_s": float(time.perf_counter() - t0)})
+        st["time_total_ms"] = float(st["elapsed_s"]) * 1000.0
         _ESTADOS[job_id] = st
 
 
@@ -1964,13 +1980,30 @@ def estado(job_id: str):
 
     # 1) Si está en memoria, devuélvelo normal
     if isinstance(st, dict):
-        return {
-            "job_id": job_id,
-            "status": st.get("status", "unknown"),
-            "progress": float(st.get("progress", 0.0) or 0.0),
-            "error": st.get("error"),
-            "sweep_summary_path": st.get("sweep_summary_path"),
-        }
+        payload = dict(st)
+        payload.setdefault("job_id", job_id)
+        payload.setdefault("status", "unknown")
+        payload.setdefault("progress", 0.0)
+        payload.setdefault("model", st.get("model"))
+        payload.setdefault("params", st.get("params") or {})
+        payload.setdefault("metrics", st.get("metrics") or {})
+        payload.setdefault("history", st.get("history") or [])
+        payload.setdefault("run_id", st.get("run_id"))
+        payload.setdefault("artifact_path", st.get("artifact_path"))
+        payload.setdefault("champion_promoted", st.get("champion_promoted"))
+        payload.setdefault("job_type", st.get("job_type"))
+        payload.setdefault("sweep_summary_path", st.get("sweep_summary_path"))
+        payload.setdefault("sweep_best_overall", st.get("sweep_best_overall"))
+        payload.setdefault("sweep_best_by_model", st.get("sweep_best_by_model"))
+
+        # time_total_ms: preferido si existe, sino derivar de elapsed_s
+        if payload.get("time_total_ms") is None and payload.get("elapsed_s") is not None:
+            try:
+                payload["time_total_ms"] = float(payload["elapsed_s"]) * 1000.0
+            except Exception:
+                payload["time_total_ms"] = None
+
+        return payload
 
     # 2) Fallback: si es sweep y existe summary.json, úsalo como fuente de verdad
     summary_path = _sweeps_dir() / job_id / "summary.json"
@@ -2013,15 +2046,17 @@ def promote_champion(req: PromoteChampionRequest) -> ChampionInfo:
             model_name=req.model_name,
             family=getattr(req, "family", None),
         )
-
-        # FIX: fallback defensivo para source_run_id (misma lógica que GET /champion)
         if isinstance(champ, dict) and not champ.get("source_run_id"):
             m = champ.get("metrics") or {}
             if isinstance(m, dict) and m.get("run_id"):
                 champ = dict(champ)
                 champ["source_run_id"] = m.get("run_id")
-
         return ChampionInfo(**champ)
+
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=409, detail=f"No se pudo promover champion: {e}")
 

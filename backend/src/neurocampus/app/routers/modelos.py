@@ -219,6 +219,19 @@ def _extract_labeled_score_meta(labeled_ref: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
+    # Fallback legacy: algunos pipelines antiguos escribían meta como columnas constantes
+    cols_wanted: list[str] = [
+        "score_delta_max",
+        "score_calib_q",
+        "score_beta",
+        "score_beta_source",
+        "score_calib_abs_q",
+        "score_version",
+        "empty_text_policy",
+        "keep_empty_text",
+    ]
+
+
     cols_existing: list[str] = []
     try:
         import pyarrow.parquet as pq  # type: ignore
@@ -1504,30 +1517,55 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         )
 
         # 5) Entrenar (Plantilla)
-        tpl = PlantillaEntrenamiento(strategy=strategy, job_id=job_id, family=req_norm.family)
+        #    Importante: PlantillaEntrenamiento usa el nombre de parámetro `estrategia`
+        #    y la firma de run() espera `data_ref` (no `selected_ref`).
+        tpl = PlantillaEntrenamiento(estrategia=strategy)
 
-        # Pasar args de manera flexible (por si cambian firmas)
-        _call_with_accepted_kwargs(
-            tpl.run,
-            selected_ref=selected_ref,
+        result = tpl.run(
+            data_ref=str(selected_ref),
             epochs=int(req_norm.epochs or 5),
             hparams=run_hparams,
             model_name=str(req_norm.modelo),
         )
 
-        final_metrics = tpl.final_metrics or {}
-        history = tpl.history or []
+        # La plantilla retorna un payload normalizado.
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"PlantillaEntrenamiento retornó un tipo inesperado: {type(result)}"
+            )
+
+        final_metrics = dict(result.get("metrics") or {})
+        history = list(result.get("history") or [])
+
+        # Enriquecer métricas con metadatos útiles para champion scoring/auditoría.
+        final_metrics.setdefault("task_type", str(req_norm.task_type or ""))
+        final_metrics.setdefault("family", str(req_norm.family or ""))
+        final_metrics.setdefault("dataset_id", str(req_norm.dataset_id or ""))
+        final_metrics.setdefault("model_name", str(req_norm.modelo or ""))
 
         # 6) Guardar run en artifacts (fuente de verdad)
         req_snapshot = req_norm.model_dump()
-        run_id = save_run(
-            model_name=str(req_norm.modelo),
+
+        run_id = build_run_id(
             dataset_id=str(req_norm.dataset_id),
-            family=str(req_norm.family),
-            hparams=run_hparams,
-            metrics=final_metrics,
+            model_name=str(req_norm.modelo),
+            job_id=str(job_id),
+        )
+
+        run_dir = save_run(
+            run_id=run_id,
+            job_id=str(job_id),
+            dataset_id=str(req_norm.dataset_id),
+            model_name=str(req_norm.modelo),
+            data_ref=str(selected_ref),
+            params={
+                # snapshot reproducible del request normalizado
+                "req": req_snapshot,
+                # hparams efectivos (incluye defaults resueltos)
+                "hparams": run_hparams,
+            },
+            final_metrics=final_metrics,
             history=history,
-            params={"req": req_snapshot},
         )
 
         # 7) Estado final
@@ -1536,6 +1574,7 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 "status": "completed",
                 "progress": 1.0,
                 "run_id": str(run_id),
+                "artifact_path": _relpath(Path(run_dir)),
                 "metrics": final_metrics,
                 "history": history,
                 "elapsed_s": float(time.perf_counter() - t0),
@@ -1546,14 +1585,18 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
 
         # 8) Champion (si aplica)
         try:
-            maybe_update_champion(
+            champion_doc = maybe_update_champion(
                 dataset_id=str(req_norm.dataset_id),
-                run_id=str(run_id),
                 model_name=str(req_norm.modelo),
+                metrics=final_metrics,
+                source_run_id=str(run_id),
                 family=str(req_norm.family),
             )
+            st["champion_promoted"] = bool(champion_doc)
+            _ESTADOS[job_id] = st
         except Exception:
             logger.exception("No se pudo evaluar/promover champion para run_id=%s", run_id)
+
 
     except Exception as e:
         detail = e.detail if isinstance(e, HTTPException) else str(e)

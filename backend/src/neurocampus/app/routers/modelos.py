@@ -27,13 +27,17 @@ Correcciones clave
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
+import re
 import os
 import time
 import uuid
+import math
 import inspect
 import logging
+import json
+import datetime as dt
 logger = logging.getLogger(__name__)
 from pathlib import Path
 
@@ -54,6 +58,10 @@ from ..schemas.modelos import (
     RunSummary,
     RunDetails,
     ChampionInfo,
+    SweepEntrenarRequest,
+    SweepEntrenarResponse,
+    SweepSummary,
+    SweepCandidate,
 )
 
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
@@ -238,19 +246,95 @@ _STRATEGY_CLASSES: Dict[str, Type[Any]] = {
     "dbm_manual": DBMManualPlantillaStrategy,
 }
 
+def _expand_grid(grid: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # ya viene como lista de dicts -> lo tratamos como combinaciones explícitas
+    out = []
+    for g in (grid or []):
+        if isinstance(g, dict):
+            out.append(g)
+    return out
 
-def _create_strategy(modelo: str) -> Any:
-    """
-    Crea una instancia NUEVA de estrategia por job (FIX A).
 
-    :param modelo: nombre lógico del modelo ("rbm_general" | "rbm_restringida" | "dbm_manual")
-    :raises HTTPException: si el modelo no está soportado
+def _default_sweep_grid() -> list[dict[str, Any]]:
+    # Grid seguro basado en el config legacy (hidden_units/lr/batch_size/cd_k)
+    return [
+        {"hidden_units": 64, "lr": 0.01},
+        {"hidden_units": 64, "lr": 0.05},
+        {"hidden_units": 128, "lr": 0.01},
+        {"hidden_units": 128, "lr": 0.05},
+    ]
+
+
+def _sweeps_dir() -> Path:
+    return (BASE_DIR / "artifacts" / "sweeps").resolve()
+
+def _write_sweep_summary(sweep_id: str, payload: dict[str, Any]) -> Path:
+    d = _sweeps_dir() / str(sweep_id)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "summary.json"
+    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return p
+
+def _recompute_sweep_winners(candidates: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
     """
-    key = str(modelo or "").strip().lower()
-    cls = _STRATEGY_CLASSES.get(key)
+    Recomputar best_overall y best_by_model leyendo metrics.json de cada run.
+    - Si un candidato no tiene métricas comparables (p.ej. sin val_rmse en regresión),
+      su score cae al peor valor.
+    """
+    from ...utils.runs_io import champion_score, load_run_metrics  # noqa: WPS433
+
+    best_overall: dict[str, Any] | None = None
+    best_by_model: dict[str, dict[str, Any]] = {}
+
+    for it in candidates:
+        if it.get("status") != "completed" or not it.get("run_id"):
+            continue
+
+        metrics = load_run_metrics(str(it["run_id"]))
+        it["metrics"] = metrics
+
+        tier, sc = champion_score(metrics or {})
+        # Normalizar a float finito (JSON/UI)
+        try:
+            sc = float(sc)
+        except Exception:
+            sc = -1e30
+        if not math.isfinite(sc):
+            sc = -1e30
+
+        it["score"] = [int(tier), float(sc)]
+
+        m = str(it.get("model_name") or "")
+        prev = best_by_model.get(m)
+        if (prev is None) or (tuple(it["score"]) > tuple(prev.get("score") or (-999, -1e30))):
+            best_by_model[m] = dict(it)
+
+        if (best_overall is None) or (tuple(it["score"]) > tuple(best_overall.get("score") or (-999, -1e30))):
+            best_overall = dict(it)
+
+    return best_overall, best_by_model
+
+
+def _create_strategy(
+    modelo: str | None = None,
+    *,
+    model_name: str | None = None,
+    **kwargs: Any,
+) -> Any:
+    """
+    Factory de estrategias.
+    - Compatibilidad: acepta `modelo` (histórico) y `model_name` (nuevo).
+    - Tolera kwargs extra (hparams, job_id, dataset_id, family, etc.) para evitar
+      fallos si cambia el caller.
+    """
+    name = (modelo or model_name or "").lower().strip()
+    cls = _STRATEGY_CLASSES.get(name)
     if cls is None:
-        raise HTTPException(status_code=400, detail=f"Modelo no soportado: {modelo}")
-    return cls()
+        raise HTTPException(status_code=400, detail=f"Modelo '{name}' no soportado")
+
+    # Instancia de forma segura: filtra kwargs según la firma del constructor
+    return _call_with_accepted_kwargs(cls, **kwargs)
+
 
 
 def _safe_reset_strategy(strategy: Any) -> None:
@@ -824,6 +908,101 @@ def _read_dataframe_any(path_or_uri: str) -> pd.DataFrame:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"No se pudo leer el dataset ({p.name}): {e}") from e
 
+def _period_key(ds: str) -> tuple[int, int]:
+    """
+    Ordena dataset_id tipo 'YYYY-N' (ej. 2025-1, 2024-3).
+    Si no parsea, lo manda al inicio.
+    """
+    m = re.match(r"^\s*(\d{4})-(\d{1,2})\s*$", str(ds))
+    if not m:
+        return (0, 0)
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def _list_pair_matrix_datasets() -> list[str]:
+    base = (BASE_DIR / "artifacts" / "features").resolve()
+    if not base.exists():
+        return []
+    out: list[str] = []
+    for p in base.iterdir():
+        if not p.is_dir():
+            continue
+        if (p / "pair_matrix.parquet").exists():
+            out.append(p.name)
+    return sorted(out, key=_period_key)
+
+
+def _materialize_score_docente_pair_selection(req: EntrenarRequest, job_id: str) -> str:
+    """
+    Construye un parquet temporal uniendo pair_matrix de varios periodos según data_plan:
+      - recent_window: concat de últimos window_k periodos (<= dataset_id actual)
+      - recent_window_plus_replay: concat de ventana + muestra de periodos antiguos (replay_size)
+    """
+    dataset_id = _dataset_id(req)
+    plan = str(getattr(req, "data_plan", "dataset_only") or "dataset_only").lower()
+    window_k = int(getattr(req, "window_k", None) or 4)
+    replay_size = int(getattr(req, "replay_size", None) or 0)
+    replay_strategy = str(getattr(req, "replay_strategy", "uniform") or "uniform").lower()
+
+    all_ds = _list_pair_matrix_datasets()
+    if not all_ds:
+        raise HTTPException(status_code=404, detail="No hay pair_matrix disponibles en artifacts/features/*/pair_matrix.parquet")
+
+    cur_k = _period_key(dataset_id)
+    eligible = [d for d in all_ds if _period_key(d) <= cur_k]
+    if not eligible:
+        eligible = all_ds[:]  # fallback
+
+    recent = eligible[-window_k:] if window_k > 0 else eligible[-1:]
+    if dataset_id not in recent and dataset_id in eligible:
+        recent = (recent + [dataset_id])[-window_k:]
+
+    older = [d for d in eligible if d not in recent]
+
+    def _read_pair(ds: str) -> pd.DataFrame:
+        p = (BASE_DIR / "artifacts" / "features" / ds / "pair_matrix.parquet").resolve()
+        if not p.exists():
+            raise HTTPException(status_code=404, detail=f"pair_matrix no encontrado para {ds}: {p}")
+        df = pd.read_parquet(p)
+        if "periodo" not in df.columns:
+            df = df.copy()
+            df["periodo"] = ds
+        return df
+
+    df_recent = pd.concat([_read_pair(d) for d in recent], ignore_index=True)
+
+    df_replay = None
+    if plan == "recent_window_plus_replay" and replay_size > 0 and older:
+        df_pool = pd.concat([_read_pair(d) for d in older], ignore_index=True)
+        if len(df_pool) > 0:
+            n = min(replay_size, len(df_pool))
+            if replay_strategy == "by_period" and "periodo" in df_pool.columns:
+                chunks = []
+                periods = sorted(df_pool["periodo"].astype(str).unique().tolist(), key=_period_key)
+                per = max(1, n // max(1, len(periods)))
+                for per_ds in periods:
+                    sub = df_pool[df_pool["periodo"].astype(str) == per_ds]
+                    if len(sub) == 0:
+                        continue
+                    take = min(per, len(sub))
+                    chunks.append(sub.sample(n=take, random_state=7, replace=False))
+                df_replay = pd.concat(chunks, ignore_index=True) if chunks else df_pool.sample(n=n, random_state=7, replace=False)
+            else:
+                df_replay = df_pool.sample(n=n, random_state=7, replace=False)
+
+    df_sel = df_recent if df_replay is None else pd.concat([df_recent, df_replay], ignore_index=True)
+
+    # Alinear columnas (union) para evitar errores si algún periodo trae columnas extra
+    cols = sorted(set(df_sel.columns.tolist()))
+    df_sel = df_sel.reindex(columns=cols)
+
+    tmp_dir = (BASE_DIR / "data" / ".tmp").resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_ref = tmp_dir / f"pair_sel_{job_id}.parquet"
+    df_sel.to_parquet(tmp_ref, index=False)
+    return str(tmp_ref.resolve())
+
+
 
 def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
     """
@@ -845,7 +1024,15 @@ def _prepare_selected_data(req: EntrenarRequest, job_id: str) -> str:
                     "Activa auto_prepare=true al entrenar o llama a POST /modelos/feature-pack/prepare."
                 ),
             )
+
+        # score_docente: materializar selección multi-periodo si aplica
+        fam = str(getattr(req, "family", "") or "").lower()
+        plan = str(getattr(req, "data_plan", "dataset_only") or "dataset_only").lower()
+        if fam == "score_docente" and data_source in ("pair_matrix", "pairs", "pair") and plan in ("recent_window", "recent_window_plus_replay"):
+            return _materialize_score_docente_pair_selection(req, job_id)
+
         return str(pack_path.resolve())
+
 
 
     df = _read_dataframe_any(data_ref)
@@ -1242,135 +1429,332 @@ def _evaluate_post_training_metrics(estrategia, df: "pd.DataFrame", hparams: dic
 # ---------------------------------------------------------------------------
 
 def _run_training(job_id: str, req: EntrenarRequest) -> None:
-    """Ejecuta el entrenamiento en background y persiste runs/champion si aplica."""
     t0 = time.perf_counter()
+
+    # estado base
+    st = _ESTADOS.get(job_id, {}) if isinstance(_ESTADOS.get(job_id), dict) else {}
+    st.setdefault("job_id", job_id)
+    st["job_type"] = "train"
+    st["status"] = "running"
+    st["progress"] = 0.0
+    st["error"] = None
+    st["metrics"] = {}
+    st["history"] = []
+    st["run_id"] = None
+    _ESTADOS[job_id] = st
+
+    # Observers (training.* -> estado en memoria)
+    _wire_job_observers(job_id)
+
     try:
-        # FIX A: instancia nueva SIEMPRE
-        estrategia = _create_strategy(req.modelo)
-        # FIX B defensivo: reset si existe
-        _safe_reset_strategy(estrategia)
-
-        tpl = PlantillaEntrenamiento(estrategia)
-
-        _wire_job_observers(job_id)
-
-        selected_ref = _prepare_selected_data(req, job_id)
-
-        # hparams robusto (sin None + defaults)
+        # 1) Resolver hparams/plan (fuente de verdad para ejecución)
         run_hparams = _build_run_hparams(req, job_id)
 
-        # ------------------------------------------------------------
-        # Warm-start: resolver warm_start_run_id -> warm_start_path
-        # ------------------------------------------------------------
-        try:
-            warm_run_id = run_hparams.get("warm_start_run_id")
-            if warm_run_id:
-                # Importar RUNS_DIR desde runs_io (si no está ya importado)
-                from ...utils.runs_io import RUNS_DIR  # noqa: WPS433
+        # 2) Normalizar request para snapshot/UI (que "params.req" sea consistente)
+        inferred_target_col = _infer_target_col(req, run_hparams)
 
-                warm_dir = (RUNS_DIR / str(warm_run_id)).resolve()
-                if warm_dir.exists():
-                    run_hparams["warm_start_path"] = str(warm_dir)
-        except Exception:
-            # Nunca tumbar el entrenamiento por warm-start
-            pass
+        update_payload: dict[str, Any] = {
+            "data_source": run_hparams.get("data_source"),
+            "target_mode": run_hparams.get("target_mode"),
+            "split_mode": run_hparams.get("split_mode"),
+            "val_ratio": run_hparams.get("val_ratio"),
+            "include_teacher_materia": run_hparams.get("include_teacher_materia"),
+            "teacher_materia_mode": run_hparams.get("teacher_materia_mode"),
+        }
+        if inferred_target_col is not None:
+            update_payload["target_col"] = inferred_target_col
 
+        # filtrar solo campos existentes (evita problemas si el schema cambia)
+        model_fields = getattr(req, "model_fields", None)
+        if isinstance(model_fields, dict):
+            update_payload = {k: v for k, v in update_payload.items() if k in model_fields}
 
-        out = tpl.run(
-            selected_ref,
-            req.epochs,
-            run_hparams,
-            model_name=req.modelo,
+        req_norm = req.model_copy(update=update_payload)
+
+        # 3) Seleccionar/preparar data (si req_norm.data_ref ya viene seteado, se reutiliza)
+        selected_ref = _prepare_selected_data(req_norm, job_id)
+
+        # 4) Crear estrategia (instancia nueva por job)
+        strategy = _create_strategy(
+            model_name=req_norm.modelo,
+            hparams=run_hparams,
+            job_id=job_id,
+            dataset_id=req_norm.dataset_id,
+            family=req_norm.family,
         )
 
-        # estado base: si no existía, al menos deja job_id + contenedores
-        st = _ESTADOS.get(job_id, {})
-        if not isinstance(st, dict):
-            st = {}
-        st.setdefault("job_id", job_id)
-        st.setdefault("metrics", {})
-        st.setdefault("history", [])
+        # 5) Entrenar (Plantilla)
+        tpl = PlantillaEntrenamiento(strategy=strategy, job_id=job_id, family=req_norm.family)
 
-        # mete status/metrics/history que devolvió tpl.run(...)
-        if isinstance(out, dict):
-            st.update(out)
+        # Pasar args de manera flexible (por si cambian firmas)
+        _call_with_accepted_kwargs(
+            tpl.run,
+            selected_ref=selected_ref,
+            epochs=int(req_norm.epochs or 5),
+            hparams=run_hparams,
+            model_name=str(req_norm.modelo),
+        )
 
-        if out.get("status") == "completed":
-            # 1) Métricas post-entrenamiento (solo clasificación legacy).
-            #    Para score_docente (regresión) las métricas se reportan desde la estrategia (Paso 5)
-            #    y/o se computan con el esquema de validación temporal específico.
-            family = str(getattr(req, "family", "sentiment_desempeno") or "sentiment_desempeno").lower()
-            if family != "score_docente":
-                try:
-                    df_eval = pd.read_parquet(str(selected_ref))
-                    eval_metrics = _evaluate_post_training_metrics(estrategia, df_eval, run_hparams)
+        final_metrics = tpl.final_metrics or {}
+        history = tpl.history or []
 
-                    merged = dict(out.get("metrics") or {})
-                    merged.update(eval_metrics)
+        # 6) Guardar run en artifacts (fuente de verdad)
+        req_snapshot = req_norm.model_dump()
+        run_id = save_run(
+            model_name=str(req_norm.modelo),
+            dataset_id=str(req_norm.dataset_id),
+            family=str(req_norm.family),
+            hparams=run_hparams,
+            metrics=final_metrics,
+            history=history,
+            params={"req": req_snapshot},
+        )
 
-                    out["metrics"] = merged
-                    st["metrics"] = merged
-                except Exception as e_eval:
-                    # No tumbar el run por evaluación: deja rastro para debug
-                    merged = dict(out.get("metrics") or {})
-                    merged["eval_error"] = str(e_eval)
-                    out["metrics"] = merged
-                    st["metrics"] = merged
-
-
-            # 2) Persistir run (CON métricas reales ya mergeadas)
-            ds = _dataset_id(req) or "unknown"
-            run_id = build_run_id(dataset_id=str(ds), model_name=str(req.modelo), job_id=job_id)
-
-            req_snapshot = (req.model_dump() if hasattr(req, "model_dump") else req.dict())
-            req_snapshot.update({"job_id": job_id, "selected_ref": str(selected_ref), "base_dir": str(BASE_DIR)})
-
-            run_dir = save_run(
-                run_id=run_id,
-                job_id=job_id,
-                dataset_id=str(ds),
-                model_name=str(req.modelo),
-                data_ref=str(selected_ref),
-                params={"req": req_snapshot},
-                final_metrics=out.get("metrics") or {},
-                history=out.get("history") or [],
-            )
-
-            # 3) Guardar artefactos del modelo en el run_dir (rbm.pt, head.pt, vectorizer.json, etc.)
-            if hasattr(estrategia, "save") and callable(getattr(estrategia, "save")):
-                estrategia.save(str(run_dir))
-
-            # 4) Actualizar champion usando métricas reales
-            upd = _call_with_accepted_kwargs(
-                maybe_update_champion,
-                dataset_id=str(ds),
-                model_name=str(req.modelo),
-                metrics=out.get("metrics") or {},
-                source_run_id=run_id,
-                family=getattr(req, "family", None),
-                task_type=getattr(req, "task_type", None),
-                input_level=getattr(req, "input_level", None),
-                target_col=getattr(req, "target_col", None),
-                data_plan=getattr(req, "data_plan", None),
-            )
-
-
-            st["run_id"] = run_id
-            st["artifact_path"] = str(run_dir)
-            st["champion_promoted"] = bool(upd.get("promoted"))
-            st["time_total_ms"] = float((time.perf_counter() - t0) * 1000.0)
-
+        # 7) Estado final
+        st.update(
+            {
+                "status": "completed",
+                "progress": 1.0,
+                "run_id": str(run_id),
+                "metrics": final_metrics,
+                "history": history,
+                "elapsed_s": float(time.perf_counter() - t0),
+            }
+        )
         _ESTADOS[job_id] = st
+
+        # 8) Champion (si aplica)
+        try:
+            maybe_update_champion(
+                dataset_id=str(req_norm.dataset_id),
+                run_id=str(run_id),
+                model_name=str(req_norm.modelo),
+                family=str(req_norm.family),
+            )
+        except Exception:
+            logger.exception("No se pudo evaluar/promover champion para run_id=%s", run_id)
 
     except Exception as e:
-        st = _ESTADOS.get(job_id) or {"job_id": job_id, "metrics": {}, "history": []}
-        if not isinstance(st, dict):
-            st = {"job_id": job_id, "metrics": {}, "history": []}
-        st["status"] = "failed"
-        st["error"] = str(e)
-        st["time_total_ms"] = float((time.perf_counter() - t0) * 1000.0)
-        st.setdefault("progress", 0.0)
+        logger.exception("Falló entrenamiento job_id=%s", job_id)
+        st.update(
+            {
+                "status": "failed",
+                "error": str(e),
+                "elapsed_s": float(time.perf_counter() - t0),
+            }
+        )
         _ESTADOS[job_id] = st
+
+
+def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
+    t0 = time.perf_counter()
+
+    st = _ESTADOS.get(sweep_id, {}) if isinstance(_ESTADOS.get(sweep_id), dict) else {}
+    st.setdefault("job_id", sweep_id)
+    st["job_type"] = "sweep"
+    st["status"] = "running"
+    st["progress"] = 0.0
+    st["error"] = None
+
+    started_at = dt.datetime.utcnow().isoformat() + "Z"
+
+    # 1) Construir una sola selección de datos para TODO el sweep (comparabilidad)
+    base_req = EntrenarRequest(
+        modelo="rbm_restringida",  # placeholder; se overridea por candidato
+        dataset_id=req.dataset_id,
+        family=req.family,
+        task_type=req.task_type,
+        input_level=req.input_level,
+        data_source=req.data_source,
+        epochs=req.epochs,
+        data_plan=req.data_plan,
+        window_k=req.window_k,
+        replay_size=req.replay_size,
+        replay_strategy=req.replay_strategy,
+        recency_lambda=req.recency_lambda,
+        warm_start_from=req.warm_start_from,
+        warm_start_run_id=req.warm_start_run_id,
+        hparams=req.base_hparams,
+        auto_prepare=True,
+    )
+
+    selected_ref = _prepare_selected_data(base_req, sweep_id)
+
+    # 2) Armar candidatos (modelo × grid)
+    modelos = [str(m) for m in (req.modelos or [])]
+    grid_global = _expand_grid(req.hparams_grid or _default_sweep_grid())
+    grid_by_model = req.hparams_by_model or {}
+
+    candidates: list[dict[str, Any]] = []
+    for m in modelos:
+        grid = grid_by_model.get(m) or grid_global
+        for g in grid:
+            candidates.append({"model_name": m, "hparams": {**(req.base_hparams or {}), **(g or {})}})
+
+    # cap
+    candidates = candidates[: int(req.max_total_runs or 50)]
+
+    # estado en memoria
+    cand_state: list[dict[str, Any]] = []
+    for c in candidates:
+        cand_state.append(
+            {
+                "model_name": c["model_name"],
+                "hparams": c["hparams"],
+                "status": "queued",
+                "child_job_id": None,
+                "run_id": None,
+                "metrics": None,
+                "score": None,
+                "error": None,
+            }
+        )
+
+    st["params"] = {
+        "dataset_id": req.dataset_id,
+        "family": req.family,
+        "n_candidates": len(cand_state),
+        "selected_ref": str(selected_ref),
+    }
+
+    best_overall: dict[str, Any] | None = None
+    best_by_model: dict[str, dict[str, Any]] = {}
+
+    from ...utils.runs_io import champion_score, load_run_metrics, load_current_champion, promote_run_to_champion  # noqa: WPS433
+
+    # 3) Ejecutar secuencial (robusto y determinista)
+    for i, item in enumerate(cand_state, start=1):
+        child_job_id = str(uuid.uuid4())
+        item["child_job_id"] = child_job_id
+        item["status"] = "running"
+        _ESTADOS[sweep_id] = st  # flush
+
+        _ESTADOS[child_job_id] = {
+            "job_id": child_job_id,
+            "job_type": "train",
+            "status": "running",
+            "progress": 0.0,
+            "metrics": {},
+            "history": [],
+            "run_id": None,
+            "error": None,
+        }
+
+        # request por candidato (reusa selected_ref para evitar re-sampling)
+        cand_req = base_req.model_copy(
+            update={
+                "modelo": item["model_name"],
+                "hparams": item["hparams"],
+                "data_ref": str(selected_ref),
+                "auto_prepare": False,
+            }
+        )
+
+        # Normalización igual que /modelos/entrenar
+        resolved = _build_run_hparams(cand_req, child_job_id)
+        inferred_target_col = _infer_target_col(cand_req, resolved)
+
+        update_payload = {
+            "hparams": (cand_req.hparams or {}),
+            "data_source": resolved.get("data_source"),
+            "target_mode": resolved.get("target_mode"),
+            "split_mode": resolved.get("split_mode"),
+            "val_ratio": resolved.get("val_ratio"),
+            "include_teacher_materia": resolved.get("include_teacher_materia"),
+            "teacher_materia_mode": resolved.get("teacher_materia_mode"),
+        }
+        if inferred_target_col is not None:
+            update_payload["target_col"] = inferred_target_col
+
+        model_fields = getattr(cand_req, "model_fields", None)
+        if isinstance(model_fields, dict):
+            update_payload = {k: v for k, v in update_payload.items() if k in model_fields}
+
+        cand_req_norm = cand_req.model_copy(update=update_payload)
+
+        _run_training(child_job_id, cand_req_norm)
+
+        child = _ESTADOS.get(child_job_id) or {}
+        status = child.get("status")
+        if status != "completed" or not child.get("run_id"):
+            item["status"] = "failed"
+            item["error"] = child.get("error") or "Entrenamiento falló (sin detalle)."
+        else:
+            item["status"] = "completed"
+            item["run_id"] = child.get("run_id")
+
+            metrics = load_run_metrics(str(item["run_id"]))
+            item["metrics"] = metrics
+
+            tier, score = champion_score(metrics or {})
+            if not isinstance(score, (int, float)) or not math.isfinite(float(score)):
+                score = -1e30
+            item["score"] = [int(tier), float(score)]
+
+            # best por modelo
+            m = str(item["model_name"])
+            prev = best_by_model.get(m)
+            if (prev is None) or (tuple(item["score"]) > tuple(prev.get("score") or (-999, -1e30))):
+                best_by_model[m] = dict(item)
+
+            # best overall
+            if (best_overall is None) or (tuple(item["score"]) > tuple(best_overall.get("score") or (-999, -1e30))):
+                best_overall = dict(item)
+
+        # progreso
+        st["progress"] = float(i) / float(max(1, len(cand_state)))
+        st["status"] = "running"
+        _ESTADOS[sweep_id] = st
+
+    # Hardening por si algo raro dejó best_overall vacío
+    if best_overall is None:
+        best_overall, best_by_model = _recompute_sweep_winners(cand_state)
+
+    finished_at = dt.datetime.utcnow().isoformat() + "Z"
+
+    summary_payload = {
+        "sweep_id": sweep_id,
+        "status": "completed",
+        "family": req.family,
+        "dataset_id": req.dataset_id,
+        "created_at": started_at,
+        "finished_at": finished_at,
+        "n_candidates": len(cand_state),
+        "n_completed": sum(1 for c in cand_state if c.get("status") == "completed"),
+        "n_failed": sum(1 for c in cand_state if c.get("status") == "failed"),
+        "best_overall": best_overall,
+        "best_by_model": best_by_model,
+        "candidates": cand_state,
+    }
+
+    summary_path = _write_sweep_summary(sweep_id, summary_payload)
+
+    # opcional: champion promotion
+    try:
+        current = load_current_champion(dataset_id=req.dataset_id)
+        if current and best_overall and current.get("run_id"):
+            current_score = champion_score(load_run_metrics(str(current["run_id"])))
+            if tuple(best_overall["score"]) > tuple(current_score):
+                promote_run_to_champion(
+                    dataset_id=req.dataset_id,
+                    run_id=str(best_overall["run_id"]),
+                    model_name=str(best_overall["model_name"]),
+                )
+    except Exception:
+        logger.exception("No se pudo evaluar/promover champion en sweep=%s", sweep_id)
+
+    st.update(
+        {
+            "status": "completed",
+            "progress": 1.0,
+            "elapsed_s": float(time.perf_counter() - t0),
+            "sweep_summary_path": str(summary_path),
+            "sweep_best_overall": best_overall,
+            "sweep_best_by_model": best_by_model,
+        }
+    )
+    _ESTADOS[sweep_id] = st
+
 
 
 
@@ -1527,7 +1911,17 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
     }
 
     # Normaliza hparams, preservando el resto del request intacto
-    update_payload: Dict[str, Any] = {"hparams": hp_norm_raw}
+    # + persistir defaults resueltos para trazabilidad (params.req.*)
+    update_payload: Dict[str, Any] = {
+        "hparams": hp_norm_raw,
+        # defaults “efectivos” (evita que params.req.target_mode quede como el default del schema)
+        "data_source": resolved_run_hparams.get("data_source"),
+        "target_mode": resolved_run_hparams.get("target_mode"),
+        "split_mode": resolved_run_hparams.get("split_mode"),
+        "val_ratio": resolved_run_hparams.get("val_ratio"),
+        "include_teacher_materia": resolved_run_hparams.get("include_teacher_materia"),
+        "teacher_materia_mode": resolved_run_hparams.get("teacher_materia_mode"),
+    }
 
     # Persistimos también target_col inferido en el request (para que quede en params.req.target_col)
     if inferred_target_col is not None:
@@ -1541,12 +1935,62 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
     bg.add_task(_run_training, job_id, req_norm)
     return EntrenarResponse(job_id=job_id, status="running", message="Entrenamiento lanzado")
 
+@router.post("/entrenar/sweep", response_model=SweepEntrenarResponse)
+def entrenar_sweep(req: SweepEntrenarRequest, bg: BackgroundTasks) -> SweepEntrenarResponse:
+    sweep_id = str(uuid.uuid4())
+
+    _ESTADOS[sweep_id] = {
+        "job_id": sweep_id,
+        "job_type": "sweep",
+        "status": "running",
+        "progress": 0.0,
+        "metrics": {},
+        "history": [],
+        "params": {
+            "dataset_id": req.dataset_id,
+            "family": req.family,
+            "modelos": req.modelos,
+        },
+        "error": None,
+    }
+
+    bg.add_task(_run_sweep_training, sweep_id, req)
+    return SweepEntrenarResponse(sweep_id=sweep_id, status="running", message="Sweep lanzado")
+
 
 @router.get("/estado/{job_id}", response_model=EstadoResponse)
-def estado(job_id: str) -> EstadoResponse:
-    """Devuelve el estado actual de un job."""
-    st = _ESTADOS.get(job_id) or {"job_id": job_id, "status": "unknown", "metrics": {}, "history": [], "progress": 0.0}
-    return EstadoResponse(**st)
+def estado(job_id: str):
+    st = _ESTADOS.get(job_id)
+
+    # 1) Si está en memoria, devuélvelo normal
+    if isinstance(st, dict):
+        return {
+            "job_id": job_id,
+            "status": st.get("status", "unknown"),
+            "progress": float(st.get("progress", 0.0) or 0.0),
+            "error": st.get("error"),
+            "sweep_summary_path": st.get("sweep_summary_path"),
+        }
+
+    # 2) Fallback: si es sweep y existe summary.json, úsalo como fuente de verdad
+    summary_path = _sweeps_dir() / job_id / "summary.json"
+    if summary_path.exists():
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+
+        status = payload.get("status") or "completed"
+        return {
+            "job_id": job_id,
+            "status": status,
+            "progress": 1.0 if status == "completed" else 0.0,
+            "error": payload.get("error"),
+            "sweep_summary_path": str(summary_path),
+        }
+
+    return {"job_id": job_id, "status": "unknown", "progress": 0.0, "error": None, "sweep_summary_path": None}
+
 
 
 @router.post(
@@ -1628,6 +2072,83 @@ def get_run_details(run_id: str) -> RunDetails:
     if not details:
         raise HTTPException(status_code=404, detail=f"Run {run_id} no encontrado")
     return RunDetails(**details)
+
+@router.get("/sweeps/{sweep_id}", response_model=SweepSummary)
+def get_sweep_summary(sweep_id: str) -> SweepSummary:
+    p = _sweeps_dir() / str(sweep_id) / "summary.json"
+    if not p.exists():
+        # si aún corre, devolvemos lo que haya en memoria
+        st = _ESTADOS.get(sweep_id) or {}
+        return SweepSummary(
+            sweep_id=sweep_id,
+            dataset_id=str((st.get("params") or {}).get("dataset_id") or ""),
+            family=str((st.get("params") or {}).get("family") or "score_docente"),
+            status=str(st.get("status") or "unknown"),
+            summary_path=str(p) if p.exists() else None,
+        )
+    payload = json.loads(p.read_text(encoding="utf-8"))
+    payload["summary_path"] = str(p)
+
+    # Compatibilidad por si existen llaves antiguas en summary.json
+    if "best_overall" not in payload and "sweep_best_overall" in payload:
+        payload["best_overall"] = payload.get("sweep_best_overall")
+    if "best_by_model" not in payload and "sweep_best_by_model" in payload:
+        payload["best_by_model"] = payload.get("sweep_best_by_model")
+
+    from ...utils.runs_io import champion_score  # noqa: WPS433
+
+    def _hydrate_candidate(cand: Any, default_model_name: Optional[str] = None) -> Any:
+        if not isinstance(cand, dict):
+            return cand
+
+        if default_model_name and not cand.get("model_name"):
+            cand["model_name"] = default_model_name
+
+        metrics = cand.get("metrics")
+        if isinstance(metrics, dict):
+            if not cand.get("model_name") and metrics.get("model_name"):
+                cand["model_name"] = metrics.get("model_name")
+            if not cand.get("run_id") and metrics.get("run_id"):
+                cand["run_id"] = metrics.get("run_id")
+
+            if cand.get("score") is None:
+                try:
+                    tier, sc = champion_score(metrics or {})
+                    cand["score"] = [int(tier), float(sc)]
+                except Exception:
+                    pass
+
+        return cand
+
+    bbm = payload.get("best_by_model") or {}
+    if isinstance(bbm, dict):
+        for k, v in list(bbm.items()):
+            bbm[k] = _hydrate_candidate(v, default_model_name=k)
+        payload["best_by_model"] = bbm
+
+    bo = payload.get("best_overall")
+    payload["best_overall"] = _hydrate_candidate(bo)
+
+
+    # Normalización robusta:
+    # - Si best_overall no viene o viene vacío, derivarlo desde best_by_model (ya calculado)
+    bo = payload.get("best_overall")
+    if (bo is None) or (isinstance(bo, dict) and not bo.get("run_id")):
+        bbm = payload.get("best_by_model") or {}
+        if isinstance(bbm, dict) and bbm:
+            def _score_tuple(v: dict[str, Any]) -> tuple[int, float]:
+                s = v.get("score") or [-999, -1e30]
+                try:
+                    return (int(s[0]), float(s[1]))
+                except Exception:
+                    return (-999, -1e30)
+
+            payload["best_overall"] = max(bbm.values(), key=_score_tuple)
+
+            # Persistir la corrección para UI/offline (idempotente)
+            p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return SweepSummary(**payload)
 
 
 @router.get(

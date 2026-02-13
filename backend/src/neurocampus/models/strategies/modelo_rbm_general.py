@@ -349,6 +349,7 @@ class RBMGeneral:
 
         self.w_tr: Optional[Tensor] = None
         self.w_va: Optional[Tensor] = None
+        self.warm_start_info_: Dict[str, Any] = {"warm_start": "skipped"}
 
     # --------------------------
     # Carga de dataset sencillo
@@ -674,40 +675,159 @@ class RBMGeneral:
         self.epochs        = int(hparams.get("epochs", self.epochs))
         self.scale_mode    = str(hparams.get("scale_mode", self.scale_mode))
 
-        include_text_probs   = bool(hparams.get("use_text_probs", False))
-        include_text_embeds  = bool(hparams.get("use_text_embeds", False))
-        self.text_embed_prefix_ = str(hparams.get("text_embed_prefix", self.text_embed_prefix_))
-        max_calif = int(hparams.get("max_calif", 10))
+        # --- Detectar tipo de tarea (clasificación vs regresión) ---
+        self.task_type = str(hparams.get("task_type", self.task_type or "classification") or "classification").lower()
+        if self.task_type not in ("classification", "regression"):
+            self.task_type = "classification"
 
-        df = self._load_df(data_ref) if data_ref else pd.DataFrame({f"calif_{i+1}": np.random.rand(256).astype(np.float32) * 5.0 for i in range(max_calif)})
+        if self.task_type == "regression":
+            # score_docente (pair-level)
+            self.target_col_ = str(hparams.get("target_col") or hparams.get("score_col") or "target_score")
+            self.include_teacher_materia_ = bool(hparams.get("include_teacher_materia", self.include_teacher_materia_))
+            self.teacher_materia_mode_ = str(hparams.get("teacher_materia_mode", self.teacher_materia_mode_))
+            self.teacher_id_col_ = str(hparams.get("teacher_id_col", self.teacher_id_col_))
+            self.materia_id_col_ = str(hparams.get("materia_id_col", self.materia_id_col_))
+            self.embed_dim_ = int(hparams.get("embed_dim", hparams.get("tm_emb_dim", self.embed_dim_)))
 
-        X_np, y_np, feat_cols = self._prepare_xy(
-            df,
-            accept_teacher=bool(hparams.get("accept_teacher", False)),
-            threshold=float(hparams.get("accept_threshold", 0.8)),
-            max_calif=max_calif,
-            include_text_probs=include_text_probs,
-            include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
-            text_embed_prefix=self.text_embed_prefix_,
-        )
+            split_mode = str(hparams.get("split_mode", "temporal")).lower()
+            val_ratio = float(hparams.get("val_ratio", 0.2))
 
-        self.feat_cols_ = list(feat_cols)
-        self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
-        X_np = self.vec.transform(X_np)
+            if data_ref:
+                df = self._load_df(data_ref)
+            else:
+                # Dummy para tests/manual (no usado en producción)
+                n = 256
+                df = pd.DataFrame({
+                    "periodo": ["2025-1"] * n,
+                    self.teacher_id_col_: np.random.randint(0, 20, size=n),
+                    self.materia_id_col_: np.random.randint(0, 30, size=n),
+                    self.target_col_: (np.random.rand(n).astype(np.float32) * 50.0),
+                })
+                for i in range(10):
+                    df[f"calif_{i+1}"] = (np.random.rand(n).astype(np.float32) * 5.0)
 
-        X_t = torch.from_numpy(X_np).to(self.device)
-        self.X = X_t
+            X_np, y_np, feat_cols, tid_np, mid_np, w_np = self._prepare_xy_regression(
+                df.copy(),
+                target_col=self.target_col_,
+                include_teacher_materia=self.include_teacher_materia_,
+                teacher_materia_mode=self.teacher_materia_mode_,
+                teacher_id_col=self.teacher_id_col_,
+                materia_id_col=self.materia_id_col_,
+                loss_weight_col=str(hparams.get("loss_weight_col", "n_par")) if hparams.get("loss_weight_col", "n_par") else None,
+            )
 
-        n_visible = X_np.shape[1]
-        n_hidden  = int(hparams.get("n_hidden", self.n_hidden or 32))
-        self.rbm  = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
-        self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum)
+            # Reconstruir df filtrado (mismo criterio que _prepare_xy_regression)
+            y_raw = pd.to_numeric(df[self.target_col_], errors="coerce")
+            df_filt = df[y_raw.notna()].reset_index(drop=True)
 
-        self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
-        self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+            tr_idx, va_idx = self._split_train_val_indices(
+                df_filt,
+                split_mode=split_mode,
+                val_ratio=val_ratio,
+                seed=self.seed,
+            )
+            tr_t = torch.from_numpy(tr_idx).to(self.device)
+            va_t = torch.from_numpy(va_idx).to(self.device)
 
-        self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
+            self.feat_cols_ = list(feat_cols)
+            self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
+            X_np = self.vec.transform(X_np)
+
+            X_all = torch.from_numpy(X_np).to(self.device)
+            y_all = torch.from_numpy(y_np.astype(np.float32, copy=False)).to(self.device)
+
+            self.X_tr = X_all[tr_t]
+            self.y_tr = y_all[tr_t]
+            self.X_va = X_all[va_t]
+            self.y_va = y_all[va_t]
+
+            if tid_np is not None and mid_np is not None:
+                tid_all = torch.from_numpy(tid_np.astype(np.int64, copy=False)).to(self.device)
+                mid_all = torch.from_numpy(mid_np.astype(np.int64, copy=False)).to(self.device)
+                self.tid_tr = tid_all[tr_t]
+                self.mid_tr = mid_all[tr_t]
+                self.tid_va = tid_all[va_t]
+                self.mid_va = mid_all[va_t]
+            else:
+                self.tid_tr = self.mid_tr = self.tid_va = self.mid_va = None
+
+            if w_np is not None:
+                w_all = torch.from_numpy(w_np.astype(np.float32, copy=False)).to(self.device)
+                self.w_tr = w_all[tr_t]
+                self.w_va = w_all[va_t]
+            else:
+                self.w_tr = self.w_va = None
+
+            # compat con _iter_minibatches (usa self.X/self.y para train)
+            self.X = self.X_tr
+            self.y = self.y_tr
+
+            n_visible = int(self.X_tr.shape[1])
+            n_hidden = int(hparams.get("n_hidden", self.n_hidden or 32))
+            self.rbm = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
+            self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum)
+
+            include_ids = bool(self.include_teacher_materia_ and str(self.teacher_materia_mode_).lower() == "embed")
+            self.head = _RegressionHead(
+                n_hidden=n_hidden,
+                n_teachers=max(1, int(self.teacher_vocab_size_)),
+                n_materias=max(1, int(self.materia_vocab_size_)),
+                emb_dim=int(self.embed_dim_),
+                include_ids=include_ids,
+                dropout=float(hparams.get("dropout", 0.0)),
+            ).to(self.device)
+            self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+
+            warm_dir = str(hparams.get("warm_start_path") or "")
+            self.warm_start_info_ = {"warm_start": "skipped", "warm_start_dir": warm_dir}
+            if warm_dir:
+                try:
+                    self.warm_start_info_ = self._try_warm_start(warm_dir)
+                except Exception:
+                    self.warm_start_info_ = {"warm_start": "skipped", "warm_start_dir": warm_dir, "reason": "exception"}
+
+        else:
+            include_text_probs = bool(hparams.get("use_text_probs", False))
+            include_text_embeds = bool(hparams.get("use_text_embeds", False))
+            self.text_embed_prefix_ = str(hparams.get("text_embed_prefix", self.text_embed_prefix_))
+            max_calif = int(hparams.get("max_calif", 10))
+
+            df = self._load_df(data_ref) if data_ref else pd.DataFrame({f"calif_{i+1}": np.random.rand(256).astype(np.float32) * 5.0 for i in range(max_calif)})
+
+            X_np, y_np, feat_cols = self._prepare_xy(
+                df,
+                accept_teacher=bool(hparams.get("accept_teacher", False)),
+                threshold=float(hparams.get("accept_threshold", 0.8)),
+                max_calif=max_calif,
+                include_text_probs=include_text_probs,
+                include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
+                text_embed_prefix=self.text_embed_prefix_,
+            )
+
+            self.feat_cols_ = list(feat_cols)
+            self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
+            X_np = self.vec.transform(X_np)
+
+            X_t = torch.from_numpy(X_np).to(self.device)
+            self.X = X_t
+
+            n_visible = X_np.shape[1]
+            n_hidden = int(hparams.get("n_hidden", self.n_hidden or 32))
+            self.rbm = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
+            self.opt_rbm = torch.optim.SGD(self.rbm.parameters(), lr=self.lr_rbm, momentum=self.momentum)
+
+            self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
+            self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+
+            self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
+
+            # limpiar slots de regresión
+            self.X_tr = self.y_tr = self.tid_tr = self.mid_tr = None
+            self.X_va = self.y_va = self.tid_va = self.mid_va = None
+            self.w_tr = self.w_va = None
+
         self._epoch = 0
+
     # ---------- Mini-batches ----------
     def _iter_minibatches(self, X: Tensor, y: Optional[Tensor]):
         idx = torch.randperm(X.shape[0], device=X.device)
@@ -764,8 +884,43 @@ class RBMGeneral:
                     recon = torch.mean((vk - xb) ** 2).detach().cpu().item()
                 rbm_losses.append(float(recon))
 
-        # --- Head supervised (si hay y) ---
-        if self.y is not None:
+        # --- Head supervised (clasificación) / regresión (score_docente) ---
+        reg_losses: List[float] = []
+
+        if str(getattr(self, "task_type", "classification")).lower() == "regression":
+            if self.X_tr is None or self.y_tr is None:
+                raise RuntimeError("RBMGeneral.setup() no inicializó X_tr/y_tr para regresión")
+
+            self.head.train()
+            for b in range(0, int(self.X_tr.shape[0]), int(self.batch_size)):
+                xb = self.X_tr[b : b + int(self.batch_size)]
+                yb = self.y_tr[b : b + int(self.batch_size)]
+                tidb = self.tid_tr[b : b + int(self.batch_size)] if self.tid_tr is not None else None
+                midb = self.mid_tr[b : b + int(self.batch_size)] if self.mid_tr is not None else None
+                wb = self.w_tr[b : b + int(self.batch_size)] if self.w_tr is not None else None
+
+                with torch.no_grad():
+                    H = self.rbm.hidden_probs(xb)
+
+                self.opt_head.zero_grad(set_to_none=True)
+                if isinstance(self.head, _RegressionHead) and self.head.include_ids:
+                    pred = self.head(H, tidb, midb)
+                else:
+                    pred = self.head(H)
+                    if pred.ndim > 1:
+                        pred = pred.squeeze(-1)
+
+                loss_vec = (pred - yb) ** 2
+                if wb is not None:
+                    loss_reg = (loss_vec * wb).sum() / (wb.sum() + 1e-8)
+                else:
+                    loss_reg = loss_vec.mean()
+
+                loss_reg.backward()
+                self.opt_head.step()
+                reg_losses.append(float(loss_reg.detach().cpu()))
+
+        elif self.y is not None:
             self.head.train()
             for xb, yb in self._iter_minibatches(self.X, self.y):
                 with torch.no_grad():
@@ -777,6 +932,7 @@ class RBMGeneral:
                 self.opt_head.step()
                 cls_losses.append(float(loss_cls.detach().cpu()))
 
+
         time_epoch_ms = float((time.perf_counter() - t0) * 1000.0)
 
         metrics = {
@@ -784,10 +940,60 @@ class RBMGeneral:
             "recon_error": float(np.mean(rbm_losses)) if rbm_losses else 0.0,
             "rbm_grad_norm": float(np.mean(rbm_grad_norms)) if rbm_grad_norms else 0.0,
             "cls_loss": float(np.mean(cls_losses)) if cls_losses else 0.0,
+            "reg_loss": float(np.mean(reg_losses)) if reg_losses else 0.0,
             "time_epoch_ms": time_epoch_ms,
         }
-        metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
+
+        if str(getattr(self, "task_type", "classification")).lower() == "regression" and self.X_tr is not None and self.y_tr is not None:
+            self.rbm.eval()
+            self.head.eval()
+
+            scale = float(getattr(self, "target_scale_", 1.0) or 1.0)
+
+            def _pred(x: Tensor, tid: Optional[Tensor], mid: Optional[Tensor]) -> np.ndarray:
+                with torch.no_grad():
+                    h = self.rbm.hidden_probs(x)
+                    if isinstance(self.head, _RegressionHead) and self.head.include_ids:
+                        p = self.head(h, tid, mid)
+                    else:
+                        p = self.head(h)
+                        if p.ndim > 1:
+                            p = p.squeeze(-1)
+                return (p.detach().cpu().numpy() * scale).astype(np.float32)
+
+            y_tr_np = (self.y_tr.detach().cpu().numpy() * scale).astype(np.float32)
+            p_tr_np = _pred(self.X_tr, self.tid_tr, self.mid_tr)
+
+            metrics.update({
+                "task_type": "regression",
+                "target_col": getattr(self, "target_col_", None),
+                "train_mae": float(_mae(y_tr_np, p_tr_np)),
+                "train_rmse": float(_rmse(y_tr_np, p_tr_np)),
+                "train_r2": float(_r2_score(y_tr_np, p_tr_np)),
+                "n_train": int(self.X_tr.shape[0]),
+            })
+
+            if self.X_va is not None and self.y_va is not None:
+                y_va_np = (self.y_va.detach().cpu().numpy() * scale).astype(np.float32)
+                p_va_np = _pred(self.X_va, self.tid_va, self.mid_va)
+                metrics.update({
+                    "val_mae": float(_mae(y_va_np, p_va_np)),
+                    "val_rmse": float(_rmse(y_va_np, p_va_np)),
+                    "val_r2": float(_r2_score(y_va_np, p_va_np)),
+                    "n_val": int(self.X_va.shape[0]),
+                    "pred_min": float(np.min(p_va_np)) if p_va_np.size else None,
+                    "pred_max": float(np.max(p_va_np)) if p_va_np.size else None,
+                })
+
+            if hasattr(self, "warm_start_info_") and isinstance(self.warm_start_info_, dict):
+                metrics["warm_start"] = dict(self.warm_start_info_)
+
+            metrics["loss"] = metrics["recon_error"] + metrics["reg_loss"]
+        else:
+            metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
+
         return metrics
+
 
 
     # --------------------------
@@ -873,9 +1079,27 @@ class RBMGeneral:
         meta = {
             "feat_cols_": self.feat_cols_,
             "vectorizer": self.vec.to_dict(),
-              "labels": getattr(self, "labels", _DEFAULT_LABELS),
-            "hparams": {"scale_mode": self.scale_mode, "text_embed_prefix": self.text_embed_prefix_, "cd_k": self.cd_k},
+            "labels": getattr(self, "labels", _DEFAULT_LABELS),
+            "hparams": {
+                "scale_mode": self.scale_mode,
+                "text_embed_prefix": self.text_embed_prefix_,
+                "cd_k": int(getattr(self.rbm, "cd_k", self.cd_k)),
+            },
+            "task_type": str(getattr(self, "task_type", "classification")).lower(),
+            "target_col": getattr(self, "target_col_", None),
         }
+        if meta["task_type"] == "regression":
+            meta.update({
+                "target_scale": float(getattr(self, "target_scale_", 1.0) or 1.0),
+                "include_teacher_materia": bool(getattr(self, "include_teacher_materia_", False)),
+                "teacher_materia_mode": str(getattr(self, "teacher_materia_mode_", "")),
+                "teacher_id_col": str(getattr(self, "teacher_id_col_", "teacher_id")),
+                "materia_id_col": str(getattr(self, "materia_id_col_", "materia_id")),
+                "teacher_vocab_size_": int(getattr(self, "teacher_vocab_size_", 0) or 0),
+                "materia_vocab_size_": int(getattr(self, "materia_vocab_size_", 0) or 0),
+                "embed_dim_": int(getattr(self, "embed_dim_", 16) or 16),
+            })
+
         with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2)
 
@@ -893,6 +1117,8 @@ class RBMGeneral:
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as fh:
                 meta = json.load(fh)
+            obj.labels = list(meta.get("labels", _DEFAULT_LABELS))
+            obj.feat_cols_ = list(meta.get("feat_cols_", []))
             obj.feat_cols_ = list(meta.get("feat_cols_", []))
             obj.vec = _Vectorizer.from_dict(meta.get("vectorizer", None))
             obj.scale_mode = str(meta.get("hparams", {}).get("scale_mode", obj.scale_mode))
@@ -912,8 +1138,33 @@ class RBMGeneral:
         obj.rbm = _RBM(n_visible=rbm_ckpt["n_visible"], n_hidden=rbm_ckpt["n_hidden"], cd_k=rbm_ckpt.get("cd_k", 1)).to(device)
         obj.rbm.load_state_dict(rbm_ckpt["state_dict"])
         head_ckpt = torch.load(os.path.join(in_dir, "head.pt"), map_location=device)
-        obj.head = nn.Sequential(nn.Linear(rbm_ckpt["n_hidden"], 3)).to(device)
+        task_type = str(meta.get("task_type", "classification")).lower()
+        obj.task_type = task_type
+        obj.target_col_ = meta.get("target_col")
+
+        if task_type == "regression":
+            obj.target_scale_ = float(meta.get("target_scale", 1.0) or 1.0)
+            obj.include_teacher_materia_ = bool(meta.get("include_teacher_materia", False))
+            obj.teacher_materia_mode_ = str(meta.get("teacher_materia_mode", ""))
+            obj.teacher_id_col_ = str(meta.get("teacher_id_col", obj.teacher_id_col_))
+            obj.materia_id_col_ = str(meta.get("materia_id_col", obj.materia_id_col_))
+            obj.teacher_vocab_size_ = int(meta.get("teacher_vocab_size_", 0) or 0)
+            obj.materia_vocab_size_ = int(meta.get("materia_vocab_size_", 0) or 0)
+            obj.embed_dim_ = int(meta.get("embed_dim_", obj.embed_dim_) or obj.embed_dim_)
+
+            include_ids = bool(obj.include_teacher_materia_ and obj.teacher_materia_mode_.lower() == "embed")
+            obj.head = _RegressionHead(
+                n_hidden=int(rbm_ckpt["n_hidden"]),
+                n_teachers=max(1, int(obj.teacher_vocab_size_)),
+                n_materias=max(1, int(obj.materia_vocab_size_)),
+                emb_dim=int(obj.embed_dim_),
+                include_ids=include_ids,
+            ).to(device)
+        else:
+            obj.head = nn.Sequential(nn.Linear(int(rbm_ckpt["n_hidden"]), 3)).to(device)
+
         obj.head.load_state_dict(head_ckpt["state_dict"])
+
 
         obj.X = None; obj.y = None; obj._epoch = 0
         return obj

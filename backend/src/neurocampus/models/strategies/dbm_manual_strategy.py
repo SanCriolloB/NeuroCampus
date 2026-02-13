@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -67,11 +67,32 @@ class DBMManualPlantillaStrategy:
 
     - Entrenamiento greedy: 1 epoch de rbm_v_h1 + 1 epoch de rbm_h1_h2 por train_step.
     - Reporta recon_error (loss) para graficación UI.
+    - Para regression: eval supervisada con ridge sobre embeddings latentes (sin leakage).
     """
 
     def __init__(self) -> None:
         self.model: Optional[DBMManual] = None
+
+        # X usado para entrenar DBM (para regression será X_tr; para otros, X_all)
         self.X: Optional[np.ndarray] = None
+
+        # Para debugging / UI / consistencia
+        self.feat_cols_: List[str] = []
+
+        # Para regression
+        self.task_type_: str = "unsupervised"
+        self.target_col_: Optional[str] = None
+        self.target_scale_: float = 50.0
+        self.split_mode_: str = "random"
+        self.val_ratio_: float = 0.2
+        self.seed_: int = 42
+        self.ridge_l2_: float = 1e-3
+
+        self.X_tr: Optional[np.ndarray] = None
+        self.X_va: Optional[np.ndarray] = None
+        self.y_tr: Optional[np.ndarray] = None  # escalada 0..1
+        self.y_va: Optional[np.ndarray] = None  # escalada 0..1
+
         self.batch_size: int = 64
         self.eval_rows: int = 2048
         self._rng = np.random.default_rng(42)
@@ -79,6 +100,21 @@ class DBMManualPlantillaStrategy:
     def reset(self) -> None:
         self.model = None
         self.X = None
+        self.feat_cols_ = []
+
+        self.task_type_ = "unsupervised"
+        self.target_col_ = None
+        self.target_scale_ = 50.0
+        self.split_mode_ = "random"
+        self.val_ratio_ = 0.2
+        self.seed_ = 42
+        self.ridge_l2_ = 1e-3
+
+        self.X_tr = None
+        self.X_va = None
+        self.y_tr = None
+        self.y_va = None
+
 
     def _load_df(self, data_ref: str) -> pd.DataFrame:
         if not data_ref:
@@ -95,29 +131,114 @@ class DBMManualPlantillaStrategy:
             return pd.read_excel(data_ref)
         raise ValueError(f"DBMManualPlantillaStrategy: formato no soportado: {ext}")
 
-    def _numeric_matrix(self, df: pd.DataFrame) -> np.ndarray:
+    def _numeric_matrix(self, df: pd.DataFrame, exclude_cols: Optional[List[str]] = None) -> np.ndarray:
+        exclude = set(exclude_cols or [])
+        num_df = df.select_dtypes(include=[np.number])
+
+        cols = [c for c in num_df.columns if c not in exclude]
         X = (
-            df.select_dtypes(include=[np.number])
-              .replace([np.inf, -np.inf], np.nan)
-              .fillna(0.0)
-              .to_numpy(dtype=np.float32)
+            num_df[cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+            .to_numpy(dtype=np.float32)
         )
+
         if X.shape[1] == 0:
             raise ValueError("DBMManualPlantillaStrategy: no hay columnas numéricas para entrenar.")
+
+        self.feat_cols_ = cols
         return X
+
+    def _split_train_val_indices(
+        self,
+        df: pd.DataFrame,
+        split_mode: str,
+        val_ratio: float,
+        seed: int,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        n = int(len(df))
+        if n <= 1:
+            return np.arange(n, dtype=np.int64), np.array([], dtype=np.int64)
+
+        val_ratio = float(val_ratio)
+        if val_ratio <= 0.0:
+            return np.arange(n, dtype=np.int64), np.array([], dtype=np.int64)
+        if val_ratio >= 0.9:
+            val_ratio = 0.9
+
+        cut = int(np.floor(n * (1.0 - val_ratio)))
+        cut = max(1, min(cut, n - 1))  # garantiza >=1 train y >=1 val
+
+        split_mode = (split_mode or "random").lower()
+        if split_mode == "temporal" and "periodo" in df.columns:
+            # Orden estable por periodo (string). Suficiente para ventanas tipo 2025-1, 2025-2, etc.
+            order = np.argsort(df["periodo"].astype(str).to_numpy())
+        else:
+            rng = np.random.default_rng(int(seed))
+            order = rng.permutation(n)
+
+        tr_idx = order[:cut].astype(np.int64, copy=False)
+        va_idx = order[cut:].astype(np.int64, copy=False)
+        return tr_idx, va_idx
+
 
     def setup(self, data_ref: str, hparams: Dict[str, Any]) -> None:
         df = self._load_df(str(data_ref))
-        X = self._numeric_matrix(df)
 
-        # Hparams
+        # ---- Task meta ----
+        self.task_type_ = str(hparams.get("task_type") or "").lower() or "unsupervised"
+        self.target_col_ = hparams.get("target_col")
+        self.target_scale_ = float(hparams.get("target_scale", 50.0) or 50.0)
+
+        self.split_mode_ = str(hparams.get("split_mode", "random") or "random").lower()
+        self.val_ratio_ = float(hparams.get("val_ratio", 0.2) or 0.2)
+        self.seed_ = int(hparams.get("seed", 42) or 42)
+        self.ridge_l2_ = float(hparams.get("ridge_l2", 1e-3) or 1e-3)
+
+        is_regression = (self.task_type_ == "regression")
+
+        # ---- Para regression: validar target, filtrar nans, split ----
+        if is_regression:
+            if not self.target_col_:
+                raise ValueError("DBMManualPlantillaStrategy(regression): falta target_col en hparams")
+            if self.target_col_ not in df.columns:
+                raise ValueError(f"DBMManualPlantillaStrategy(regression): target_col no existe en data: {self.target_col_}")
+
+            y_raw = pd.to_numeric(df[self.target_col_], errors="coerce")
+            mask = y_raw.notna()
+            df = df[mask].reset_index(drop=True)
+            y = (y_raw[mask].to_numpy(dtype=np.float32) / float(self.target_scale_))
+
+            tr_idx, va_idx = self._split_train_val_indices(
+                df=df,
+                split_mode=self.split_mode_,
+                val_ratio=self.val_ratio_,
+                seed=self.seed_,
+            )
+
+            X_all = self._numeric_matrix(df, exclude_cols=[str(self.target_col_)])
+            self.X_tr = X_all[tr_idx]
+            self.X_va = X_all[va_idx]
+            self.y_tr = y[tr_idx]
+            self.y_va = y[va_idx]
+
+            # Entrena DBM solo con train (evita leakage temporal)
+            self.X = self.X_tr
+        else:
+            X_all = self._numeric_matrix(df, exclude_cols=None)
+            self.X = X_all
+            self.X_tr = None
+            self.X_va = None
+            self.y_tr = None
+            self.y_va = None
+
+        # ---- Hparams DBM ----
         n_hidden1 = int(hparams.get("n_hidden1", 64) or 64)
         n_hidden2 = int(hparams.get("n_hidden2", 32) or 32)
         lr = float(hparams.get("lr", 0.01) or 0.01)
         cd_k = int(hparams.get("cd_k", 1) or 1)
         self.batch_size = int(hparams.get("batch_size", 64) or 64)
 
-        seed = int(hparams.get("seed", 42) or 42)
         l2 = float(hparams.get("l2", 0.0) or 0.0)
         clip_grad = hparams.get("clip_grad", 1.0)
         clip_grad = None if clip_grad is None else float(clip_grad)
@@ -127,22 +248,25 @@ class DBMManualPlantillaStrategy:
         use_pcd = bool(hparams.get("use_pcd", False))
 
         self.eval_rows = int(hparams.get("eval_rows", 2048) or 2048)
-        self._rng = np.random.default_rng(seed)
+        self._rng = np.random.default_rng(self.seed_)
+
+        if self.X is None:
+            raise RuntimeError("DBMManualPlantillaStrategy: X no inicializado en setup()")
 
         self.model = DBMManual(
-            n_visible=X.shape[1],
+            n_visible=int(self.X.shape[1]),
             n_hidden1=n_hidden1,
             n_hidden2=n_hidden2,
             lr=lr,
             cd_k=cd_k,
-            seed=seed,
+            seed=int(self.seed_),
             l2=l2,
             clip_grad=clip_grad,
             binarize_input=binarize_input,
             input_bin_threshold=input_bin_threshold,
             use_pcd=use_pcd,
         )
-        self.X = X
+
 
     def train_step(self, epoch: int, hparams: Dict[str, Any], y: Any = None) -> Dict[str, Any]:
         if self.model is None or self.X is None:
@@ -173,10 +297,81 @@ class DBMManualPlantillaStrategy:
 
         recon = float((mse1 + mse2) / 2.0)
 
-        return {
+        out: Dict[str, Any] = {
             "epoch": float(epoch),
             "loss": recon,
             "recon_error": recon,
             "recon_error_layer1": mse1,
             "recon_error_layer2": mse2,
         }
+
+        # ---- Regression eval: ridge head sobre embeddings latentes (solo si hay split/y) ----
+        if self.task_type_ == "regression" and self.X_tr is not None and self.X_va is not None and self.y_tr is not None and self.y_va is not None:
+            # Latentes
+            def _latent(Xa: np.ndarray) -> np.ndarray:
+                try:
+                    Z = self.model.transform(Xa)
+                    return np.asarray(Z, dtype=np.float32)
+                except Exception:
+                    H1a = self.model.rbm_v_h1.transform(Xa)
+                    try:
+                        Z2 = self.model.rbm_h1_h2.transform(H1a)
+                        return np.asarray(Z2, dtype=np.float32)
+                    except Exception:
+                        return np.asarray(H1a, dtype=np.float32)
+
+            Ztr = _latent(self.X_tr)
+            Zva = _latent(self.X_va)
+
+            # Ridge cerrado: (A^T A + l2 I)w = A^T y
+            l2 = float(self.ridge_l2_)
+            ytr = np.asarray(self.y_tr, dtype=np.float32).reshape(-1, 1)
+            yva = np.asarray(self.y_va, dtype=np.float32).reshape(-1, 1)
+
+            def _ridge_predict(Z_train: np.ndarray, y_train: np.ndarray, Z_eval: np.ndarray) -> np.ndarray:
+                A_tr = np.concatenate([np.ones((Z_train.shape[0], 1), dtype=np.float32), Z_train], axis=1)
+                A_ev = np.concatenate([np.ones((Z_eval.shape[0], 1), dtype=np.float32), Z_eval], axis=1)
+                I = np.eye(A_tr.shape[1], dtype=np.float32)
+                I[0, 0] = 0.0  # no regularizar bias
+                w = np.linalg.solve((A_tr.T @ A_tr) + (l2 * I), (A_tr.T @ y_train))
+                return (A_ev @ w).reshape(-1)
+
+            p_tr = _ridge_predict(Ztr, ytr, Ztr)
+            p_va = _ridge_predict(Ztr, ytr, Zva)
+
+            # Unscale a escala original (0..50)
+            scale = float(self.target_scale_ or 1.0)
+            ytr_u = (ytr.reshape(-1) * scale).astype(np.float32)
+            yva_u = (yva.reshape(-1) * scale).astype(np.float32)
+            p_tr_u = (p_tr * scale).astype(np.float32)
+            p_va_u = (p_va * scale).astype(np.float32)
+
+            def _mae(a: np.ndarray, b: np.ndarray) -> float:
+                return float(np.mean(np.abs(a - b)))
+
+            def _rmse(a: np.ndarray, b: np.ndarray) -> float:
+                return float(np.sqrt(np.mean((a - b) ** 2)))
+
+            def _r2(a: np.ndarray, b: np.ndarray) -> float:
+                denom = float(np.sum((a - float(np.mean(a))) ** 2))
+                if denom <= 1e-12:
+                    return 0.0
+                return float(1.0 - (np.sum((a - b) ** 2) / denom))
+
+            out.update({
+                "task_type": "regression",
+                "target_col": self.target_col_,
+                "train_mae": _mae(ytr_u, p_tr_u),
+                "train_rmse": _rmse(ytr_u, p_tr_u),
+                "train_r2": _r2(ytr_u, p_tr_u),
+                "val_mae": _mae(yva_u, p_va_u),
+                "val_rmse": _rmse(yva_u, p_va_u),
+                "val_r2": _r2(yva_u, p_va_u),
+                "n_train": int(len(ytr_u)),
+                "n_val": int(len(yva_u)),
+                "pred_min": float(np.min(p_va_u)) if p_va_u.size else None,
+                "pred_max": float(np.max(p_va_u)) if p_va_u.size else None,
+            })
+
+        return out
+

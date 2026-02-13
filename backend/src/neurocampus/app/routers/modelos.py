@@ -2046,15 +2046,17 @@ def promote_champion(req: PromoteChampionRequest) -> ChampionInfo:
             model_name=req.model_name,
             family=getattr(req, "family", None),
         )
-
-        # FIX: fallback defensivo para source_run_id (misma lógica que GET /champion)
         if isinstance(champ, dict) and not champ.get("source_run_id"):
             m = champ.get("metrics") or {}
             if isinstance(m, dict) and m.get("run_id"):
                 champ = dict(champ)
                 champ["source_run_id"] = m.get("run_id")
-
         return ChampionInfo(**champ)
+
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=409, detail=f"No se pudo promover champion: {e}")
 

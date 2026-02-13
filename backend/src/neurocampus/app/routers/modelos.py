@@ -188,18 +188,36 @@ def _read_json_if_exists(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def _extract_labeled_score_meta(labeled_ref: str) -> Optional[Dict[str, Any]]:
-    """Extrae meta del score_total desde el labeled (si existe)."""
+    """Extrae meta del score_total desde el labeled (si existe).
+
+    Prioridad:
+    1) Sidecar JSON: <labeled>.meta.json (fuente de verdad)
+    2) Fallback legacy: columnas dentro del parquet
+    """
     p = _abs_path(labeled_ref)
     if not p.exists():
         return None
 
-    cols_wanted = [
-        "score_delta_max",
-        "score_calib_q",
-        "score_beta",
-        "score_beta_source",
-        "score_calib_abs_q",
-    ]
+    # 1) Sidecar (preferido)
+    sidecar = Path(str(p) + ".meta.json")
+    if sidecar.exists():
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                keys = [
+                    "score_delta_max",
+                    "score_calib_q",
+                    "score_beta",
+                    "score_beta_source",
+                    "score_calib_abs_q",
+                    "score_version",
+                    "empty_text_policy",
+                    "keep_empty_text",
+                ]
+                out = {k: payload.get(k) for k in keys if k in payload}
+                return out or payload
+        except Exception:
+            pass
 
     cols_existing: list[str] = []
     try:

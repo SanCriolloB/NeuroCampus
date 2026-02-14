@@ -1,0 +1,21 @@
+# Configuración mínima de Ruff para NeuroCampus (P0/P1)
+#
+# Objetivo: que `make lint` sea estable sin bloquear el flujo de Modelos por deuda técnica
+# fuera del alcance (scripts, predicción, plantillas).
+line-length = 100
+target-version = "py313"
+src = ["src"]
+
+# Excluir carpetas NO críticas para la fase Modelos (se limpian en P2)
+extend-exclude = [
+  "scripts",
+  "src/neurocampus/prediction",
+  "src/neurocampus/services",
+  "src/neurocampus/validation",
+]
+
+[lint]
+select = ["E", "F", "I"]
+# E402 aparece en algunos módulos legacy; se corrige en P2.
+# RUF100 evita warnings por `# noqa: WPS...` heredados.
+ignore = ["E402", "RUF100"]

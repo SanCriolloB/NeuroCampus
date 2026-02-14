@@ -190,47 +190,44 @@ def _read_json_if_exists(ref: str) -> Optional[Dict[str, Any]]:
 def _extract_labeled_score_meta(labeled_ref: str) -> Optional[Dict[str, Any]]:
     """Extrae meta del score_total desde el labeled (si existe).
 
-    Prioridad:
-    1) Sidecar JSON: <labeled>.meta.json (fuente de verdad)
-    2) Fallback legacy: columnas dentro del parquet
+    P0: prioriza el sidecar ``*.parquet.meta.json`` (generado por BETO), porque
+    la calibración/β no necesariamente vive como columnas dentro del parquet.
+
+    Compat:
+    - Si no hay sidecar, intenta leer columnas dentro del parquet (legacy).
     """
     p = _abs_path(labeled_ref)
     if not p.exists():
         return None
 
-    # 1) Sidecar (preferido)
-    sidecar = Path(str(p) + ".meta.json")
+    # 1) Preferir sidecar: <archivo>.parquet.meta.json
+    sidecar = p.with_suffix(p.suffix + ".meta.json")
     if sidecar.exists():
         try:
             payload = json.loads(sidecar.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                keys = [
-                    "score_delta_max",
-                    "score_calib_q",
-                    "score_beta",
-                    "score_beta_source",
-                    "score_calib_abs_q",
-                    "score_version",
-                    "empty_text_policy",
-                    "keep_empty_text",
-                ]
-                out = {k: payload.get(k) for k in keys if k in payload}
-                return out or payload
         except Exception:
-            pass
+            payload = None
 
-    # Fallback legacy: algunos pipelines antiguos escribían meta como columnas constantes
-    cols_wanted: list[str] = [
+        if isinstance(payload, dict):
+            # Mantener un subset estable para UI (y evitar ruido de campos extras)
+            keys = [
+                "score_delta_max",
+                "score_calib_q",
+                "score_beta",
+                "score_beta_source",
+                "score_calib_abs_q",
+            ]
+            meta = {k: payload.get(k) for k in keys if k in payload}
+            return meta or payload  # fallback al dict completo si no contiene las keys
+
+    # 2) Fallback legacy: intentar columnas dentro del parquet
+    cols_wanted = [
         "score_delta_max",
         "score_calib_q",
         "score_beta",
         "score_beta_source",
         "score_calib_abs_q",
-        "score_version",
-        "empty_text_policy",
-        "keep_empty_text",
     ]
-
 
     cols_existing: list[str] = []
     try:
@@ -265,6 +262,7 @@ def _extract_labeled_score_meta(labeled_ref: str) -> Optional[Dict[str, Any]]:
             continue
 
     return meta or None
+
 
 
 # ---------------------------------------------------------------------------
@@ -1460,18 +1458,34 @@ def _evaluate_post_training_metrics(estrategia, df: "pd.DataFrame", hparams: dic
 # ---------------------------------------------------------------------------
 
 def _run_training(job_id: str, req: EntrenarRequest) -> None:
+    """
+    Ejecuta un entrenamiento (job_type=train) y persiste artifacts de run.
+
+    P0: este método debe ser compatible con la firma REAL de:
+      - PlantillaEntrenamiento(estrategia)
+      - PlantillaEntrenamiento.run(data_ref=..., epochs=..., hparams=..., model_name=...)
+      - runs_io.save_run(...)
+
+    También completa el estado in-memory para que /modelos/estado/{job_id} devuelva
+    un EstadoResponse completo.
+    """
     t0 = time.perf_counter()
 
-    # estado base
+    # estado base (siempre completo)
     st = _ESTADOS.get(job_id, {}) if isinstance(_ESTADOS.get(job_id), dict) else {}
     st.setdefault("job_id", job_id)
     st["job_type"] = "train"
     st["status"] = "running"
     st["progress"] = 0.0
     st["error"] = None
+    st.setdefault("model", getattr(req, "modelo", None))
+    st.setdefault("params", {})
     st["metrics"] = {}
     st["history"] = []
     st["run_id"] = None
+    st["artifact_path"] = None
+    st["champion_promoted"] = None
+    st["time_total_ms"] = None
     _ESTADOS[job_id] = st
 
     # Observers (training.* -> estado en memoria)
@@ -1480,8 +1494,8 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
     try:
         # 1) Resolver hparams/plan (fuente de verdad para ejecución)
         run_hparams = _build_run_hparams(req, job_id)
-        st["model"] = str(req.modelo)
-        st["params"] = dict(run_hparams)
+        # Asegurar job_id para PlantillaEntrenamiento (usa hparams.job_id como override)
+        run_hparams["job_id"] = job_id
 
         # 2) Normalizar request para snapshot/UI (que "params.req" sea consistente)
         inferred_target_col = _infer_target_col(req, run_hparams)
@@ -1515,10 +1529,9 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             dataset_id=req_norm.dataset_id,
             family=req_norm.family,
         )
+        _safe_reset_strategy(strategy)
 
-        # 5) Entrenar (Plantilla)
-        #    Importante: PlantillaEntrenamiento usa el nombre de parámetro `estrategia`
-        #    y la firma de run() espera `data_ref` (no `selected_ref`).
+        # 5) Entrenar (Plantilla) - firma real: PlantillaEntrenamiento(estrategia)
         tpl = PlantillaEntrenamiento(estrategia=strategy)
 
         result = tpl.run(
@@ -1528,81 +1541,79 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             model_name=str(req_norm.modelo),
         )
 
-        # La plantilla retorna un payload normalizado.
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                f"PlantillaEntrenamiento retornó un tipo inesperado: {type(result)}"
-            )
+        if isinstance(result, dict) and result.get("status") == "failed":
+            raise RuntimeError(result.get("error") or "Entrenamiento falló (sin detalle).")
 
-        final_metrics = dict(result.get("metrics") or {})
-        history = list(result.get("history") or [])
+        final_metrics = (result or {}).get("metrics") or {}
+        history = (result or {}).get("history") or []
 
-        # Enriquecer métricas con metadatos útiles para champion scoring/auditoría.
-        final_metrics.setdefault("task_type", str(req_norm.task_type or ""))
-        final_metrics.setdefault("family", str(req_norm.family or ""))
-        final_metrics.setdefault("dataset_id", str(req_norm.dataset_id or ""))
-        final_metrics.setdefault("model_name", str(req_norm.modelo or ""))
+        # Enriquecer métricas mínimas para trazabilidad
+        final_metrics.setdefault("family", str(req_norm.family))
+        final_metrics.setdefault("dataset_id", str(req_norm.dataset_id))
+        final_metrics.setdefault("model_name", str(req_norm.modelo))
 
         # 6) Guardar run en artifacts (fuente de verdad)
         req_snapshot = req_norm.model_dump()
+        params = {"req": req_snapshot, "hparams": run_hparams}
 
-        run_id = build_run_id(
-            dataset_id=str(req_norm.dataset_id),
-            model_name=str(req_norm.modelo),
-            job_id=str(job_id),
-        )
-
+        run_id = build_run_id(str(req_norm.dataset_id), str(req_norm.modelo), job_id)
         run_dir = save_run(
-            run_id=run_id,
+            run_id=str(run_id),
             job_id=str(job_id),
             dataset_id=str(req_norm.dataset_id),
             model_name=str(req_norm.modelo),
             data_ref=str(selected_ref),
-            params={
-                # snapshot reproducible del request normalizado
-                "req": req_snapshot,
-                # hparams efectivos (incluye defaults resueltos)
-                "hparams": run_hparams,
-            },
+            params=params,
             final_metrics=final_metrics,
             history=history,
         )
 
-        # 7) Estado final
+        # 7) Champion (si aplica) - usar metrics.json como contrato (incluye params.req)
+        champion_promoted = None
+        try:
+            metrics_payload = json.loads((Path(run_dir) / "metrics.json").read_text(encoding="utf-8"))
+            champ = maybe_update_champion(
+                dataset_id=str(req_norm.dataset_id),
+                model_name=str(req_norm.modelo),
+                metrics=metrics_payload,
+                source_run_id=str(run_id),
+                family=str(req_norm.family) if req_norm.family else None,
+            )
+            if isinstance(champ, dict):
+                champion_promoted = bool(champ.get("promoted"))
+        except Exception:
+            logger.exception("No se pudo evaluar/promover champion para run_id=%s", run_id)
+
+        # 8) Estado final (completo)
+        dt_ms = (time.perf_counter() - t0) * 1000.0
         st.update(
             {
                 "status": "completed",
                 "progress": 1.0,
+                "model": str(req_norm.modelo),
+                "params": dict(run_hparams or {}),
                 "run_id": str(run_id),
                 "artifact_path": _relpath(Path(run_dir)),
                 "metrics": final_metrics,
                 "history": history,
-                "elapsed_s": float(time.perf_counter() - t0),
-                "time_total_ms": float(time.perf_counter() - t0) * 1000.0,
+                "champion_promoted": champion_promoted,
+                "time_total_ms": float(dt_ms),
             }
         )
         _ESTADOS[job_id] = st
 
-        # 8) Champion (si aplica)
-        try:
-            champion_doc = maybe_update_champion(
-                dataset_id=str(req_norm.dataset_id),
-                model_name=str(req_norm.modelo),
-                metrics=final_metrics,
-                source_run_id=str(run_id),
-                family=str(req_norm.family),
-            )
-            st["champion_promoted"] = bool(champion_doc)
-            _ESTADOS[job_id] = st
-        except Exception:
-            logger.exception("No se pudo evaluar/promover champion para run_id=%s", run_id)
-
-
     except Exception as e:
-        detail = e.detail if isinstance(e, HTTPException) else str(e)
-        st.update({"status": "failed", "error": str(detail), "elapsed_s": float(time.perf_counter() - t0)})
-        st["time_total_ms"] = float(st["elapsed_s"]) * 1000.0
+        logger.exception("Falló entrenamiento job_id=%s", job_id)
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        st.update(
+            {
+                "status": "failed",
+                "error": str(e),
+                "time_total_ms": float(dt_ms),
+            }
+        )
         _ESTADOS[job_id] = st
+
 
 
 def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
@@ -2078,24 +2089,33 @@ def promote_champion(req: PromoteChampionRequest) -> ChampionInfo:
     """
     Promueve un run a champion.
 
-    - Si el request trae `family`, se pasa a la capa runs_io.
-    - Si runs_io no acepta `family` todavía, no rompe (helper filtra).
+    Semántica P0:
+      - 422 si run_id es inválido (null / vacío / "null" / "none")
+      - 404 si no existe el run o falta metrics.json
+      - 200 si promueve correctamente
     """
+    # Validación defensiva (además de pydantic, por compat legacy)
+    rid = str(getattr(req, "run_id", "") or "").strip()
+    if (not rid) or (rid.lower() in {"null", "none", "nil"}):
+        raise HTTPException(status_code=422, detail="run_id inválido")
+
     try:
         champ = _call_with_accepted_kwargs(
             promote_run_to_champion,
             dataset_id=req.dataset_id,
-            run_id=req.run_id,
+            run_id=rid,
             model_name=req.model_name,
             family=getattr(req, "family", None),
         )
+
+        # fallback defensivo para source_run_id (misma lógica que GET /champion)
         if isinstance(champ, dict) and not champ.get("source_run_id"):
             m = champ.get("metrics") or {}
             if isinstance(m, dict) and m.get("run_id"):
                 champ = dict(champ)
                 champ["source_run_id"] = m.get("run_id")
-        return ChampionInfo(**champ)
 
+        return ChampionInfo(**champ)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

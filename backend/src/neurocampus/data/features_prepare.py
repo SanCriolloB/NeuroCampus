@@ -322,8 +322,9 @@ def prepare_feature_pack(
     else:
         raise ValueError(f"Formato no soportado: {inp.suffix}")
 
-    # --- NUEVO: backward compat score_* ---
-    labeled_meta = load_sidecar_score_meta(inp)
+    # --- P0: backward compat score_* ---
+    labeled_meta = load_sidecar_score_meta(inp, base_dir=base_dir)
+    # ensure_score_columns retorna (df, score_col, score_debug)
     df, score_col, score_debug = ensure_score_columns(
         df,
         labeled_meta=labeled_meta,
@@ -455,6 +456,14 @@ def prepare_feature_pack(
                 "sentiment_cols": sentiment_cols,
                 "one_hot_cols": one_hot_cols,
                 "score_debug": score_debug,
+                "score_source": (score_debug or {}).get("source"),
+                "derived_score": bool((score_debug or {}).get("created_columns")),
+                "blocks": {
+                    "sentiment": bool(sentiment_cols) and ("y_sentimiento" in train.columns),
+                    "text_feats": bool(text_feat_cols),
+                    "one_hot": bool(one_hot_cols),
+                    "pair_matrix": True,
+                },
             },
             ensure_ascii=False,
             indent=2,

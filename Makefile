@@ -67,6 +67,8 @@ help:
 	@echo "  be-dev           - Correr backend en modo desarrollo"
 	@echo "  fe-dev           - Correr frontend en modo desarrollo"
 	@echo "  lint             - Ejecutar linters en backend"
+	@echo "  be-deps-check     - Verificar coherencia de dependencias (pip check)"
+	@echo "  be-ci            - Ejecutar gates backend: lint + pip check + tests"
 	@echo "  prep-one         - Preprocesar un solo CSV"
 	@echo "  prep-all         - Preprocesar todos los CSV de examples/"
 	@echo "  test-manual-bm   - Probar RBM/BM manual"
@@ -116,11 +118,20 @@ fe-install:
 # Backend: desarrollo y tests
 # ===========================
 
-..PHONY: be-dev
+.PHONY: be-dev
 be-dev:
 	@echo ">> Ejecutando backend en modo desarrollo con PY_BACKEND=$(PY_BACKEND)"
 	cd backend && PYTHONPATH="src$(PATHSEP)$$PYTHONPATH" \
 	$(PY_BACKEND) -m uvicorn neurocampus.app.main:app --reload --host 0.0.0.0 --port 8000
+
+.PHONY: be-deps-check
+be-deps-check:
+	@echo ">> Verificando dependencias instaladas (pip check) en backend"
+	cd backend && $(PY_BACKEND) -m pip check
+
+.PHONY: be-ci
+be-ci: lint be-deps-check be-test
+	@echo ">> Gates backend OK (lint + pip check + pytest)"
 
 .PHONY: be-test
 be-test:

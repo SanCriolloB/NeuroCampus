@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from neurocampus.data.score_total import ensure_score_columns, load_sidecar_score_meta
+from .score_total import ensure_score_columns
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,8 @@ def prepare_feature_pack(
     else:
         raise ValueError(f"Formato no soportado: {inp.suffix}")
 
+    df, score_info = ensure_score_columns(df)
+
     # --- NUEVO: backward compat score_* ---
     labeled_meta = load_sidecar_score_meta(inp)
     df, score_col, score_debug = ensure_score_columns(
@@ -455,6 +458,14 @@ def prepare_feature_pack(
                 "sentiment_cols": sentiment_cols,
                 "one_hot_cols": one_hot_cols,
                 "score_debug": score_debug,
+                "score_source": (score_info or {}).get("score_source"),
+                "derived_score": bool((score_info or {}).get("derived")),
+                "blocks": {
+                    "sentiment": bool(sentiment_cols) and ("y_sentimiento" in train.columns),
+                    "text_feats": bool(text_feat_cols),
+                    "one_hot": bool(one_hot_cols),
+                    "pair_matrix": True,
+                },
             },
             ensure_ascii=False,
             indent=2,

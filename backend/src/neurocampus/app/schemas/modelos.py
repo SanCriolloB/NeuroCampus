@@ -757,8 +757,9 @@ class PromoteChampionRequest(BaseModel):
     @field_validator("run_id")
     @classmethod
     def _validate_run_id(cls, v: str) -> str:
-        s = str(v or "").strip()
+        if v is None:
+            raise ValueError("run_id es requerido")
+        s = str(v).strip()
         if not s or s.lower() in {"null", "none", "nil"}:
-            raise ValueError("run_id inválido (vacío/null).")
+            raise ValueError("run_id inválido")
         return s
-

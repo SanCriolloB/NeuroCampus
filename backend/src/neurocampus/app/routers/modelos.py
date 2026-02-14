@@ -46,8 +46,6 @@ import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
-from neurocampus.utils.runs_io import load_current_champion
-from neurocampus.app.schemas.modelos import ChampionInfo
 
 from ..schemas.modelos import (
     EntrenarRequest,
@@ -310,7 +308,7 @@ def _recompute_sweep_winners(candidates: list[dict[str, Any]]) -> tuple[dict[str
     - Si un candidato no tiene métricas comparables (p.ej. sin val_rmse en regresión),
       su score cae al peor valor.
     """
-    from ...utils.runs_io import champion_score, load_run_metrics  # noqa: WPS433
+    from ...utils.runs_io import champion_score, load_run_metrics  # noqa
 
     best_overall: dict[str, Any] | None = None
     best_by_model: dict[str, dict[str, Any]] = {}
@@ -1690,7 +1688,7 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
     best_overall: dict[str, Any] | None = None
     best_by_model: dict[str, dict[str, Any]] = {}
 
-    from ...utils.runs_io import champion_score, load_run_metrics, load_current_champion, promote_run_to_champion  # noqa: WPS433
+    from ...utils.runs_io import champion_score, load_run_metrics, load_current_champion, promote_run_to_champion  # noqa
 
     # 3) Ejecutar secuencial (robusto y determinista)
     for i, item in enumerate(cand_state, start=1):
@@ -2193,7 +2191,7 @@ def get_sweep_summary(sweep_id: str) -> SweepSummary:
     if "best_by_model" not in payload and "sweep_best_by_model" in payload:
         payload["best_by_model"] = payload.get("sweep_best_by_model")
 
-    from ...utils.runs_io import champion_score  # noqa: WPS433
+    from ...utils.runs_io import champion_score  # noqa
 
     def _hydrate_candidate(cand: Any, default_model_name: Optional[str] = None) -> Any:
         if not isinstance(cand, dict):

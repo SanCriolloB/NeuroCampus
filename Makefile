@@ -135,7 +135,7 @@ lint:
 	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
 	$(PY_BACKEND) -m ruff check .
 	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PY_BACKEND) -m mypy neurocampus
+	$(PY_BACKEND) -m mypy -p neurocampus
 
 # ===========================
 # Frontend: desarrollo y tests

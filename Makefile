@@ -132,10 +132,10 @@ be-test:
 .PHONY: lint
 lint:
 	@echo ">> Ejecutando linters (ruff + mypy) en backend"
-	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
+	cd $(BACKEND_DIR) && PYTHONPATH="src$(PATHSEP)$$PYTHONPATH" \
 	$(PY_BACKEND) -m ruff check .
-	cd $(BACKEND_DIR) && PYTHONPATH="$(SRC_DIR)$(PATHSEP)$$PYTHONPATH" \
-	$(PY_BACKEND) -m mypy neurocampus
+	cd $(BACKEND_DIR) && PYTHONPATH="src$(PATHSEP)$$PYTHONPATH" \
+	$(PY_BACKEND) -m mypy src/neurocampus
 
 # ===========================
 # Frontend: desarrollo y tests

@@ -1509,8 +1509,11 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         if inferred_target_col is not None:
             update_payload["target_col"] = inferred_target_col
 
-        # filtrar solo campos existentes (evita problemas si el schema cambia)
-        model_fields = getattr(req, "model_fields", None)
+        # Filtrar solo campos existentes (evita problemas si el schema cambia).
+        #
+        # Nota (Pydantic v2.11+): acceder a `model_fields` desde la instancia está deprecado.
+        # Se debe acceder desde la clase.
+        model_fields = getattr(type(req), "model_fields", None)
         if isinstance(model_fields, dict):
             update_payload = {k: v for k, v in update_payload.items() if k in model_fields}
 
@@ -1554,7 +1557,11 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         req_snapshot = req_norm.model_dump()
         params = {"req": req_snapshot, "hparams": run_hparams}
 
-        run_id = build_run_id(str(req_norm.dataset_id), str(req_norm.modelo), job_id)
+        run_id = build_run_id(
+            dataset_id=str(req_norm.dataset_id),
+            model_name=str(req_norm.modelo),
+            job_id=str(job_id),
+        )
         run_dir = save_run(
             run_id=str(run_id),
             job_id=str(job_id),
@@ -1734,7 +1741,9 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
         if inferred_target_col is not None:
             update_payload["target_col"] = inferred_target_col
 
-        model_fields = getattr(cand_req, "model_fields", None)
+        # Nota (Pydantic v2.11+): acceder a `model_fields` desde la instancia está deprecado.
+        # Se debe acceder desde la clase.
+        model_fields = getattr(type(cand_req), "model_fields", None)
         if isinstance(model_fields, dict):
             update_payload = {k: v for k, v in update_payload.items() if k in model_fields}
 

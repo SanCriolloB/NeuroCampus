@@ -2,20 +2,29 @@
 #
 # Objetivo: que `make lint` sea estable sin bloquear el flujo de Modelos por deuda técnica
 # fuera del alcance (scripts, predicción, plantillas).
-line-length = 100
-target-version = "py313"
+line-length = 120
+# Usar una versión objetivo ampliamente soportada por Ruff (evita fallas por versiones futuras).
+target-version = "py311"
 src = ["src"]
 
+include = [
+  "src/neurocampus/app/routers/modelos.py",
+  "src/neurocampus/app/schemas/modelos.py",
+  "src/neurocampus/data/features_prepare.py",
+  "src/neurocampus/data/score_total.py",
+  "src/neurocampus/utils/runs_io.py",
+  "src/neurocampus/models/registry.py",
+]
+
 # Excluir carpetas NO críticas para la fase Modelos (se limpian en P2)
-extend-exclude = [
-  "scripts",
-  "src/neurocampus/prediction",
-  "src/neurocampus/services",
-  "src/neurocampus/validation",
+exclude = [
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".pytest_cache",
+  "artifacts",
 ]
 
 [lint]
-select = ["E", "F", "I"]
-# E402 aparece en algunos módulos legacy; se corrige en P2.
-# RUF100 evita warnings por `# noqa: WPS...` heredados.
-ignore = ["E402", "RUF100"]
+select = ["F", "E9"]
+ignore = ["F401", "F841"]

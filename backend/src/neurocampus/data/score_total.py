@@ -42,13 +42,19 @@ def load_sidecar_score_meta(labeled_path: str | Path, *, base_dir: Optional[Path
 
 
 def _detect_calif_cols(df: pd.DataFrame) -> List[str]:
-    cols = []
+    """Detecta columnas calif_* (calif_1..calif_5).
+
+    Retorna una lista ordenada por sufijo numérico para estabilidad reproducible.
+    """
+    cols: List[str] = []
     for c in df.columns:
         s = str(c)
         if s.startswith("calif_"):
             suf = s.split("_", 1)[-1]
             if suf.isdigit():
                 cols.append(s)
+
+    cols.sort(key=lambda x: int(str(x).split("_", 1)[-1]))
     return cols
 
 
@@ -62,7 +68,13 @@ def _scale_to_0_50(values: pd.Series) -> pd.Series:
     Se usa quantil 95% para evitar outliers.
     """
     x = pd.to_numeric(values, errors="coerce").astype(float)
-    q95 = float(np.nanquantile(x.to_numpy(), 0.95)) if len(x) else 0.0
+    arr = x.to_numpy(dtype=float)
+    try:
+        q95 = float(np.nanquantile(arr, 0.95)) if arr.size else 0.0
+    except Exception:
+        q95 = 0.0
+    if not np.isfinite(q95):
+        q95 = 0.0
 
     if q95 <= 5.25:   # Likert 0..5
         x = x * 10.0
@@ -163,27 +175,25 @@ def compute_score_total_0_50(
     df["sentiment_delta"] = sent_delta
     df["sentiment_signal"] = sent_signal
 
-    # Calibración beta
+        # Calibración beta (y qv para auditoría)
+    # calibrar sobre filas con texto (si existe has_text)
+    if "has_text" in df.columns:
+        mask_text = df["has_text"].fillna(0).astype(int) == 1
+        vals = sent_signal[mask_text].to_numpy(dtype=float)
+    else:
+        vals = sent_signal.to_numpy(dtype=float)
+
+    vals = vals[np.isfinite(vals)]
+    if len(vals) == 0:
+        qv = 0.0
+    else:
+        qv = float(np.quantile(np.abs(vals), float(calib_q)))
+
     if beta_fixed is not None:
         beta = float(beta_fixed)
-        qv = None
         beta_source = "fixed"
     else:
-        # calibrar sobre filas con texto (si existe has_text)
-        if "has_text" in df.columns:
-            mask_text = df["has_text"].fillna(0).astype(int) == 1
-            vals = sent_signal[mask_text].to_numpy(dtype=float)
-        else:
-            vals = sent_signal.to_numpy(dtype=float)
-
-        vals = vals[np.isfinite(vals)]
-        if len(vals) == 0:
-            qv = 0.0
-            beta = 0.0
-        else:
-            qv = float(np.quantile(np.abs(vals), float(calib_q)))
-            beta = 0.0 if qv <= 1e-9 else float(float(delta_max) / qv)
-
+        beta = 0.0 if qv <= 1e-9 else float(float(delta_max) / qv)
         beta_source = f"q{calib_q}"
 
     delta_points = (beta * sent_signal).clip(-float(delta_max), float(delta_max))
@@ -212,48 +222,74 @@ def ensure_score_columns(
 ) -> Tuple[pd.DataFrame, str, Dict[str, Any]]:
     """
     Backward compat para feature-pack:
-    - Garantiza score_base_0_50 y (si prefer_total) score_total_0_50
-    - Si no existe beta en meta, fallback beta=0.0 (no rompe)
+
+    - Garantiza score_base_0_50 y (si prefer_total) score_total_0_50.
+    - Si no existe beta/meta, fallback beta=0.0 (no rompe).
+    - Si ya existe score_total_0_50 y prefer_total=True, no recalcula total; solo asegura base.
 
     Retorna: (df, score_col, score_debug)
+
+    score_debug:
+      - created_columns: columnas efectivamente creadas en esta llamada
+      - source: "explicit_score_total" | "derived" | "missing"
+      - beta_used/delta_max_used/calif_cols_detected: solo si se derivó
     """
+    before_cols = set(df.columns)
     score_debug: Dict[str, Any] = {"created_columns": [], "source": None}
 
-    # Si ya existe score_total y preferimos total → úsalo (pero aseguramos base también)
+    # 1) Si ya existe score_total y preferimos total → úsalo, pero asegura base
     if "score_total_0_50" in df.columns and prefer_total:
         if "score_base_0_50" not in df.columns and allow_derive:
             base, dbg = compute_score_base_0_50(df)
             df["score_base_0_50"] = base
-            score_debug["created_columns"].append("score_base_0_50")
+            if "score_base_0_50" not in before_cols:
+                score_debug["created_columns"].append("score_base_0_50")
             score_debug.update(dbg)
+
         score_debug["source"] = "explicit_score_total"
         return df, "score_total_0_50", score_debug
 
-    # Si no, compute total/base usando meta (si hay)
-    beta_fixed = None
+    # 2) Preparar parámetros desde meta (si existe)
+    beta_fixed: Optional[float] = None
     delta_max = 8.0
     calib_q = 0.95
 
     if isinstance(labeled_meta, dict):
-        beta_fixed = labeled_meta.get("score_beta")
-        delta_max = float(labeled_meta.get("score_delta_max", delta_max))
-        calib_q = float(labeled_meta.get("score_calib_q", calib_q))
+        if labeled_meta.get("score_beta") is not None:
+            try:
+                beta_fixed = float(labeled_meta.get("score_beta"))
+            except Exception:
+                beta_fixed = None
+        try:
+            delta_max = float(labeled_meta.get("score_delta_max", delta_max))
+        except Exception:
+            pass
+        try:
+            calib_q = float(labeled_meta.get("score_calib_q", calib_q))
+        except Exception:
+            pass
 
+    # 3) Derivar (si aplica)
     if allow_derive:
         meta = compute_score_total_0_50(df, delta_max=delta_max, calib_q=calib_q, beta_fixed=beta_fixed)
-        # track columnas creadas
-        for c in ("score_base_0_50", "score_total_0_50", "sentiment_delta", "sentiment_signal", "sentiment_delta_points"):
-            if c in df.columns:
-                score_debug["created_columns"].append(c)
+
+        after_cols = set(df.columns)
+        desired_order = [
+            "score_base_0_50",
+            "score_total_0_50",
+            "sentiment_delta",
+            "sentiment_signal",
+            "sentiment_delta_points",
+        ]
+        score_debug["created_columns"] = [c for c in desired_order if (c in after_cols and c not in before_cols)]
         score_debug["source"] = "derived"
         score_debug["beta_used"] = meta.get("score_beta")
         score_debug["delta_max_used"] = meta.get("score_delta_max")
         score_debug["calif_cols_detected"] = meta.get("calif_cols_detected", [])
     else:
-        # no derive: solo detectar
-        pass
+        score_debug["source"] = "missing"
 
-    # selección final
+    # 4) Selección final
     if prefer_total and "score_total_0_50" in df.columns:
         return df, "score_total_0_50", score_debug
     if "score_base_0_50" in df.columns:
@@ -261,4 +297,5 @@ def ensure_score_columns(
     if "rating" in df.columns:
         return df, "rating", score_debug
 
+    # Último fallback (el caller debe validar existencia real antes de usar)
     return df, "score_base_0_50", score_debug

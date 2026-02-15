@@ -66,6 +66,8 @@ from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
 from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
+from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
+
 
 from ...observability.bus_eventos import BUS
 
@@ -191,6 +193,56 @@ def _abs_path(ref: str) -> Path:
         return (ARTIFACTS_DIR / sub).resolve()
 
     return (BASE_DIR / p).resolve()
+
+def _try_write_predictor_bundle(*, run_dir: Path, req_norm: Any, metrics: Dict[str, Any]) -> None:
+    """Best-effort: escribe el predictor bundle en el run_dir.
+
+    Contrato P2.1:
+    - `predictor.json` SIEMPRE (si el run llegó a completed).
+    - `model.bin` y `preprocess.json` son placeholders por ahora si no hay soporte de dump.
+
+    Decisiones:
+    - No debe romper P0/P1: cualquier error aquí se loguea y se ignora.
+    - La inferencia P2 detectará ausencia de `model.bin` real y responderá 422/501.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        run_dir = _Path(run_dir).expanduser().resolve()
+        bp = bundle_paths(run_dir)
+
+        dataset_id = str(getattr(req_norm, "dataset_id", "") or metrics.get("dataset_id") or "")
+        model_name = str(getattr(req_norm, "modelo", "") or metrics.get("model_name") or metrics.get("model") or "")
+        family = str(getattr(req_norm, "family", "") or metrics.get("family") or "")
+
+        task_type = str(metrics.get("task_type") or metrics.get("params", {}).get("task_type") or "unknown")
+        input_level = str(metrics.get("input_level") or metrics.get("params", {}).get("input_level") or "row")
+        target_col = metrics.get("target_col") or metrics.get("params", {}).get("target_col")
+
+        manifest = build_predictor_manifest(
+            run_id=str(metrics.get("run_id") or ""),
+            dataset_id=dataset_id,
+            model_name=model_name,
+            task_type=task_type,
+            input_level=input_level,
+            target_col=str(target_col) if target_col else None,
+            extra={
+                "family": family,
+                "note": "P2.1 bundle inicial: model.bin puede ser placeholder hasta implementar dump real por estrategia.",
+            },
+        )
+        write_json(bp.predictor_json, manifest)
+
+        # Placeholders (no romper si ya existen)
+        if not bp.preprocess_json.exists():
+            write_json(bp.preprocess_json, {"schema_version": 1, "notes": "placeholder P2.1"})
+
+        if not bp.model_bin.exists():
+            # No escribimos bytes reales aún (depende de estrategia). Un placeholder simple.
+            bp.model_bin.write_bytes(b"PLACEHOLDER_MODEL_BIN_P2_1")
+
+    except Exception:
+        logger.exception("No se pudo escribir predictor bundle (best-effort)")
 
 
 def _call_with_accepted_kwargs(fn, **kwargs):
@@ -1609,6 +1661,10 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             final_metrics=final_metrics,
             history=history,
         )
+
+        # P2.1 (best-effort): persistir predictor bundle para futura inferencia.
+        _try_write_predictor_bundle(run_dir=run_dir, req_norm=req_norm, metrics=final_metrics)
+
 
         # 7) Champion (si aplica) - usar metrics.json como contrato (incluye params.req)
         champion_promoted = None

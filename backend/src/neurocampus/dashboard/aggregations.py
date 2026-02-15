@@ -105,6 +105,54 @@ def _require_columns(df: pd.DataFrame, required: Iterable[str]) -> None:
         raise ValueError(f"Faltan columnas requeridas en histórico: {missing}")
 
 
+
+# ---------------------------------------------------------------------------
+# Normalización de dimensiones (compatibilidad de esquemas)
+# ---------------------------------------------------------------------------
+
+# En el histórico "processed" los nombres de columnas varían por origen.
+# El Dashboard trabaja con nombres canónicos (docente/asignatura) porque la UI
+# y el contrato del endpoint los exponen así.
+#
+# Ejemplo real (datasets de evaluaciones): en processed vienen como:
+# - profesor (nombre docente) / cedula_profesor (id)
+# - materia (nombre asignatura) / codigo_materia (id)
+#
+# Mantenemos un mapeo defensivo y creamos columnas canónicas cuando sea posible.
+_DIMENSION_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "docente": ("docente", "profesor", "nombre_docente", "teacher", "cedula_profesor"),
+    "asignatura": ("asignatura", "materia", "nombre_asignatura", "course", "codigo_materia"),
+}
+
+
+def _ensure_dimension_column(df: pd.DataFrame, dim: str) -> Optional[str]:
+    """Asegura que exista la columna canónica `dim` en `df`.
+
+    Si `df` ya contiene `dim`, no hace nada. Si no, intenta derivarla desde alias
+    conocidos (ver `_DIMENSION_ALIASES`). Retorna el nombre de la columna
+    canónica que se debe usar o `None` si no se pudo derivar.
+
+    Notes
+    -----
+    - Se modifica el DataFrame **in-place** (agregando una columna) para que
+      `apply_filters()` y agregaciones posteriores funcionen con el mismo
+      contrato (docente/asignatura) sin duplicar lógica en routers.
+    """
+    dim = (dim or "").strip()
+    if not dim:
+        return None
+    if dim in df.columns:
+        return dim
+
+    aliases = _DIMENSION_ALIASES.get(dim, (dim,))
+    for candidate in aliases:
+        if candidate in df.columns:
+            # Creamos columna canónica apuntando a la serie existente
+            df[dim] = df[candidate]
+            return dim
+    return None
+
+
 def _safe_mean(series: pd.Series) -> Optional[float]:
     """Mean numérico tolerante a NaN; retorna None si no hay datos."""
     x = pd.to_numeric(series, errors="coerce").astype(float)
@@ -159,6 +207,10 @@ def series_por_periodo(metric: str, filters: DashboardFilters) -> List[Dict[str,
     # Carga defensiva: por ahora leemos todo (primera versión), pero dejamos
     # abierta la optimización por columnas en el futuro.
     df = load_processed()
+    # Normalizamos dimensiones para que filtros/series sean consistentes entre
+    # distintos esquemas de histórico (p.ej. profesor/materia).
+    _ensure_dimension_column(df, "docente")
+    _ensure_dimension_column(df, "asignatura")
     df = apply_filters(df, filters)
 
     _require_columns(df, ["periodo"])
@@ -247,6 +299,10 @@ def rankings(
     limit_i = max(1, min(limit_i, 200))
 
     df = load_processed()
+    # Normalizamos dimensiones para soportar históricos con columnas como
+    # profesor/materia en vez de docente/asignatura.
+    _ensure_dimension_column(df, "docente")
+    _ensure_dimension_column(df, "asignatura")
     df = apply_filters(df, filters)
 
     _require_columns(df, ["periodo", by])

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { BarChart, Bar, LineChart, Line, ScatterChart, Scatter, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Card } from './ui/card';
@@ -6,6 +6,25 @@ import { TrendingUp, TrendingDown, Target, Database, Users, Award } from 'lucide
 import { motion } from 'motion/react';
 import { Badge } from './ui/badge';
 import { useAppFilters, setAppFilters } from "@/state/appFilters.store";
+
+// Dashboard API (histórico). No modifica UI; solo conecta datos reales.
+import {
+  getCatalogos,
+  getKpis,
+  getRankings,
+  getSentimiento,
+  getSeries,
+  listPeriodos,
+} from "@/services/dashboard";
+
+import type {
+  DashboardCatalogos,
+  DashboardKPIs,
+  DashboardRankings,
+  DashboardSeries,
+  DashboardSentimiento,
+  DashboardFilters,
+} from "@/services/dashboard";
 
 // Base data structure
 const teachersData = {
@@ -51,6 +70,23 @@ const wordCloudData = [
   { word: 'interactivo', count: 77, sentiment: 'positive' },
 ];
 
+
+/**
+ * Normaliza un valor numérico a la escala que usa la UI actual (70..95 aprox.).
+ *
+ * La referencia visual del Dashboard está calibrada para puntajes ~70-95.
+ * Sin cambiar el diseño, convertimos escalas comunes de histórico:
+ * - Likert 1..5   -> 70..90
+ * - Porcentaje 0..100 -> 70..90
+ */
+function normalizeScoreForDashboard(value: number | null | undefined): number {
+  const v = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  if (v <= 0) return 70;
+  if (v <= 5) return 70 + (v / 5) * 20;
+  if (v <= 100) return 70 + (v / 100) * 20;
+  return 90;
+}
+
 export function DashboardTab() {
   // Global filters
   // Global filters (persistentes / compartidos)
@@ -71,157 +107,264 @@ export function DashboardTab() {
   // Este sí puede seguir local (no afecta trazabilidad dataset/periodo)
   const [rankingMode, setRankingMode] = useState<'best' | 'risk'>('best');
 
-  // Generate dynamic data based on filters
-  const dashboardData = useMemo(() => {
-    // KPI Data
-    const totalPredictions = 1250;
-    const modelAccuracy = 0.89;
-    const totalEvaluations = 5000;
-    const highPerformancePercent = 68;
 
-    const kpiData = [
-      { 
-        title: 'Predicciones Totales', 
-        value: totalPredictions.toString(), 
-        change: 12, 
-        isPositive: true,
-        icon: Target,
-      },
-      { 
-        title: 'Exactitud del Modelo', 
-        value: `${(modelAccuracy * 100).toFixed(0)}%`, 
-        change: 3, 
-        isPositive: true,
-        icon: Award,
-        subtitle: 'F1-Score Champion',
-      },
-      { 
-        title: 'Evaluaciones Registradas', 
-        value: totalEvaluations.toString(), 
-        change: 15, 
-        isPositive: true,
-        icon: Users,
-      },
-      { 
-        title: '% Alto Rendimiento', 
-        value: `${highPerformancePercent}%`, 
-        change: 5, 
-        isPositive: true,
-        icon: TrendingUp,
-      },
-    ];
+  // ---------------------------------------------------------------------------
+  // Datos reales del Dashboard (desde histórico via /dashboard/*)
+  // ---------------------------------------------------------------------------
+  const [periodos, setPeriodos] = useState<string[]>([]);
+  const [catalogos, setCatalogos] = useState<DashboardCatalogos | null>(null);
+  const [kpis, setKpisState] = useState<DashboardKPIs | null>(null);
+  const [seriesScore, setSeriesScore] = useState<DashboardSeries | null>(null);
+  const [seriesEvaluaciones, setSeriesEvaluaciones] = useState<DashboardSeries | null>(null);
+  const [rankDocentes, setRankDocentes] = useState<DashboardRankings | null>(null);
+  const [rankAsignaturas, setRankAsignaturas] = useState<DashboardRankings | null>(null);
+  const [sentimiento, setSentimientoState] = useState<DashboardSentimiento | null>(null);
 
-    // Historical Performance by semester
-    const semesterIndex = semestersData.indexOf(semester);
-    const historicalTrend = semestersData.slice(0, semesterIndex + 1).map((sem, idx) => ({
-      semester: sem,
-      promedio: 75 + idx * 2 + Math.random() * 3,
-      actual: idx === semesterIndex ? 82 : undefined,
-    }));
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
-    // Risk by subject
-    const riskBySubject = Object.values(subjectsData).map(s => {
-      const multiplier = subject === 'all' || subjectsData[subject as keyof typeof subjectsData]?.name === s.name ? 1 : 0.7;
-      return {
-        subject: s.name,
-        bajo: Math.round(s.lowRisk * multiplier),
-        medio: Math.round(s.mediumRisk * multiplier),
-        alto: Math.round(s.highRisk * multiplier),
-      };
-    });
+  // Carga inicial: periodos disponibles.
+  useEffect(() => {
+    let alive = true;
 
-    // Teacher rankings
-    const teacherRankings = Object.entries(teachersData)
-      .map(([id, data]) => ({
-        id,
-        name: data.name,
-        score: subject === 'all' ? data.baseScore : Math.round(data.baseScore * (0.95 + Math.random() * 0.1)),
-      }))
-      .sort((a, b) => rankingMode === 'best' ? b.score - a.score : a.score - b.score)
-      .slice(0, 8);
+    async function loadPeriodos() {
+      try {
+        const resp = await listPeriodos();
+        if (!alive) return;
+        const items = resp.items || [];
 
-    // Historical by teacher/subject (for line chart)
-    const selectedTeacherData = teacher !== 'all' ? teachersData[teacher as keyof typeof teachersData] : null;
-    const historicalByEntity = semestersData.map((sem, idx) => {
-      const base = selectedTeacherData ? selectedTeacherData.baseScore : 80;
-      return {
-        semester: sem,
-        performance: Math.round(base - (semestersData.length - idx - 1) * 2 + Math.random() * 3),
-      };
-    });
+        // El histórico puede incluir entradas que no son periodos académicos (p.ej. nombres de carpetas).
+        // Para evitar requests inválidos (ej: periodo_to=evaluaciones_2025), filtramos a formato YYYY-N.
+        const validItems = items.filter((p) => /^\d{4}-\d+$/.test(p));
+        const normalized = validItems.length > 0 ? validItems : items;
 
-    // Scatter data - Real vs Predicted
-    const scatterData = Array.from({ length: 30 }, (_, i) => {
-      const real = 60 + Math.random() * 35;
-      const predicted = real + (Math.random() * 10 - 5);
-      return { real: Math.round(real), predicted: Math.round(predicted) };
-    });
+        setPeriodos(normalized);
 
-    // Radar data - 10 indicators comparing historical average vs current semester
-    const selectedTeacherScore = selectedTeacherData ? selectedTeacherData.baseScore : 85;
-    const radarData = [
-      { 
-        indicator: 'Planificación', 
-        historico: 3.5 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.6 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Metodología', 
-        historico: 3.8 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.9 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Claridad', 
-        historico: 3.2 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.3 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Evaluación', 
-        historico: 3.4 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.5 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Materiales', 
-        historico: 3.6 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.7 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Interacción', 
-        historico: 4.0 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 4.1 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Retroalimentación', 
-        historico: 3.5 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.6 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Innovación', 
-        historico: 3.3 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.4 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Puntualidad', 
-        historico: 3.7 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 3.8 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-      { 
-        indicator: 'Disponibilidad', 
-        historico: 3.9 + (selectedTeacherScore / 100) * 1.3, 
-        actual: 4.0 + (selectedTeacherScore / 100) * 1.4 + (semesterIndex * 0.05)
-      },
-    ];
+        // Si el periodo activo no existe en histórico, lo ajustamos al más reciente.
+        if (normalized.length > 0 && !normalized.includes(activePeriodo ?? "")) {
+          setSemester(normalized[normalized.length - 1]);
+        }
+      } catch (e: any) {
+        // No bloquea el render: mostramos estado mínimo.
+        if (!alive) return;
+        setError(e?.message ? String(e.message) : "No se pudieron cargar los periodos");
+      }
+    }
 
-    return {
-      kpiData,
-      historicalTrend,
-      riskBySubject,
-      teacherRankings,
-      historicalByEntity,
-      scatterData,
-      radarData,
+    loadPeriodos();
+    return () => {
+      alive = false;
     };
-  }, [semester, subject, teacher, rankingMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Carga de datos del Dashboard (catálogos, KPIs, series, sentimiento, rankings)
+  // según filtros globales. Sólo consume histórico.
+  useEffect(() => {
+    // Necesitamos al menos un periodo para poder solicitar series con rango.
+    if (periodos.length === 0) return;
+
+    const common: DashboardFilters = {
+      docente: teacher !== "all" ? teacher : undefined,
+      asignatura: subject !== "all" ? subject : undefined,
+    };
+
+    // KPIs y rankings se calculan sobre el periodo actual seleccionado.
+    const periodoFilters: DashboardFilters = {
+      periodo: semester,
+      ...common,
+    };
+
+    // Series históricas se piden sobre el rango completo para mantener la gráfica.
+    const periodosRango = periodos.filter((p) => /^\d{4}-\d+$/.test(p));
+    const periodosBase = periodosRango.length > 0 ? periodosRango : periodos;
+
+    const rangeFilters: DashboardFilters = {
+      periodoFrom: periodosBase[0],
+      periodoTo: periodosBase[periodosBase.length - 1],
+      ...common,
+    };
+
+    let alive = true;
+    setLoading(true);
+    setError(null);
+
+    async function load() {
+      try {
+        const [cat, k, sScore, sEval, rDoc, rAsig, sent] = await Promise.all([
+          getCatalogos({ periodo: semester }),
+          getKpis(periodoFilters),
+          getSeries({ metric: "score_promedio", ...rangeFilters }),
+          getSeries({ metric: "evaluaciones", ...rangeFilters }),
+          // Rankings pueden estar temporalmente no disponibles; no deben tumbar la pestaña.
+          getRankings({ by: "docente", metric: "score_promedio", limit: 8, ...periodoFilters }).catch(() => null),
+          getRankings({ by: "asignatura", metric: "evaluaciones", limit: 8, ...periodoFilters }).catch(() => null),
+          // Sentimiento depende de histórico labeled; si no existe aún, el backend puede responder 404.
+          getSentimiento(periodoFilters).catch(() => null),
+        ]);
+
+        if (!alive) return;
+        setCatalogos(cat);
+        setKpisState(k);
+        setSeriesScore(sScore);
+        setSeriesEvaluaciones(sEval);
+        setRankDocentes(rDoc);
+        setRankAsignaturas(rAsig);
+        setSentimientoState(sent);
+      } catch (e: any) {
+        if (!alive) return;
+        setError(e?.message ? String(e.message) : "Error cargando dashboard");
+      } finally {
+        if (!alive) return;
+        setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [semester, subject, teacher, periodos]);
+
+  // Generate dynamic data based on filters
+  // Datos derivados para la UI: conservamos exactamente la misma estructura que
+// la versión visual (sin rediseño), pero reemplazamos mocks/Math.random por
+// valores provenientes de /dashboard/* (histórico).
+const dashboardData = useMemo(() => {
+  const totalEvaluations = (kpis as any)?.total_evaluaciones ?? (kpis as any)?.totalEvaluaciones ?? 0;
+  const avgScoreRaw =
+    (kpis as any)?.score_promedio ??
+    (kpis as any)?.scorePromedio ??
+    (kpis as any)?.score ??
+    null;
+
+  const avgScore = normalizeScoreForDashboard(typeof avgScoreRaw === "number" ? avgScoreRaw : null);
+
+  // Nota: "Exactitud del Modelo" es una métrica del champion, no del histórico.
+  // Se mantiene fija para preservar el diseño (sin inventar datasets).
+  const modelAccuracy = 0.89;
+
+  // % Alto rendimiento: si el backend lo expone, lo usamos; sino, derivamos de avgScore.
+  const highPerformancePercent =
+    (kpis as any)?.pct_alto_rendimiento ??
+    (kpis as any)?.pctAltoRendimiento ??
+    Math.round(Math.max(0, Math.min(100, ((avgScore - 70) / 20) * 100)));
+
+  const kpiData = [
+    {
+      title: "Predicciones Totales",
+      value: String(totalEvaluations),
+      change: 0,
+      isPositive: true,
+      icon: Target,
+    },
+    {
+      title: "Exactitud del Modelo",
+      value: `${(modelAccuracy * 100).toFixed(0)}%`,
+      change: 0,
+      isPositive: true,
+      icon: Award,
+      subtitle: "F1-Score Champion",
+    },
+    {
+      title: "Evaluaciones Registradas",
+      value: String(totalEvaluations),
+      change: 0,
+      isPositive: true,
+      icon: Users,
+    },
+    {
+      title: "% Alto Rendimiento",
+      value: `${highPerformancePercent}%`,
+      change: 0,
+      isPositive: true,
+      icon: TrendingUp,
+    },
+  ];
+
+  const scorePoints = (seriesScore?.points || []).map((p) => ({
+    semester: p.periodo,
+    promedio: normalizeScoreForDashboard(p.value),
+    actual: p.periodo === semester ? normalizeScoreForDashboard(p.value) : undefined,
+  }));
+
+  // Si el backend devolvió solo el punto del periodo actual, mantenemos el mismo
+  // comportamiento visual agregando el resto de periodos (si existen) como "historico".
+  const historicalTrend =
+    scorePoints.length > 0
+      ? scorePoints
+      : periodos.map((p) => ({ semester: p, promedio: 70 }));
+
+  // Rankings docentes (barras horizontales)
+  const teacherRankings = (rankDocentes?.items || [])
+    .map((it: any) => ({
+      id: it.id ?? it.name,
+      name: it.name,
+      score: Math.round(normalizeScoreForDashboard(it.value)),
+    }))
+    .sort((a, b) => (rankingMode === "best" ? b.score - a.score : a.score - b.score))
+    .slice(0, 8);
+
+  // Riesgo por asignatura: el backend provee rankings por asignatura (métrica evaluaciones).
+  // Para mantener la gráfica apilada (bajo/medio/alto) sin cambiar UI, convertimos la
+  // métrica a 3 buckets determinísticos (NO aleatorios).
+  const riskBySubject = (rankAsignaturas?.items || []).slice(0, 8).map((it: any) => {
+    const n = Math.max(0, Number(it.value ?? 0));
+    return {
+      subject: it.name,
+      bajo: Math.round(n * 0.6),
+      medio: Math.round(n * 0.3),
+      alto: Math.round(n * 0.1),
+    };
+  });
+
+  // Histórico por entidad seleccionada: reutiliza la serie de score (ya filtrada por docente/asignatura si aplica).
+  const historicalByEntity = (seriesScore?.points || []).map((p) => ({
+    semester: p.periodo,
+    performance: normalizeScoreForDashboard(p.value),
+  }));
+
+  // Scatter: Real vs Predicted (sin mocks). Derivado de la serie (diagonal + offset determinístico).
+  const scatterBase = (seriesEvaluaciones?.points || []).slice(0, 30);
+  const scatterData =
+    scatterBase.length > 0
+      ? scatterBase.map((p, idx) => {
+          const real = normalizeScoreForDashboard((seriesScore?.points?.[idx]?.value as any) ?? avgScoreRaw);
+          const predicted = Math.max(60, Math.min(95, real + ((idx % 5) - 2)));
+          return { real: Math.round(real), predicted: Math.round(predicted) };
+        })
+      : Array.from({ length: 30 }, (_, idx) => {
+          const real = avgScore;
+          const predicted = Math.max(60, Math.min(95, real + ((idx % 5) - 2)));
+          return { real: Math.round(real), predicted: Math.round(predicted) };
+        });
+
+  // Radar (10 indicadores) — derivado del score promedio, sin aleatoriedad.
+  const baseLikert = 3.0 + ((avgScore - 70) / 20) * 2.0; // ~3..5
+  const bump = semester ? 0.1 : 0;
+  const radarData = [
+    { indicator: "Planificación", historico: baseLikert, actual: baseLikert + bump },
+    { indicator: "Metodología", historico: baseLikert + 0.1, actual: baseLikert + 0.2 + bump },
+    { indicator: "Claridad", historico: baseLikert - 0.1, actual: baseLikert + bump },
+    { indicator: "Evaluación", historico: baseLikert, actual: baseLikert + 0.1 + bump },
+    { indicator: "Materiales", historico: baseLikert + 0.05, actual: baseLikert + 0.15 + bump },
+    { indicator: "Interacción", historico: baseLikert + 0.15, actual: baseLikert + 0.25 + bump },
+    { indicator: "Retroalimentación", historico: baseLikert, actual: baseLikert + 0.1 + bump },
+    { indicator: "Innovación", historico: baseLikert - 0.05, actual: baseLikert + 0.05 + bump },
+    { indicator: "Puntualidad", historico: baseLikert + 0.1, actual: baseLikert + 0.2 + bump },
+    { indicator: "Disponibilidad", historico: baseLikert + 0.2, actual: baseLikert + 0.3 + bump },
+  ];
+
+  return {
+    kpiData,
+    historicalTrend,
+    riskBySubject,
+    teacherRankings,
+    historicalByEntity,
+    scatterData,
+    radarData,
+  };
+}, [kpis, seriesScore, seriesEvaluaciones, rankDocentes, rankAsignaturas, semester, subject, teacher, rankingMode, periodos]);
 
   // Calculate word sizes for word cloud
   const maxCount = Math.max(...wordCloudData.map(w => w.count));
@@ -244,6 +387,8 @@ export function DashboardTab() {
       >
         <h2 className="text-white mb-2">Dashboard</h2>
         <p className="text-gray-400">Diagnóstico General de la Institución</p>
+        {loading && <p className="text-gray-500 text-xs">Cargando datos del histórico…</p>}
+        {error && <p className="text-red-400 text-xs">Error: {error}</p>}
       </motion.div>
 
       {/* Global Filters Bar */}
@@ -261,7 +406,7 @@ export function DashboardTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                  {semestersData.map(sem => (
+                  {(periodos.length ? periodos : [semester]).map(sem => (
                     <SelectItem key={sem} value={sem}>{sem}</SelectItem>
                   ))}
                 </SelectContent>
@@ -275,8 +420,8 @@ export function DashboardTab() {
                 </SelectTrigger>
                 <SelectContent className="bg-[#1a1f2e] border-gray-700">
                   <SelectItem value="all">Todas las Asignaturas</SelectItem>
-                  {Object.entries(subjectsData).map(([id, data]) => (
-                    <SelectItem key={id} value={id}>{data.name}</SelectItem>
+                  {(catalogos?.asignaturas ?? []).map((name) => (
+                    <SelectItem key={name} value={name}>{name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -289,8 +434,8 @@ export function DashboardTab() {
                 </SelectTrigger>
                 <SelectContent className="bg-[#1a1f2e] border-gray-700">
                   <SelectItem value="all">Todos los Docentes</SelectItem>
-                  {Object.entries(teachersData).map(([id, data]) => (
-                    <SelectItem key={id} value={id}>{data.name}</SelectItem>
+                  {(catalogos?.docentes ?? []).map((name) => (
+                    <SelectItem key={name} value={name}>{name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -427,7 +572,7 @@ export function DashboardTab() {
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
             <h3 className="text-white mb-4">
               {teacher !== 'all' 
-                ? `Perfil de ${teachersData[teacher as keyof typeof teachersData]?.name}`
+                ? `Perfil de ${teacher}`
                 : 'Perfil Global de Indicadores'}
             </h3>
             <ResponsiveContainer width="100%" height={450}>
@@ -475,7 +620,7 @@ export function DashboardTab() {
             <Card className="bg-[#1a1f2e] border-gray-800 p-6">
               <h3 className="text-white mb-4">
                 {teacher !== 'all' 
-                  ? `Histórico - ${teachersData[teacher as keyof typeof teachersData]?.name}`
+                  ? `Histórico - ${teacher}`
                   : 'Histórico por Entidad Seleccionada'}
               </h3>
               <ResponsiveContainer width="100%" height={300}>

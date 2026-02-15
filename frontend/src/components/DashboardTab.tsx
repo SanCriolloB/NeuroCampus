@@ -192,18 +192,21 @@ export function DashboardTab() {
     const periodosRango = periodos.filter((p) => /^\d{4}-\d+$/.test(p));
     const periodosBase = periodosRango.length > 0 ? periodosRango : periodos;
 
+    const isAll = semester === ALL_PERIODOS_VALUE;
+    
     const periodoFrom = periodoFromStore ?? periodosBase[0];
     const periodoTo = periodoToStore ?? periodosBase[periodosBase.length - 1];
-
-    const rangeFilters: DashboardFilters = {
-      periodoFrom,
-      periodoTo,
-      ...common,
-    };
+    
+    // Catálogos alimentan los dropdowns; NO deben depender de docente/asignatura.
+    // Si se filtra por docente/asignatura, el backend reduce filas y el catálogo puede quedar vacío.
+    const catalogosFilters: DashboardFilters = isAll
+      ? { periodoFrom, periodoTo }
+      : { periodo: semester };
+      
+    const rangeFilters = isAll ? { periodoFrom, periodoTo } : { periodo: semester };
 
     // KPIs y rankings se calculan sobre el periodo actual seleccionado, excepto
     // cuando el usuario elige "Histórico (todo)".
-    const isAll = semester === ALL_PERIODOS_VALUE;
     const periodoFilters: DashboardFilters = isAll
       ? {
           periodoFrom,
@@ -222,7 +225,7 @@ export function DashboardTab() {
     async function load() {
       try {
         const [cat, k, sScore, sEval, rDoc, rAsig, sent] = await Promise.all([
-          getCatalogos(periodoFilters),
+          getCatalogos(catalogosFilters),
           getKpis(periodoFilters),
           getSeries({ metric: "score_promedio", ...rangeFilters }),
           getSeries({ metric: "evaluaciones", ...rangeFilters }),
@@ -234,6 +237,21 @@ export function DashboardTab() {
         ]);
 
         if (!alive) return;
+        // Si el docente/asignatura actual no existe en el catálogo del periodo/rango,
+        // reiniciamos a "all" para evitar dropdowns sin opciones.
+        let didReset = false;
+
+        if (teacher !== "all" && cat?.docentes?.length && !cat.docentes.includes(teacher)) {
+          setTeacher("all");
+          didReset = true;
+        }
+        if (subject !== "all" && cat?.asignaturas?.length && !cat.asignaturas.includes(subject)) {
+          setSubject("all");
+          didReset = true;
+        }
+
+        // Importante: cortar aquí para que KPIs/series/rankings se recarguen ya con filtros válidos.
+        if (didReset) return;
         setCatalogos(cat);
         setKpisState(k);
         setSeriesScore(sScore);

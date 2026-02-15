@@ -67,3 +67,7 @@ jobs/preproc_beto/*.json
 
 # NeuroCampus: runtime job outputs
 jobs/features_prepare/*.json
+
+# --- Local runtime artifacts (no versionar) ---
+jobs/
+logs/*.log

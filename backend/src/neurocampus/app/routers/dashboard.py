@@ -34,10 +34,12 @@ from neurocampus.app.schemas.dashboard import (
     DashboardPeriodos,
     DashboardSeries,
     DashboardSeriesPoint,
+    DashboardSentimiento,
+    DashboardSentimientoBucket,
     DashboardStatus,
     FileStatus,
 )
-from neurocampus.dashboard.aggregations import series_por_periodo
+from neurocampus.dashboard.aggregations import series_por_periodo, sentimiento_distribucion
 
 from neurocampus.dashboard.queries import (
     DashboardFilters,
@@ -213,4 +215,41 @@ def dashboard_series(
         for p in points
     ]
     return DashboardSeries(metric=metric, points=out_points)
+
+@router.get("/sentimiento", response_model=DashboardSentimiento)
+def dashboard_sentimiento(
+    periodo: Optional[str] = Query(None, description="Periodo exacto (prioriza sobre rango)."),  # noqa: B008
+    periodo_from: Optional[str] = Query(None, description="Inicio de rango (incl.)."),  # noqa: B008
+    periodo_to: Optional[str] = Query(None, description="Fin de rango (incl.)."),  # noqa: B008
+    docente: Optional[str] = Query(None, description="Filtro por docente (opcional)."),  # noqa: B008
+    asignatura: Optional[str] = Query(None, description="Filtro por asignatura (opcional)."),  # noqa: B008
+    programa: Optional[str] = Query(None, description="Filtro por programa (opcional)."),  # noqa: B008
+) -> DashboardSentimiento:
+    """Distribución de sentimiento desde histórico labeled.
+
+    Este endpoint solo está disponible cuando existe
+    ``historico/unificado_labeled.parquet`` (labeled histórico).
+
+    Respuestas
+    ----------
+    - 200: devuelve buckets neg/neu/pos (proporciones 0..1)
+    - 404: histórico labeled no disponible
+    - 400: histórico labeled existe pero no hay columnas de sentimiento compatibles
+    """
+    filters = _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa)
+
+    try:
+        payload = sentimiento_distribucion(filters)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    buckets = payload.get("buckets") or []
+    out = [
+        DashboardSentimientoBucket(label=str(b.get("label")), value=float(b.get("value") or 0.0))
+        for b in buckets
+    ]
+    return DashboardSentimiento(buckets=out)
+
 

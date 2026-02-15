@@ -123,3 +123,22 @@ def test_compute_score_total_respects_no_text_policy_and_calibration():
     assert meta["score_delta_max"] == 8.0
     assert meta["score_calib_q"] == 1.0
     assert np.isclose(float(meta["score_beta"]), 10.0)
+
+def test_compute_score_total_does_not_crash_when_sentiment_conf_missing():
+    """Si faltan columnas opcionales como sentiment_conf, no debe romper (default=1.0 vectorizado)."""
+    df = pd.DataFrame(
+        {
+            "rating": [2],
+            "p_pos": [0.6],
+            "p_neg": [0.2],
+            "has_text": [1],
+        }
+    )
+
+    meta = compute_score_total_0_50(df, delta_max=8.0, calib_q=1.0)
+
+    assert "score_total_0_50" in df.columns
+    assert "sentiment_delta_points" in df.columns
+    # delta = 0.4, qv=0.4, beta=20 => delta_points=8, base=20 => total=28
+    assert np.isclose(float(df.loc[0, "score_total_0_50"]), 28.0)
+    assert np.isclose(float(meta["score_beta"]), 20.0)

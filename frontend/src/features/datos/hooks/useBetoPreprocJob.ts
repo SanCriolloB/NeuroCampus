@@ -13,7 +13,19 @@ export function useBetoPreprocJob(jobId: string | null, opts?: { intervalMs?: nu
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!jobId) return;
+    // `jobId` puede llegar como null mientras no haya job en curso.
+    // Si es null, limpiamos estado y no iniciamos polling.
+    if (!jobId) {
+      setJob(null);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    // TypeScript no mantiene el narrowing de `jobId` dentro de funciones anidadas
+    // (por análisis de flujo). Capturamos el valor en una constante para que
+    // `jobsApi.getBetoJob` reciba siempre un string.
+    const id = jobId;
 
     let alive = true;
 
@@ -21,7 +33,7 @@ export function useBetoPreprocJob(jobId: string | null, opts?: { intervalMs?: nu
       setLoading(true);
       setError(null);
       try {
-        const res = await jobsApi.getBetoJob(jobId);
+        const res = await jobsApi.getBetoJob(id);
         if (!alive) return;
         setJob(res);
 

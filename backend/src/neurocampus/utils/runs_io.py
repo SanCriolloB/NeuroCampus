@@ -74,6 +74,36 @@ CHAMPIONS_DIR: Path = (ARTIFACTS_DIR / "champions").resolve()
 # Helpers
 # ---------------------------------------------------------------------------
 
+CHAMPION_SCHEMA_VERSION = 1
+
+
+def _json_sanitize(payload: Any) -> Any:
+    """Convierte `payload` a algo serializable por JSON (best-effort).
+
+    Decisión:
+    - Para métricas y metadatos puede llegar a haber tipos numpy, Path, datetime, etc.
+    - Convertimos usando `default=str` y re-hidratamos con `json.loads`.
+    - Si aún falla, caemos a `str(payload)` para nunca romper promote/champion.
+    """
+    try:
+        return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        return str(payload)
+
+
+def _artifacts_ref(p: Path) -> str:
+    """Devuelve una referencia lógica estable tipo `artifacts/...` si vive bajo ARTIFACTS_DIR.
+
+    Esto permite que el contrato sea portable aunque `NC_ARTIFACTS_DIR` apunte a otro disco.
+    """
+    p_res = Path(p).expanduser().resolve()
+    try:
+        rel = p_res.relative_to(ARTIFACTS_DIR)
+        return str((Path("artifacts") / rel)).replace("\\", "/")
+    except Exception:
+        return str(p_res).replace("\\", "/")
+
+
 _INVALID_RUN_IDS = {"", "null", "none", "nil"}
 
 
@@ -88,7 +118,8 @@ def ensure_artifacts_dirs() -> None:
 
 
 def now_utc_iso() -> str:
-    return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
 
 
 def _slug(text: Any) -> str:
@@ -283,7 +314,7 @@ def _data_meta_from_data_ref(data_ref: Optional[str]) -> Optional[Dict[str, Any]
 
 def build_run_id(dataset_id: str, model_name: str, job_id: str) -> str:
     """Construye un run_id único y legible."""
-    ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    ts = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     job8 = _slug(job_id)[:8]
     return f"{_slug(dataset_id)}__{_slug(model_name)}__{ts}__{job8}"
 
@@ -600,6 +631,60 @@ def _ensure_source_run_id(champ: Dict[str, Any]) -> Dict[str, Any]:
             champ["source_run_id"] = str(rid)
     return champ
 
+def _build_champion_payload(
+    *,
+    dataset_id: str,
+    family: str,
+    model_name: str,
+    source_run_id: str,
+    metrics: Dict[str, Any],
+    ds_dir: Path,
+    model_dir: Path,
+    promoted_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Construye un `champion.json` consistente (schema estable).
+
+    Campos clave:
+    - schema_version: versión de contrato del JSON.
+    - source_run_id: run fuente (obligatorio).
+    - metrics: métricas completas del run (para auditoría offline).
+    - score: tupla (tier, value) usada para comparar champions.
+    - paths: referencias lógicas `artifacts/...` + path físico (compat).
+
+    Nota: mantenemos `created_at` por compatibilidad con versiones anteriores.
+    """
+    ts = promoted_at or now_utc_iso()
+    tier, score_val = _champion_score(metrics or {})
+
+    payload: Dict[str, Any] = {
+        "schema_version": CHAMPION_SCHEMA_VERSION,
+        "family": str(family),
+        "dataset_id": str(dataset_id),
+        "model_name": str(model_name),
+        "source_run_id": str(source_run_id),
+        # Compat: algunos consumers esperan created_at
+        "created_at": ts,
+        "promoted_at": ts,
+        "updated_at": ts,
+        "score": {"tier": int(tier), "value": float(score_val)},
+        "metrics": _json_sanitize(metrics or {}),
+        "paths": {
+            "champion_ds_dir": _artifacts_ref(ds_dir),
+            "champion_model_dir": _artifacts_ref(model_dir),
+            "run_dir": _artifacts_ref(RUNS_DIR / str(source_run_id)),
+            "run_metrics": _artifacts_ref(RUNS_DIR / str(source_run_id) / "metrics.json"),
+        },
+        # Mantener `path` por compat (algunos clientes lo muestran)
+        "path": str(Path(model_dir).resolve()),
+    }
+
+    # Si el run ya trae created_at, lo preservamos aparte para auditoría
+    run_created_at = (metrics or {}).get("created_at")
+    if run_created_at:
+        payload["run_created_at"] = run_created_at
+
+    return payload
+
 
 def load_dataset_champion(dataset_id: str, *, family: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Carga champion.json (layout nuevo por family, con fallback legacy)."""
@@ -672,15 +757,19 @@ def maybe_update_champion(
             if run_dir.exists():
                 _copy_run_artifacts_to_dir(run_dir, model_dir)
 
-        champion_payload: Dict[str, Any] = {
-            "family": fam,
-            "dataset_id": str(dataset_id),
-            "model_name": str(model_name),
-            "source_run_id": str(source_run_id) if source_run_id else None,
-            "metrics": metrics,
-            "path": str(model_dir.resolve()),
-            "updated_at": now_utc_iso(),
-        }
+        if not source_run_id:
+            # Para mantener contrato (source_run_id obligatorio), en este flujo lo inferimos desde metrics.
+            source_run_id = str(metrics.get("run_id") or metrics.get("source_run_id") or "")
+
+        champion_payload = _build_champion_payload(
+            dataset_id=str(dataset_id),
+            family=str(fam or ""),
+            model_name=str(model_name),
+            source_run_id=str(source_run_id),
+            metrics=metrics,
+            ds_dir=ds_dir,
+            model_dir=model_dir,
+        )
         _write_json(ds_dir / "champion.json", champion_payload)
 
         # mirror legacy best-effort
@@ -694,6 +783,10 @@ def maybe_update_champion(
                     _copy_run_artifacts_to_dir(run_dir, legacy_model_dir)
             payload_legacy = dict(champion_payload)
             payload_legacy["path"] = str(legacy_model_dir.resolve())
+            if isinstance(payload_legacy.get("paths"), dict):
+                payload_legacy["paths"] = dict(payload_legacy["paths"])
+                payload_legacy["paths"]["champion_ds_dir"] = _artifacts_ref(legacy_ds_dir)
+                payload_legacy["paths"]["champion_model_dir"] = _artifacts_ref(legacy_model_dir)
             _write_json(legacy_ds_dir / "champion.json", payload_legacy)
         except Exception:
             pass
@@ -741,33 +834,33 @@ def promote_run_to_champion(
     # Copia artifacts run -> champion
     _copy_run_artifacts_to_dir(run_dir, dst_dir)
 
-    champion = {
-        "family": inferred_family,
-        "dataset_id": str(dataset_id),
-        "model_name": inferred_model,
-        "task_type": metrics.get("task_type") or req.get("task_type"),
-        "input_level": metrics.get("input_level") or req.get("input_level"),
-        "target_col": metrics.get("target_col") or req.get("target_col"),
-        "data_plan": metrics.get("data_plan") or req.get("data_plan"),
-        "source_run_id": rid,
-        "created_at": metrics.get("created_at") or now_utc_iso(),
-        "path": str(dst_dir.resolve()),
-    }
-
-    _write_json(ds_dir / "champion.json", champion)
+    champion_payload = _build_champion_payload(
+        dataset_id=str(dataset_id),
+        family=str(inferred_family),
+        model_name=str(inferred_model),
+        source_run_id=str(rid),
+        metrics=metrics,
+        ds_dir=ds_dir,
+        model_dir=dst_dir,
+    )
+    _write_json(ds_dir / "champion.json", champion_payload)
 
     # legacy mirror best-effort
     try:
         legacy_ds_dir = _ensure_champions_ds_dir(dataset_id, family=None)
         legacy_model_dir = ensure_dir(legacy_ds_dir / _slug(inferred_model))
         _copy_run_artifacts_to_dir(run_dir, legacy_model_dir)
-        legacy_payload = dict(champion)
+        legacy_payload = dict(champion_payload)
         legacy_payload["path"] = str(legacy_model_dir.resolve())
+        if isinstance(legacy_payload.get("paths"), dict):
+            legacy_payload["paths"] = dict(legacy_payload["paths"])
+            legacy_payload["paths"]["champion_ds_dir"] = _artifacts_ref(legacy_ds_dir)
+            legacy_payload["paths"]["champion_model_dir"] = _artifacts_ref(legacy_model_dir)
         _write_json(legacy_ds_dir / "champion.json", legacy_payload)
     except Exception:
         pass
 
-    champion_api = dict(champion)
+    champion_api = dict(champion_payload)
     champion_api["metrics"] = metrics
     return champion_api
 

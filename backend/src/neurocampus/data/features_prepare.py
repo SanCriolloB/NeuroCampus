@@ -257,7 +257,7 @@ def _build_pair_matrix(
 
     meta: Dict[str, Any] = {
         "dataset_id": str(dataset_id),
-        "created_at": dt.datetime.utcnow().isoformat() + "Z",
+        "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "input_uri": str(input_uri),
         "target_col": str(target_source_col),
         "target_col_feature_pack": str(score_col),

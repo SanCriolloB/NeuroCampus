@@ -26,6 +26,9 @@ import type {
   DashboardFilters,
 } from "@/services/dashboard";
 
+// Valor especial para consultar todo el histórico (rango min..max)
+const ALL_PERIODOS_VALUE = "ALL";
+
 // Base data structure
 const teachersData = {
   'garcia': { name: 'Dr. María García', baseScore: 92 },
@@ -91,6 +94,8 @@ export function DashboardTab() {
   // Global filters
   // Global filters (persistentes / compartidos)
   const activePeriodo = useAppFilters((s) => s.activePeriodo) ?? '2024-2';
+  const periodoFromStore = useAppFilters((s) => s.periodoFrom);
+  const periodoToStore = useAppFilters((s) => s.periodoTo);
   const asignatura = useAppFilters((s) => s.asignatura); // null = all
   const docente = useAppFilters((s) => s.docente); // null = all
 
@@ -140,8 +145,22 @@ export function DashboardTab() {
 
         setPeriodos(normalized);
 
+        // Guardamos rango histórico (min/max) para modo ALL.
+        if (normalized.length > 0) {
+          const min = normalized[0] ?? null;
+          const max = normalized[normalized.length - 1] ?? null;
+          // Evitamos writes innecesarios al store.
+          if (min !== periodoFromStore || max !== periodoToStore) {
+            setAppFilters({ periodoFrom: min, periodoTo: max });
+          }
+        }
+
         // Si el periodo activo no existe en histórico, lo ajustamos al más reciente.
-        if (normalized.length > 0 && !normalized.includes(activePeriodo ?? "")) {
+        if (
+          normalized.length > 0 &&
+          activePeriodo !== ALL_PERIODOS_VALUE &&
+          !normalized.includes(activePeriodo ?? "")
+        ) {
           setSemester(normalized[normalized.length - 1]);
         }
       } catch (e: any) {
@@ -169,21 +188,32 @@ export function DashboardTab() {
       asignatura: subject !== "all" ? subject : undefined,
     };
 
-    // KPIs y rankings se calculan sobre el periodo actual seleccionado.
-    const periodoFilters: DashboardFilters = {
-      periodo: semester,
-      ...common,
-    };
-
     // Series históricas se piden sobre el rango completo para mantener la gráfica.
     const periodosRango = periodos.filter((p) => /^\d{4}-\d+$/.test(p));
     const periodosBase = periodosRango.length > 0 ? periodosRango : periodos;
 
+    const periodoFrom = periodoFromStore ?? periodosBase[0];
+    const periodoTo = periodoToStore ?? periodosBase[periodosBase.length - 1];
+
     const rangeFilters: DashboardFilters = {
-      periodoFrom: periodosBase[0],
-      periodoTo: periodosBase[periodosBase.length - 1],
+      periodoFrom,
+      periodoTo,
       ...common,
     };
+
+    // KPIs y rankings se calculan sobre el periodo actual seleccionado, excepto
+    // cuando el usuario elige "Histórico (todo)".
+    const isAll = semester === ALL_PERIODOS_VALUE;
+    const periodoFilters: DashboardFilters = isAll
+      ? {
+          periodoFrom,
+          periodoTo,
+          ...common,
+        }
+      : {
+          periodo: semester,
+          ...common,
+        };
 
     let alive = true;
     setLoading(true);
@@ -192,7 +222,7 @@ export function DashboardTab() {
     async function load() {
       try {
         const [cat, k, sScore, sEval, rDoc, rAsig, sent] = await Promise.all([
-          getCatalogos({ periodo: semester }),
+          getCatalogos(periodoFilters),
           getKpis(periodoFilters),
           getSeries({ metric: "score_promedio", ...rangeFilters }),
           getSeries({ metric: "evaluaciones", ...rangeFilters }),
@@ -224,7 +254,7 @@ export function DashboardTab() {
     return () => {
       alive = false;
     };
-  }, [semester, subject, teacher, periodos]);
+  }, [semester, subject, teacher, periodos, periodoFromStore, periodoToStore]);
 
   // Generate dynamic data based on filters
   // Datos derivados para la UI: conservamos exactamente la misma estructura que
@@ -406,9 +436,14 @@ const dashboardData = useMemo(() => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                  {(periodos.length ? periodos : [semester]).map(sem => (
-                    <SelectItem key={sem} value={sem}>{sem}</SelectItem>
-                  ))}
+                  <SelectItem value={ALL_PERIODOS_VALUE}>Histórico (todo)</SelectItem>
+                  {(periodos.length ? periodos : [semester])
+                    .filter((p) => p && p !== ALL_PERIODOS_VALUE)
+                    .map((sem) => (
+                      <SelectItem key={sem} value={sem}>
+                        {sem}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>

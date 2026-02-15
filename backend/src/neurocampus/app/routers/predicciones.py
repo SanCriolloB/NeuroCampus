@@ -1,0 +1,77 @@
+"""
+Router de Predicciones (P2.2).
+
+En P2.2 el endpoint `/predicciones/predict` NO hace inferencia real aún.
+Su objetivo es:
+- resolver run_id (directo o vía champion),
+- cargar y validar el predictor bundle,
+- retornar metadata (predictor.json + preprocess.json).
+
+En P2.3/P2.4 se agregará inferencia y escritura de outputs.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException
+from typing import Any
+
+from neurocampus.app.schemas.predicciones import HealthResponse, PredictRequest, PredictResolvedResponse
+from neurocampus.predictions.loader import (
+    ChampionNotFoundError,
+    PredictorNotFoundError,
+    PredictorNotReadyError,
+    load_predictor_by_champion,
+    load_predictor_by_run_id,
+)
+from neurocampus.utils.paths import artifacts_dir, rel_artifact_path
+
+router = APIRouter(prefix="/predicciones", tags=["Predicciones"])
+
+
+@router.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    """Health-check del módulo de Predicciones."""
+    base = artifacts_dir()
+    return HealthResponse(status="ok", artifacts_dir=str(base))
+
+
+@router.post("/predict", response_model=PredictResolvedResponse)
+def predict(req: PredictRequest) -> PredictResolvedResponse:
+    """Resuelve y valida el predictor bundle (sin inferencia real en P2.2).
+
+    Errores esperados:
+    - 404: champion.json o predictor bundle no existe.
+    - 422: bundle existe pero no está listo (ej. model.bin placeholder).
+    """
+    try:
+        if req.use_champion:
+            if not req.dataset_id:
+                raise HTTPException(status_code=422, detail="dataset_id es requerido cuando use_champion=true")
+            loaded = load_predictor_by_champion(dataset_id=req.dataset_id, family=req.family)
+            resolved_from = "champion"
+        else:
+            if not req.run_id:
+                raise HTTPException(status_code=422, detail="run_id es requerido cuando use_champion=false")
+            loaded = load_predictor_by_run_id(req.run_id)
+            resolved_from = "run_id"
+
+        return PredictResolvedResponse(
+            resolved_run_id=loaded.run_id,
+            resolved_from=resolved_from,
+            run_dir=rel_artifact_path(loaded.run_dir),
+            predictor=loaded.predictor,
+            preprocess=loaded.preprocess,
+            note="P2.2: resolución/validación OK. Inferencia se implementa en P2.3+.",
+        )
+
+    except ChampionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotReadyError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Defensive: no filtrar stacktrace al cliente.
+        raise HTTPException(status_code=500, detail="Error interno resolviendo predictor bundle") from e

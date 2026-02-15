@@ -116,6 +116,8 @@ BASE_DIR: Path = _find_project_root()
 if "NC_ARTIFACTS_DIR" not in os.environ:
     os.environ["NC_ARTIFACTS_DIR"] = str((BASE_DIR / "artifacts").resolve())
 
+ARTIFACTS_DIR: Path = Path(os.environ["NC_ARTIFACTS_DIR"]).expanduser().resolve()
+
 # Importar runs_io DESPUÉS de fijar NC_ARTIFACTS_DIR
 from ...utils.runs_io import (  # noqa: E402
     build_run_id,
@@ -130,11 +132,31 @@ from ...utils.runs_io import (  # noqa: E402
 
 
 def _relpath(p: Path) -> str:
-    """Devuelve una ruta relativa a BASE_DIR si es posible (si no, devuelve absoluta)."""
+    """Devuelve una ruta *lógica* estable para UI/contratos.
+
+    Regla:
+    - Si el path vive bajo NC_ARTIFACTS_DIR => devuelve "artifacts/<...>" (lógico).
+    - Si vive bajo BASE_DIR => devuelve path relativo a BASE_DIR.
+    - Si no => devuelve absoluto.
+
+    Nota: normaliza separadores a "/" para estabilidad cross-platform.
+    """
+    p_res = Path(p).expanduser().resolve()
+
+    # 1) Prioridad: artifacts lógicos (si el path vive en ARTIFACTS_DIR)
     try:
-        return str(p.resolve().relative_to(BASE_DIR.resolve()))
+        rel_art = p_res.relative_to(ARTIFACTS_DIR)
+        return str((Path("artifacts") / rel_art)).replace("\\", "/")
     except Exception:
-        return str(p.resolve())
+        pass
+
+    # 2) Fallback: relativo a BASE_DIR
+    try:
+        rel_base = p_res.relative_to(BASE_DIR.resolve())
+        return str(rel_base).replace("\\", "/")
+    except Exception:
+        return str(p_res).replace("\\", "/")
+
 
 
 def _strip_localfs(uri: str) -> str:
@@ -147,14 +169,29 @@ def _strip_localfs(uri: str) -> str:
 
 
 def _abs_path(ref: str) -> Path:
-    """
-    Convierte un ref (relativo/absoluto o localfs://) a un Path absoluto bajo BASE_DIR.
+    """Resuelve un ref (relativo/absoluto o localfs://) a un Path absoluto.
+
+    Regla:
+    - Si es absoluto => se respeta.
+    - Si empieza por "artifacts/..." => se resuelve bajo ARTIFACTS_DIR (NC_ARTIFACTS_DIR).
+    - En otro caso => se resuelve bajo BASE_DIR.
+
+    Esto permite que los contratos sigan usando "artifacts/..." aunque el storage
+    real esté fuera del repo (p. ej. volumen montado).
     """
     raw = _strip_localfs(ref)
     p = Path(raw)
-    if not p.is_absolute():
-        p = (BASE_DIR / p).resolve()
-    return p
+
+    if p.is_absolute():
+        return p.resolve()
+
+    norm = str(raw).replace("\\", "/").lstrip("/")
+    if norm.startswith("artifacts/"):
+        sub = Path(norm).relative_to("artifacts")
+        return (ARTIFACTS_DIR / sub).resolve()
+
+    return (BASE_DIR / p).resolve()
+
 
 def _call_with_accepted_kwargs(fn, **kwargs):
     """
@@ -293,7 +330,7 @@ def _default_sweep_grid() -> list[dict[str, Any]]:
 
 
 def _sweeps_dir() -> Path:
-    return (BASE_DIR / "artifacts" / "sweeps").resolve()
+    return (ARTIFACTS_DIR / "sweeps").resolve()
 
 def _write_sweep_summary(sweep_id: str, payload: dict[str, Any]) -> Path:
     d = _sweeps_dir() / str(sweep_id)
@@ -698,7 +735,7 @@ def _ensure_feature_pack(dataset_id: str, input_uri: str, *, force: bool = False
     :returns: Diccionario con rutas *relativas* a los artefactos generados.
     :raises HTTPException: Si no se puede importar el builder o si falla el build.
     """
-    out_dir = BASE_DIR / "artifacts" / "features" / dataset_id
+    out_dir = _abs_path(f"artifacts/features/{dataset_id}")
     out = out_dir / "train_matrix.parquet"
 
     # Rutas esperadas (las devolvemos siempre, existan o no, para UI/debug).
@@ -786,7 +823,7 @@ def _read_json_safe(p: Path):
         return None
 
 def _feature_pack_meta_path(ds: str) -> Path:
-    return BASE_DIR / "artifacts" / "features" / ds / "meta.json"
+    return _abs_path(f"artifacts/features/{ds}/meta.json")
 
 def _feature_pack_has_sentiment(ds: str) -> bool:
     meta = _read_json_safe(_feature_pack_meta_path(ds)) or {}
@@ -806,7 +843,7 @@ def _should_rebuild_feature_pack(dataset_id: str, *, family: str, data_source: s
         fam = (family or "").lower()
         src = (data_source or "").lower()
 
-        feat_dir = BASE_DIR / "artifacts" / "features" / ds
+        feat_dir = _abs_path(f"artifacts/features/{ds}")
         meta_path = feat_dir / "meta.json"
         pair_meta_path = feat_dir / "pair_meta.json"
 
@@ -947,7 +984,7 @@ def _period_key(ds: str) -> tuple[int, int]:
 
 
 def _list_pair_matrix_datasets() -> list[str]:
-    base = (BASE_DIR / "artifacts" / "features").resolve()
+    base = _abs_path("artifacts/features")
     if not base.exists():
         return []
     out: list[str] = []
@@ -987,7 +1024,7 @@ def _materialize_score_docente_pair_selection(req: EntrenarRequest, job_id: str)
     older = [d for d in eligible if d not in recent]
 
     def _read_pair(ds: str) -> pd.DataFrame:
-        p = (BASE_DIR / "artifacts" / "features" / ds / "pair_matrix.parquet").resolve()
+        p = _abs_path(f"artifacts/features/{ds}/pair_matrix.parquet")
         if not p.exists():
             raise HTTPException(status_code=404, detail=f"pair_matrix no encontrado para {ds}: {p}")
         df = pd.read_parquet(p)
@@ -2311,17 +2348,18 @@ def get_champion(
 
     # path es OBLIGATORIO en ChampionInfo => si falta, lo calculamos
     if not champ.get("path"):
-        artifacts_dir = BASE_DIR / "artifacts" / "champions"
+        artifacts_dir = (ARTIFACTS_DIR / "champions").resolve()
         ds_dir = (artifacts_dir / champ_family / str(ds)) if champ_family else (artifacts_dir / str(ds))
 
         mn = champ.get("model_name") or model_name
         model_dir = ds_dir / str(mn) if mn else None
 
-        # Mantener comportamiento: si existe el directorio del modelo úsalo, si no usa ds_dir
+        # Mantener semántica: si existe el dir del modelo úsalo; si no, usa ds_dir
         if model_dir and model_dir.exists():
-            champ["path"] = str(model_dir)
+            champ["path"] = _relpath(model_dir)
         else:
-            champ["path"] = str(ds_dir)
+            champ["path"] = _relpath(ds_dir)
+
 
     # 3) Validar explícitamente aquí para evitar response-validation 500 opaco
     try:

@@ -8,29 +8,40 @@ Contrato de negocio (Dashboard)
   - ``historico/unificado.parquet`` (processed histórico)
   - ``historico/unificado_labeled.parquet`` (labeled histórico)
 
-Este router inicia la API ``/dashboard/*`` con endpoints base para que el
-frontend pueda cablearse sin cambiar el diseño visual:
-- ``GET /dashboard/status``: estado del histórico (existencia, timestamps, periodos).
-- ``GET /dashboard/periodos``: lista de periodos disponibles (rápido, vía manifest).
+Este router expone la API ``/dashboard/*``. Por diseño:
+- Los routers se mantienen delgados (HTTP/serialización).
+- La lógica de lectura/filtrado vive en ``neurocampus.dashboard.queries``.
 
 Notas
 -----
-- Por desempeño, estos endpoints **no leen** parquets completos. Se basan en:
-  - ``historico/manifest.json`` (metadatos livianos)
-  - existencia/mtime de archivos en disco
-- La actualización eager del manifest se realiza al finalizar la unificación
-  (ver ``neurocampus.data.strategies.unificacion``).
+- Por desempeño, el endpoint ``/dashboard/status`` **no lee** parquets completos;
+  se basa en ``historico/manifest.json`` + existencia/mtime en disco.
+- Los endpoints ``/dashboard/catalogos`` y ``/dashboard/kpis`` leen desde
+  ``historico/unificado.parquet`` y aplican filtros estándar.
 """
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Query
 
+from neurocampus.app.schemas.dashboard import (
+    DashboardCatalogos,
+    DashboardKPIs,
+    DashboardPeriodos,
+    DashboardStatus,
+    FileStatus,
+)
+from neurocampus.dashboard.queries import (
+    DashboardFilters,
+    apply_filters,
+    compute_catalogos,
+    compute_kpis,
+    load_processed,
+)
 from neurocampus.historico.manifest import load_manifest, list_periodos_from_manifest
 
 
@@ -69,42 +80,31 @@ def _mtime_iso(path: Path) -> Optional[str]:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime))
 
 
-class FileStatus(BaseModel):
-    """Estado mínimo de un artefacto del histórico."""
+def _filters_from_query(
+    periodo: Optional[str],
+    periodo_from: Optional[str],
+    periodo_to: Optional[str],
+    docente: Optional[str],
+    asignatura: Optional[str],
+    programa: Optional[str],
+) -> DashboardFilters:
+    """Construye `DashboardFilters` desde query params.
 
-    path: str = Field(..., description="Ruta relativa dentro del repo.")
-    exists: bool = Field(..., description="True si el archivo existe en disco.")
-    mtime: Optional[str] = Field(None, description="mtime en ISO UTC si existe.")
-
-
-class DashboardStatusResponse(BaseModel):
-    """Respuesta del endpoint /dashboard/status."""
-
-    manifest_exists: bool = Field(..., description="True si historico/manifest.json existe.")
-    manifest_updated_at: Optional[str] = Field(
-        None, description="Timestamp principal del manifest (UTC)."
+    Se mantiene en el router (capa HTTP) porque representa parsing/contrato
+    de entrada. La lógica de filtrado real vive en `neurocampus.dashboard.queries`.
+    """
+    return DashboardFilters(
+        periodo=periodo,
+        periodo_from=periodo_from,
+        periodo_to=periodo_to,
+        docente=docente,
+        asignatura=asignatura,
+        programa=programa,
     )
-    manifest_corrupt: bool = Field(
-        False, description="True si se detectó manifest corrupto (fallback a vacío)."
-    )
-
-    periodos_disponibles: List[str] = Field(default_factory=list)
-
-    processed: FileStatus
-    labeled: FileStatus
-
-    ready_processed: bool = Field(..., description="True si el histórico processed está listo.")
-    ready_labeled: bool = Field(..., description="True si el histórico labeled está listo.")
 
 
-class PeriodosResponse(BaseModel):
-    """Respuesta del endpoint /dashboard/periodos."""
-
-    items: List[str] = Field(default_factory=list)
-
-
-@router.get("/status", response_model=DashboardStatusResponse)
-def dashboard_status() -> DashboardStatusResponse:
+@router.get("/status", response_model=DashboardStatus)
+def dashboard_status() -> DashboardStatus:
     """Estado del histórico para el Dashboard.
 
     Este endpoint es intencionalmente liviano: no carga parquets, solo inspecciona
@@ -117,7 +117,7 @@ def dashboard_status() -> DashboardStatusResponse:
     processed_exists = UNIFICADO_PATH.exists()
     labeled_exists = UNIFICADO_LABELED_PATH.exists()
 
-    return DashboardStatusResponse(
+    return DashboardStatus(
         manifest_exists=manifest_exists,
         manifest_updated_at=manifest.get("updated_at"),
         manifest_corrupt=bool(manifest.get("corrupt_manifest")),
@@ -139,7 +139,40 @@ def dashboard_status() -> DashboardStatusResponse:
     )
 
 
-@router.get("/periodos", response_model=PeriodosResponse)
-def dashboard_periodos() -> PeriodosResponse:
+@router.get("/periodos", response_model=DashboardPeriodos)
+def dashboard_periodos() -> DashboardPeriodos:
     """Lista de periodos disponibles para filtros del Dashboard."""
-    return PeriodosResponse(items=list_periodos_from_manifest())
+    return DashboardPeriodos(items=list_periodos_from_manifest())
+
+
+@router.get("/catalogos", response_model=DashboardCatalogos)
+def dashboard_catalogos(
+    periodo: Optional[str] = Query(None, description="Periodo exacto (prioriza sobre rango)."),  # noqa: B008
+    periodo_from: Optional[str] = Query(None, description="Inicio de rango (incl.)."),  # noqa: B008
+    periodo_to: Optional[str] = Query(None, description="Fin de rango (incl.)."),  # noqa: B008
+    docente: Optional[str] = Query(None, description="Filtro por docente (opcional)."),  # noqa: B008
+    asignatura: Optional[str] = Query(None, description="Filtro por asignatura (opcional)."),  # noqa: B008
+    programa: Optional[str] = Query(None, description="Filtro por programa (opcional)."),  # noqa: B008
+) -> DashboardCatalogos:
+    """Catálogos para poblar dropdowns del Dashboard."""
+    # Leemos columnas mínimas. Si alguna columna no existe en el parquet, pandas
+    # lanzará error; por compatibilidad, leemos todo y calculamos de forma defensiva.
+    df = load_processed()
+    df_f = apply_filters(df, _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa))
+    docentes, asignaturas, programas = compute_catalogos(df_f)
+    return DashboardCatalogos(docentes=docentes, asignaturas=asignaturas, programas=programas)
+
+
+@router.get("/kpis", response_model=DashboardKPIs)
+def dashboard_kpis(
+    periodo: Optional[str] = Query(None, description="Periodo exacto (prioriza sobre rango)."),  # noqa: B008
+    periodo_from: Optional[str] = Query(None, description="Inicio de rango (incl.)."),  # noqa: B008
+    periodo_to: Optional[str] = Query(None, description="Fin de rango (incl.)."),  # noqa: B008
+    docente: Optional[str] = Query(None, description="Filtro por docente (opcional)."),  # noqa: B008
+    asignatura: Optional[str] = Query(None, description="Filtro por asignatura (opcional)."),  # noqa: B008
+    programa: Optional[str] = Query(None, description="Filtro por programa (opcional)."),  # noqa: B008
+) -> DashboardKPIs:
+    """KPIs básicos del Dashboard basados en histórico processed."""
+    df = load_processed()
+    df_f = apply_filters(df, _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa))
+    return DashboardKPIs(**compute_kpis(df_f))

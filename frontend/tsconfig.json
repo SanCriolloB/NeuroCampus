@@ -9,6 +9,9 @@
     "noEmit": true,
     "isolatedModules": true,
 
+    /* Evita errores de tipado en dependencias (node_modules) */
+    "skipLibCheck": true,
+
     /* Soporte a Vite y Vitest (evita tus errores  de 'vite/client' y 'vitest/globals') */
     "types": ["vite/client", "vitest/globals"],
 
@@ -18,5 +21,5 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"]
 }

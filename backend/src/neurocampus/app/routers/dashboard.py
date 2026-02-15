@@ -36,10 +36,12 @@ from neurocampus.app.schemas.dashboard import (
     DashboardSeriesPoint,
     DashboardSentimiento,
     DashboardSentimientoBucket,
+    DashboardRankings,
+    DashboardRankingItem,
     DashboardStatus,
     FileStatus,
 )
-from neurocampus.dashboard.aggregations import series_por_periodo, sentimiento_distribucion
+from neurocampus.dashboard.aggregations import series_por_periodo, sentimiento_distribucion, rankings
 
 from neurocampus.dashboard.queries import (
     DashboardFilters,
@@ -253,3 +255,57 @@ def dashboard_sentimiento(
     return DashboardSentimiento(buckets=out)
 
 
+@router.get("/rankings", response_model=DashboardRankings)
+def dashboard_rankings(
+    by: str = Query(
+        ...,
+        description="Dimensión del ranking: docente o asignatura.",
+    ),  # noqa: B008
+    metric: str = Query(
+        "score_promedio",
+        description="Métrica de ranking: score_promedio o evaluaciones.",
+    ),  # noqa: B008
+    order: str = Query(
+        "desc",
+        description="Orden: asc o desc.",
+    ),  # noqa: B008
+    limit: int = Query(
+        8,
+        description="Cantidad máxima de items.",
+        ge=1,
+        le=200,
+    ),  # noqa: B008
+    periodo: Optional[str] = Query(None, description="Periodo exacto (prioriza sobre rango)."),  # noqa: B008
+    periodo_from: Optional[str] = Query(None, description="Inicio de rango (incl.)."),  # noqa: B008
+    periodo_to: Optional[str] = Query(None, description="Fin de rango (incl.)."),  # noqa: B008
+    docente: Optional[str] = Query(None, description="Filtro por docente (opcional)."),  # noqa: B008
+    asignatura: Optional[str] = Query(None, description="Filtro por asignatura (opcional)."),  # noqa: B008
+    programa: Optional[str] = Query(None, description="Filtro por programa (opcional)."),  # noqa: B008
+) -> DashboardRankings:
+    """Ranking (top/bottom) derivado del histórico processed.
+
+    Este endpoint existe porque el Dashboard UI consume rankings para tablas como:
+    - Ranking de Docentes (por score_promedio)
+    - Distribución/Ranking por Asignatura (por evaluaciones u otra métrica)
+
+    Notas
+    -----
+    - Solo usa histórico processed (``historico/unificado.parquet``).
+    - Si falta el histórico o columnas requeridas, responde con 404/400.
+    """
+    filters = _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa)
+
+    try:
+        rows = rankings(by=by, metric=metric, order=order, limit=limit, filters=filters)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Normalizamos salida a contrato estable (name/value).
+    # Si por datos faltantes `value` llega como None, lo convertimos a 0.0 para no romper UI.
+    items = [
+        DashboardRankingItem(name=str(r.get("key")), value=float(r.get("value") or 0.0))
+        for r in (rows or [])
+    ]
+    return DashboardRankings(by=by, metric=metric, order=order, items=items)

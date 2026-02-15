@@ -12,6 +12,9 @@ En P2.3/P2.4 se agregará inferencia y escritura de outputs.
 
 from __future__ import annotations
 
+import os
+import logging
+logger = logging.getLogger(__name__)
 from fastapi import APIRouter, HTTPException
 from typing import Any
 
@@ -60,8 +63,13 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
             loaded = load_predictor_by_run_id(req.run_id)
             resolved_from = "run_id"
 
-        # Obtener datos de entrada (por ejemplo, desde el feature pack)
-        feature_pack = load_feature_pack(loaded.predictor['dataset_id'])
+        # (opt-in) Solo cargar datos si el cliente lo solicita explícitamente.
+        # Esto mantiene compatibilidad con tests P2.2 (resolve) que no crean feature-pack.
+        if req.input_uri and str(req.input_uri).strip().lower() == "feature_pack":
+            dataset_id = str(loaded.predictor.get("dataset_id") or req.dataset_id or "")
+            feature_df, _meta = load_feature_pack(dataset_id=dataset_id, kind="train")
+            # TODO(P2.3.x): usar feature_df para inferencia real con el modelo cargado desde run_dir/model/
+
         
         # Ejecutar la inferencia
         # Esto depende de tu estrategia, por ejemplo:
@@ -70,13 +78,17 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
         # Para este ejemplo, usaremos un valor simulado:
         predictions = [{"input": "data", "prediction": "value"}]  # Esto lo reemplazamos con inferencia real
 
+        # Nota: evitamos relativizar Paths porque en tests se sobreescribe NC_ARTIFACTS_DIR
+        # luego de import-time en algunos módulos. Este string es el contrato estable.
+        run_dir_logical = f"artifacts/runs/{loaded.run_id}"
+
         return PredictResolvedResponse(
             resolved_run_id=loaded.run_id,
             resolved_from=resolved_from,
-            run_dir=str(loaded.run_dir),
+            run_dir=run_dir_logical,
             predictor=loaded.predictor,
             preprocess=loaded.preprocess,
-            note="P2.3: inferencia real ejecutada con éxito.",
+            note="P2.2: resolución/validación OK. Inferencia se implementa en P2.3+.",
         )
 
     except ChampionNotFoundError as e:
@@ -86,6 +98,13 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
     except HTTPException:
         raise
     except Exception as e:
-        # Defensive: no filtrar stacktrace al cliente.
+        # Log completo para diagnóstico
+        logger.exception("Error resolviendo predictor bundle")
+
+        # En pytest, queremos ver el traceback real (evita 500 genérico que oculta la causa).
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            raise
+
+        # En runtime normal, mantener mensaje estable (sin filtrar stacktrace al cliente).
         raise HTTPException(status_code=500, detail="Error interno resolviendo predictor bundle") from e
 

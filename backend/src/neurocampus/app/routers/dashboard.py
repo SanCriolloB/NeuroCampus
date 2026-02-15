@@ -24,17 +24,21 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from neurocampus.app.schemas.dashboard import (
     DashboardCatalogos,
     DashboardKPIs,
     DashboardPeriodos,
+    DashboardSeries,
+    DashboardSeriesPoint,
     DashboardStatus,
     FileStatus,
 )
+from neurocampus.dashboard.aggregations import series_por_periodo
+
 from neurocampus.dashboard.queries import (
     DashboardFilters,
     apply_filters,
@@ -176,3 +180,37 @@ def dashboard_kpis(
     df = load_processed()
     df_f = apply_filters(df, _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa))
     return DashboardKPIs(**compute_kpis(df_f))
+
+@router.get("/series", response_model=DashboardSeries)
+def dashboard_series(
+    metric: str = Query(
+        "evaluaciones",
+        description="Métrica solicitada (p.ej. evaluaciones, score_promedio, docentes, asignaturas).",
+    ),  # noqa: B008
+    periodo: Optional[str] = Query(None, description="Periodo exacto (prioriza sobre rango)."),  # noqa: B008
+    periodo_from: Optional[str] = Query(None, description="Inicio de rango (incl.)."),  # noqa: B008
+    periodo_to: Optional[str] = Query(None, description="Fin de rango (incl.)."),  # noqa: B008
+    docente: Optional[str] = Query(None, description="Filtro por docente (opcional)."),  # noqa: B008
+    asignatura: Optional[str] = Query(None, description="Filtro por asignatura (opcional)."),  # noqa: B008
+    programa: Optional[str] = Query(None, description="Filtro por programa (opcional)."),  # noqa: B008
+) -> DashboardSeries:
+    """Serie agregada por periodo desde histórico processed.
+
+    El frontend usa esta serie para gráficas de evolución por periodo sin acceder
+    directamente a datasets puntuales.
+    """
+    filters = _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa)
+
+    try:
+        points = series_por_periodo(metric, filters)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    out_points = [
+        DashboardSeriesPoint(periodo=str(p.get("periodo")), value=float(p.get("value") or 0.0))
+        for p in points
+    ]
+    return DashboardSeries(metric=metric, points=out_points)
+

@@ -39,12 +39,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Literal
 
-from pydantic import BaseModel, Field, model_validator, ConfigDict, field_validator
-
-from pydantic import BaseModel
-from pydantic import AliasChoices
-from pydantic import ConfigDict
-
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 # ---------------------------------------------------------------------------
 # Tipos comunes (enums via Literal)
 # ---------------------------------------------------------------------------

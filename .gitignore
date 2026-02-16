@@ -76,3 +76,11 @@ jobs/preproc_beto/*.json
 
 # NeuroCampus: runtime job outputs
 jobs/features_prepare/*.json
+
+# Local scratch / outputs
+tmp/
+tmp_*.json
+*.log
+
+# Local logging config (si no se versiona)
+logging.yaml

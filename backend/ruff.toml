@@ -1,0 +1,30 @@
+# Configuración mínima de Ruff para NeuroCampus (P0/P1)
+#
+# Objetivo: que `make lint` sea estable sin bloquear el flujo de Modelos por deuda técnica
+# fuera del alcance (scripts, predicción, plantillas).
+line-length = 120
+# Usar una versión objetivo ampliamente soportada por Ruff (evita fallas por versiones futuras).
+target-version = "py311"
+src = ["src"]
+
+include = [
+  "src/neurocampus/app/routers/modelos.py",
+  "src/neurocampus/app/schemas/modelos.py",
+  "src/neurocampus/data/features_prepare.py",
+  "src/neurocampus/data/score_total.py",
+  "src/neurocampus/utils/runs_io.py",
+  "src/neurocampus/models/registry.py",
+]
+
+# Excluir carpetas NO críticas para la fase Modelos (se limpian en P2)
+exclude = [
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".pytest_cache",
+  "artifacts",
+]
+
+[lint]
+select = ["F", "E9"]
+ignore = ["F401", "F841"]

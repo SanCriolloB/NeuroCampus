@@ -17,7 +17,7 @@ import datetime as dt
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import pandas as pd
 from neurocampus.data.score_total import ensure_score_columns, load_sidecar_score_meta
@@ -257,7 +257,7 @@ def _build_pair_matrix(
 
     meta: Dict[str, Any] = {
         "dataset_id": str(dataset_id),
-        "created_at": dt.datetime.utcnow().isoformat() + "Z",
+        "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "input_uri": str(input_uri),
         "target_col": str(target_source_col),
         "target_col_feature_pack": str(score_col),
@@ -507,3 +507,101 @@ def prepare_feature_pack(
         "pair_matrix": _rel(pair_path),
         "pair_meta": _rel(out_dir / "pair_meta.json"),
     }
+
+def _resolve_artifacts_root(*, artifacts_root: Path | None = None) -> Path:
+    """Resuelve la raíz de artifacts de forma compatible con el backend.
+
+    Prioridad:
+    1) artifacts_root explícito (si se pasa)
+    2) neurocampus.utils.paths.artifacts_dir() (respeta NC_ARTIFACTS_DIR)
+    3) Path.cwd() / "artifacts" como fallback
+
+    Returns
+    -------
+    Path
+        Ruta absoluta a la carpeta raíz de artifacts.
+    """
+    if artifacts_root is not None:
+        return artifacts_root.expanduser().resolve()
+
+    # Preferir el helper centralizado si existe (P1/P2 ya lo usan en otros módulos).
+    try:
+        from neurocampus.utils.paths import artifacts_dir as _artifacts_dir  # type: ignore
+        return Path(_artifacts_dir()).expanduser().resolve()
+    except Exception:
+        # Fallback razonable: asumir ejecución desde el root del repo.
+        return (Path.cwd() / "artifacts").expanduser().resolve()
+
+
+def load_feature_pack(
+    *,
+    dataset_id: str,
+    kind: str = "train",
+    artifacts_root: Path | None = None,
+    load_meta: bool = True,
+) -> tuple[pd.DataFrame, dict[str, Any] | None]:
+    """Carga un feature pack desde artifacts/features/<dataset_id>.
+
+    Esta función es el complemento "lector" de :func:`prepare_feature_pack`.
+
+    Parameters
+    ----------
+    dataset_id:
+        Identificador del dataset (ej. "2025-1").
+    kind:
+        - "train": carga ``train_matrix.parquet`` (row-level).
+        - "pair":  carga ``pair_matrix.parquet`` (teacher-materia level).
+    artifacts_root:
+        Override de la raíz de artifacts. Si es None, intenta resolver con:
+        `neurocampus.utils.paths.artifacts_dir()` y luego fallback a `./artifacts`.
+    load_meta:
+        Si True, intenta cargar ``meta.json`` (train) o ``pair_meta.json`` (pair).
+
+    Returns
+    -------
+    (pd.DataFrame, Optional[dict])
+        DataFrame cargado y el meta asociado (si existe y load_meta=True).
+
+    Raises
+    ------
+    ValueError
+        Si dataset_id o kind son inválidos.
+    FileNotFoundError
+        Si no existe el parquet esperado.
+    """
+    ds = str(dataset_id or "").strip()
+    if not ds:
+        raise ValueError("dataset_id vacío")
+
+    k = str(kind or "").strip().lower()
+    if k not in ("train", "pair"):
+        raise ValueError("kind inválido: use 'train' o 'pair'")
+
+    root = _resolve_artifacts_root(artifacts_root=artifacts_root)
+    feat_dir = (root / "features" / ds).resolve()
+
+    if k == "train":
+        parquet_path = feat_dir / "train_matrix.parquet"
+        meta_path = feat_dir / "meta.json"
+    else:
+        parquet_path = feat_dir / "pair_matrix.parquet"
+        meta_path = feat_dir / "pair_meta.json"
+
+    if not parquet_path.exists():
+        raise FileNotFoundError(
+            f"No existe feature pack '{k}' para dataset_id={ds}. "
+            f"Falta: {parquet_path}. "
+            "Ejecuta primero /modelos/feature-pack/prepare."
+        )
+
+    df = pd.read_parquet(parquet_path)
+
+    meta: dict[str, Any] | None = None
+    if load_meta and meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            # Meta es best-effort: no rompemos por JSON corrupto.
+            meta = None
+
+    return df, meta

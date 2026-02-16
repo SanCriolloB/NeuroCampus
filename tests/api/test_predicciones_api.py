@@ -452,3 +452,118 @@ def test_predicciones_predict_persist_requires_inference_422(client, artifacts_d
         },
     )
     assert r.status_code == 422, r.text
+
+def test_predicciones_outputs_preview_ok(client, artifacts_dir: Path, monkeypatch):
+    """P2.4-E: preview JSON de predictions.parquet persistido."""
+
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_outputs_preview"
+    dataset_id = "ds_outputs_preview"
+    family = "sentiment_desempeno"
+
+    _write_pickled_run_bundle(base, run_id=run_id, dataset_id=dataset_id)
+
+    # Crear feature_pack mínimo
+    feat_dir = base / "features" / dataset_id
+    feat_dir.mkdir(parents=True, exist_ok=True)
+
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "teacher_id": [1, 2],
+            "materia_id": [10, 20],
+            **{f"calif_{i+1}": [1, 2] for i in range(10)},
+        }
+    )
+    df.to_parquet(feat_dir / "train_matrix.parquet", index=False)
+    (feat_dir / "meta.json").write_text(json.dumps({"dataset_id": dataset_id}, indent=2), encoding="utf-8")
+
+    r = client.post(
+        "/predicciones/predict",
+        json={
+            "run_id": run_id,
+            "do_inference": True,
+            "input_uri": "feature_pack",
+            "persist": True,
+            "family": family,
+            "limit": 2,
+            "offset": 0,
+        },
+    )
+    assert r.status_code == 200, r.text
+    uri = r.json().get("predictions_uri")
+    assert uri
+
+    p = client.get("/predicciones/outputs/preview", params={"predictions_uri": uri, "limit": 1, "offset": 0})
+    assert p.status_code == 200, p.text
+    body = p.json()
+
+    assert body["predictions_uri"] == uri
+    assert isinstance(body["rows"], list)
+    assert len(body["rows"]) == 1
+    assert "label" in body["rows"][0]
+    assert "label" in body["columns"]
+
+
+def test_predicciones_outputs_file_ok(client, artifacts_dir: Path, monkeypatch):
+    """P2.4-E: descarga de predictions.parquet persistido."""
+
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_outputs_file"
+    dataset_id = "ds_outputs_file"
+    family = "sentiment_desempeno"
+
+    _write_pickled_run_bundle(base, run_id=run_id, dataset_id=dataset_id)
+
+    feat_dir = base / "features" / dataset_id
+    feat_dir.mkdir(parents=True, exist_ok=True)
+
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "teacher_id": [1],
+            "materia_id": [10],
+            **{f"calif_{i+1}": [1] for i in range(10)},
+        }
+    )
+    df.to_parquet(feat_dir / "train_matrix.parquet", index=False)
+    (feat_dir / "meta.json").write_text(json.dumps({"dataset_id": dataset_id}, indent=2), encoding="utf-8")
+
+    r = client.post(
+        "/predicciones/predict",
+        json={
+            "run_id": run_id,
+            "do_inference": True,
+            "input_uri": "feature_pack",
+            "persist": True,
+            "family": family,
+            "limit": 1,
+            "offset": 0,
+        },
+    )
+    assert r.status_code == 200, r.text
+    uri = r.json().get("predictions_uri")
+    assert uri
+
+    f = client.get("/predicciones/outputs/file", params={"predictions_uri": uri})
+    assert f.status_code == 200, f.text
+
+    # Validar firma parquet (magic bytes)
+    assert f.content[:4] == b"PAR1"
+
+
+def test_predicciones_outputs_invalid_uri_422(client, artifacts_dir: Path, monkeypatch):
+    """Si predictions_uri apunta fuera de artifacts/predictions, debe ser 422."""
+
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+
+    bad_uri = "artifacts/runs/some_run/predictor.json"
+    r = client.get("/predicciones/outputs/preview", params={"predictions_uri": bad_uri})
+    assert r.status_code == 422, r.text
+

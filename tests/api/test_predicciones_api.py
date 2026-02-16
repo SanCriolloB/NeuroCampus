@@ -175,3 +175,69 @@ def test_predicciones_predict_champion_missing_source_run_id_422(client, artifac
     )
 
     assert r.status_code == 422, r.text
+
+
+def test_predicciones_model_info_by_run_id_ok(client, artifacts_dir: Path, monkeypatch):
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_model_info_ok"
+    _write_real_run_bundle(base, run_id=run_id, dataset_id="ds_model_info")
+
+    r = client.get("/predicciones/model-info", params={"run_id": run_id})
+    assert r.status_code == 200, r.text
+
+    payload = r.json()
+    assert payload["resolved_run_id"] == run_id
+    assert payload["resolved_from"] == "run_id"
+    assert "predictor" in payload
+    assert "preprocess" in payload
+
+
+def test_predicciones_model_info_by_champion_ok(client, artifacts_dir: Path, monkeypatch):
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_model_info_champion_ok"
+    dataset_id = "ds_model_info_champ"
+    family = "sentiment_desempeno"
+
+    _write_real_run_bundle(base, run_id=run_id, dataset_id=dataset_id, family=family)
+    _write_champion(base, family=family, dataset_id=dataset_id, run_id=run_id)
+
+    r = client.get(
+        "/predicciones/model-info",
+        params={"use_champion": True, "dataset_id": dataset_id, "family": family},
+    )
+    assert r.status_code == 200, r.text
+
+    payload = r.json()
+    assert payload["resolved_run_id"] == run_id
+    assert payload["resolved_from"] == "champion"
+
+
+def test_predicciones_model_info_champion_missing_source_run_id_422(client, artifacts_dir: Path, monkeypatch):
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    dataset_id = "ds_model_info_missing_source"
+    family = "sentiment_desempeno"
+
+    champ = base / "champions" / family / dataset_id / "champion.json"
+    champ.parent.mkdir(parents=True, exist_ok=True)
+    champ.write_text(json.dumps({"note": "missing source_run_id"}, indent=2), encoding="utf-8")
+
+    r = client.get(
+        "/predicciones/model-info",
+        params={"use_champion": True, "dataset_id": dataset_id, "family": family},
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_predicciones_model_info_run_not_found_404(client, artifacts_dir: Path, monkeypatch):
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+
+    run_id = "run_model_info_missing_bundle"
+    r = client.get("/predicciones/model-info", params={"run_id": run_id})
+
+    assert r.status_code == 404, r.text

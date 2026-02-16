@@ -251,6 +251,71 @@ def series_por_periodo(metric: str, filters: DashboardFilters) -> List[Dict[str,
 
 
 # ---------------------------------------------------------------------------
+# Radar (promedios por pregunta)
+# ---------------------------------------------------------------------------
+
+# Métricas del radar: preguntas 1..10 del histórico processed.
+# Se exponen como `pregunta_1`..`pregunta_10` para que la UI pueda mapear
+# directamente sin asumir nombres distintos.
+RADAR_PREGUNTAS: Tuple[str, ...] = tuple(f"pregunta_{i}" for i in range(1, 11))
+
+
+def radar_preguntas(filters: DashboardFilters) -> List[Dict[str, Any]]:
+    """Promedios por pregunta (radar) desde histórico processed.
+
+    La pestaña Dashboard muestra un radar con el desempeño promedio en las
+    preguntas del instrumento (``pregunta_1``..``pregunta_10``).
+
+    Dado que en algunos históricos las preguntas pueden venir en escala 1–5
+    o 0–50, aplicamos una normalización defensiva a escala 0–50:
+
+    - Si un valor es <= 5.5 se considera escala 1–5 y se multiplica por 10.
+    - Si un valor es > 5.5 se considera ya en 0–50 y se deja igual.
+
+    Parameters
+    ----------
+    filters:
+        Filtros estándar del Dashboard.
+
+    Returns
+    -------
+    list[dict]
+        ``[{"key": "pregunta_1", "value": 41.2}, ...]``
+        Cuando no hay datos para un filtro, retorna ``value=None``.
+    """
+    df = load_processed()
+    _ensure_dimension_column(df, 'docente')
+    _ensure_dimension_column(df, 'asignatura')
+    df = apply_filters(df, filters)
+
+    available = [c for c in RADAR_PREGUNTAS if c in df.columns]
+    if not available:
+        # No hay columnas de preguntas en el histórico; devolvemos estructura estable.
+        return [{"key": c, "value": None} for c in RADAR_PREGUNTAS]
+
+    if df.empty:
+        return [{"key": c, "value": None} for c in RADAR_PREGUNTAS]
+
+    q = df[available].apply(pd.to_numeric, errors='coerce')
+    q_0_50 = q.where(q > 5.5, q * 10.0)
+
+    means = q_0_50.mean(axis=0, skipna=True)
+
+    out: List[Dict[str, Any]] = []
+    for c in RADAR_PREGUNTAS:
+        if c not in means.index:
+            out.append({"key": c, "value": None})
+            continue
+        v = means.get(c)
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            out.append({"key": c, "value": None})
+        else:
+            # Clip defensivo a 0..50 para evitar outliers por datos corruptos.
+            out.append({"key": c, "value": float(np.clip(v, 0.0, 50.0))})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Rankings (top/bottom) por docente o asignatura
 # ---------------------------------------------------------------------------
 

@@ -27,11 +27,15 @@ Notas de implementación
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +59,96 @@ def _repo_root() -> Path:
 _HIST_DIR = _repo_root() / "historico"
 _PROCESSED_PATH = _HIST_DIR / "unificado.parquet"
 _LABELED_PATH = _HIST_DIR / "unificado_labeled.parquet"
+
+# ---------------------------------------------------------------------------
+# Score (0–50) derivado para histórico processed/labeled
+# ---------------------------------------------------------------------------
+
+_PREGUNTA_COLS: Tuple[str, ...] = tuple(f"pregunta_{i}" for i in range(1, 11))
+
+
+def _ensure_score_0_50_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Asegura columnas de score en escala 0–50 para el Dashboard.
+
+    El histórico "processed" (``historico/unificado.parquet``) **no** incluye
+    necesariamente una columna de score/rating lista para usar. Sin embargo, sí
+    contiene las respuestas ``pregunta_1``..``pregunta_10``.
+
+    Para que KPIs/series/rankings del Dashboard sean consistentes, derivamos un
+    score 0–50 con la siguiente regla:
+
+    - Convertimos ``pregunta_1..10`` a numérico (NaN si no se puede).
+    - Calculamos el promedio por fila y lo re-escalamos multiplicando por 10
+      (equivalente a la sumatoria cuando están las 10 preguntas presentes).
+
+    La función es conservadora:
+    - Si ya existe alguna columna de score, solo crea aliases faltantes.
+    - No escribe a disco; solo agrega columnas en memoria.
+
+    Parameters
+    ----------
+    df:
+        DataFrame de histórico (processed o labeled).
+
+    Returns
+    -------
+    pandas.DataFrame
+        El mismo DataFrame con columnas de score disponibles cuando sea posible.
+    """
+    if df is None or df.empty:
+        return df
+
+    # Caso 1: ya tenemos score (p.ej. labeled trae score_total_0_50)
+    base_col: Optional[str] = None
+    if "score_total_0_50" in df.columns:
+        base_col = "score_total_0_50"
+    elif "score_total" in df.columns:
+        base_col = "score_total"
+    elif "score" in df.columns:
+        base_col = "score"
+
+    # Caso 2: derivar desde preguntas si no hay score
+    if base_col is None:
+        available = [c for c in _PREGUNTA_COLS if c in df.columns]
+        if not available:
+            return df
+
+        q = df[available].apply(pd.to_numeric, errors="coerce")
+
+        # Heurística de escala:
+        # - Si un valor está en 1–5 (o 0–5), lo re-escalamos a 0–50 multiplicando por 10.
+        # - Si un valor ya está en 0–50 (por ejemplo 47, 38, 42...), lo dejamos tal cual.
+        #
+        # Umbral 5.5: evita que valores decimales como 4.7 (=> 47) se traten como 0–50.
+        q_0_50 = q.where(q > 5.5, q * 10.0)
+
+        # Score final del dashboard en 0–50: promedio de preguntas ya normalizadas.
+        score_0_50 = q_0_50.mean(axis=1, skipna=True)
+
+        df["score_total_0_50"] = score_0_50.astype(float)
+        base_col = "score_total_0_50"
+
+        logger.debug(
+            "Dashboard: score 0–50 derivado desde %s (columnas agregadas: score_total_0_50/score_total/score).",
+            available,
+        )
+
+    # Normalizamos a float y creamos aliases para compatibilidad con agregaciones.
+    base = pd.to_numeric(df[base_col], errors="coerce").astype(float)
+    df[base_col] = base
+
+    # Alias usados por aggregations.py (candidatos: score_total, score, etc.)
+    if "score_total" not in df.columns:
+        df["score_total"] = base
+    if "score" not in df.columns:
+        df["score"] = base
+
+    # Para compatibilidad: si ya existía score_total/score pero no score_total_0_50,
+    # exponemos también el alias (solo si no existe).
+    if "score_total_0_50" not in df.columns:
+        df["score_total_0_50"] = base
+
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +323,9 @@ def load_processed(columns: Optional[List[str]] = None) -> pd.DataFrame:
     if not _PROCESSED_PATH.exists():
         raise FileNotFoundError(f"No existe {_PROCESSED_PATH.as_posix()} (ejecuta unificación)")
     df = pd.read_parquet(_PROCESSED_PATH, columns=_augment_columns_for_aliases(columns))
-    return _normalize_dim_aliases(df)
+    df = _normalize_dim_aliases(df)
+    df = _ensure_score_0_50_columns(df)
+    return df
 
 
 def load_labeled(columns: Optional[List[str]] = None) -> pd.DataFrame:
@@ -239,7 +335,9 @@ def load_labeled(columns: Optional[List[str]] = None) -> pd.DataFrame:
             f"No existe {_LABELED_PATH.as_posix()} (ejecuta BETO + unificación labeled)"
         )
     df = pd.read_parquet(_LABELED_PATH, columns=_augment_columns_for_aliases(columns))
-    return _normalize_dim_aliases(df)
+    df = _normalize_dim_aliases(df)
+    df = _ensure_score_0_50_columns(df)
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +443,16 @@ def compute_kpis(df: pd.DataFrame) -> dict:
 
     Este helper se usará en el endpoint ``/dashboard/kpis``.
     """
+    # Si el filtro deja el histórico sin filas, evitamos calcular promedios.
+    # Pandas retornaría NaN y Starlette no serializa NaN a JSON (allow_nan=False).
+    if df is None or df.empty:
+        return {
+            "evaluaciones": 0,
+            "docentes": 0,
+            "asignaturas": 0,
+            "score_promedio": None,
+        }
+
     kpis = {
         "evaluaciones": int(len(df)),
         "docentes": int(df["docente"].nunique()) if "docente" in df.columns else 0,
@@ -356,7 +464,11 @@ def compute_kpis(df: pd.DataFrame) -> dict:
     for col in ("score", "rating", "score_total", "score_promedio"):
         if col in df.columns:
             try:
-                kpis["score_promedio"] = float(pd.to_numeric(df[col], errors="coerce").mean())
+                mean_val = pd.to_numeric(df[col], errors="coerce").mean()
+                if pd.isna(mean_val) or mean_val in (float("inf"), float("-inf")):
+                    kpis["score_promedio"] = None
+                else:
+                    kpis["score_promedio"] = float(mean_val)
             except Exception:
                 kpis["score_promedio"] = None
             break

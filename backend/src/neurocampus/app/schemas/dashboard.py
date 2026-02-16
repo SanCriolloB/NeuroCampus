@@ -115,6 +115,45 @@ class DashboardSeries(BaseModel):
     points: List[DashboardSeriesPoint] = Field(default_factory=list)
 
 
+
+class DashboardRadarItem(BaseModel):
+    """Ítem del radar (10 preguntas/indicadores).
+
+    - ``key``: nombre estable de la dimensión (p.ej. ``pregunta_1``).
+    - ``value``: promedio en la escala del histórico (típicamente 0–50).
+
+    Notes
+    -----
+    Si el frontend desea una escala 0–5, puede re-escalar dividiendo por 10.
+    """
+
+    key: str
+    value: float
+
+
+class DashboardRadar(BaseModel):
+    """Contrato para ``GET /dashboard/radar``."""
+
+    items: List[DashboardRadarItem] = Field(default_factory=list)
+
+
+class DashboardWordcloudItem(BaseModel):
+    """Ítem del wordcloud.
+
+    - ``text``: token normalizado (minúscula, sin stopwords).
+    - ``value``: frecuencia absoluta del token en el subconjunto filtrado.
+    """
+
+    text: str
+    value: int
+
+
+class DashboardWordcloud(BaseModel):
+    """Contrato para ``GET /dashboard/wordcloud``."""
+
+    items: List[DashboardWordcloudItem] = Field(default_factory=list)
+
+
 class DashboardSentimientoBucket(BaseModel):
     """Bucket de sentimiento (solo si labeled disponible)."""
 

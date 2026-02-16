@@ -15,6 +15,8 @@ import {
   getRankings,
   getSentimiento,
   getSeries,
+  getRadar,
+  getWordcloud,
   listPeriodos,
 } from "@/services/dashboard";
 
@@ -26,6 +28,8 @@ import type {
   DashboardSentimiento,
   DashboardFilters,
   DashboardStatus,
+  DashboardRadar,
+  DashboardWordcloud,
 } from "@/services/dashboard";
 
 // Valor especial para consultar todo el histórico (rango min..max)
@@ -77,19 +81,21 @@ const wordCloudData = [
 
 
 /**
- * Normaliza un valor numérico a la escala que usa la UI actual (70..95 aprox.).
+ * Clamp score values to the canonical dashboard scale (0–50).
  *
- * La referencia visual del Dashboard está calibrada para puntajes ~70-95.
- * Sin cambiar el diseño, convertimos escalas comunes de histórico:
- * - Likert 1..5   -> 70..90
- * - Porcentaje 0..100 -> 70..90
+ * Backend returns score metrics in 0–50 (see /dashboard/kpis, /dashboard/series?metric=score_promedio,
+ * /dashboard/rankings?metric=score_promedio). The UI should not apply cosmetic re-scaling.
  */
-function normalizeScoreForDashboard(value: number | null | undefined): number {
-  const v = typeof value === "number" && Number.isFinite(value) ? value : 0;
-  if (v <= 0) return 70;
-  if (v <= 5) return 70 + (v / 5) * 20;
-  if (v <= 100) return 70 + (v / 100) * 20;
-  return 90;
+function clampScore50(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(50, value));
+}
+
+/** Converts canonical score 0–50 to radar scale 0–5. */
+function score50ToRadar5(value: number | null | undefined): number {
+  const v = clampScore50(value);
+  if (v === null) return 0;
+  return v / 10;
 }
 
 export function DashboardTab() {
@@ -126,6 +132,10 @@ export function DashboardTab() {
   const [rankDocentes, setRankDocentes] = useState<DashboardRankings | null>(null);
   const [rankAsignaturas, setRankAsignaturas] = useState<DashboardRankings | null>(null);
   const [sentimiento, setSentimientoState] = useState<DashboardSentimiento | null>(null);
+
+  const [radarHistorico, setRadarHistorico] = useState<DashboardRadar | null>(null);
+  const [radarActual, setRadarActual] = useState<DashboardRadar | null>(null);
+  const [wordcloud, setWordcloud] = useState<DashboardWordcloud | null>(null);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -229,22 +239,27 @@ export function DashboardTab() {
           ...common,
         };
 
+    const rankingOrder: "asc" | "desc" = rankingMode === "best" ? "desc" : "asc";
+
     let alive = true;
     setLoading(true);
     setError(null);
 
     async function load() {
       try {
-        const [cat, k, sScore, sEval, rDoc, rAsig, sent] = await Promise.all([
+        const [cat, k, sScore, sEval, rDoc, rAsig, sent, radHist, radAct, wc] = await Promise.all([
           getCatalogos(catalogosFilters),
           getKpis(periodoFilters),
           getSeries({ metric: "score_promedio", ...rangeFilters }),
           getSeries({ metric: "evaluaciones", ...rangeFilters }),
           // Rankings pueden estar temporalmente no disponibles; no deben tumbar la pestaña.
-          getRankings({ by: "docente", metric: "score_promedio", limit: 8, ...periodoFilters }).catch(() => null),
+          getRankings({ by: "docente", metric: "score_promedio", order: rankingOrder, limit: 8, ...periodoFilters }).catch(() => null),
           getRankings({ by: "asignatura", metric: "evaluaciones", limit: 8, ...periodoFilters }).catch(() => null),
           // Sentimiento depende de histórico labeled; si no existe aún, el backend puede responder 404.
           getSentimiento(periodoFilters).catch(() => null),
+          getRadar({ periodoFrom, periodoTo, ...common }).catch(() => null),
+          getRadar(periodoFilters).catch(() => null),
+          getWordcloud({ limit: 80, ...periodoFilters }).catch(() => null),
         ]);
 
         if (!alive) return;
@@ -270,6 +285,9 @@ export function DashboardTab() {
         setRankDocentes(rDoc);
         setRankAsignaturas(rAsig);
         setSentimientoState(sent);
+        setRadarHistorico(radHist);
+        setRadarActual(radAct);
+        setWordcloud(wc);
       } catch (e: any) {
         if (!alive) return;
         setError(e?.message ? String(e.message) : "Error cargando dashboard");
@@ -283,7 +301,7 @@ export function DashboardTab() {
     return () => {
       alive = false;
     };
-  }, [semester, subject, teacher, periodos, periodoFromStore, periodoToStore]);
+  }, [semester, subject, teacher, periodos, periodoFromStore, periodoToStore, rankingMode]);
 
   // Generate dynamic data based on filters
   // Datos derivados para la UI: conservamos exactamente la misma estructura que
@@ -297,7 +315,10 @@ const dashboardData = useMemo(() => {
     (kpis as any)?.score ??
     null;
 
-  const avgScore = normalizeScoreForDashboard(typeof avgScoreRaw === "number" ? avgScoreRaw : null);
+    const avgScore50 = clampScore50(typeof avgScoreRaw === "number" ? avgScoreRaw : null);
+
+  const avgScore = typeof avgScore50 === "number" ? avgScore50 : 0;
+
 
   // Nota: "Exactitud del Modelo" es una métrica del champion, no del histórico.
   // Se mantiene fija para preservar el diseño (sin inventar datasets).
@@ -307,7 +328,7 @@ const dashboardData = useMemo(() => {
   const highPerformancePercent =
     (kpis as any)?.pct_alto_rendimiento ??
     (kpis as any)?.pctAltoRendimiento ??
-    Math.round(Math.max(0, Math.min(100, ((avgScore - 70) / 20) * 100)));
+    Math.round(Math.max(0, Math.min(100, (avgScore / 50) * 100)));
 
   const kpiData = [
     {
@@ -343,8 +364,8 @@ const dashboardData = useMemo(() => {
 
   const scorePoints = (seriesScore?.points || []).map((p) => ({
     semester: p.periodo,
-    promedio: normalizeScoreForDashboard(p.value),
-    actual: p.periodo === semester ? normalizeScoreForDashboard(p.value) : undefined,
+    promedio: clampScore50(p.value) ?? 0,
+    actual: p.periodo === semester ? (clampScore50(p.value) ?? 0) : undefined,
   }));
 
   // Si el backend devolvió solo el punto del periodo actual, mantenemos el mismo
@@ -352,16 +373,15 @@ const dashboardData = useMemo(() => {
   const historicalTrend =
     scorePoints.length > 0
       ? scorePoints
-      : periodos.map((p) => ({ semester: p, promedio: 70 }));
+      : periodos.map((p) => ({ semester: p, promedio: 0 }));
 
   // Rankings docentes (barras horizontales)
   const teacherRankings = (rankDocentes?.items || [])
     .map((it: any) => ({
       id: it.id ?? it.name,
       name: it.name,
-      score: Math.round(normalizeScoreForDashboard(it.value)),
+      score: Math.round(clampScore50(it.value) ?? 0),
     }))
-    .sort((a, b) => (rankingMode === "best" ? b.score - a.score : a.score - b.score))
     .slice(0, 8);
 
   // Riesgo por asignatura: el backend provee rankings por asignatura (métrica evaluaciones).
@@ -380,7 +400,7 @@ const dashboardData = useMemo(() => {
   // Histórico por entidad seleccionada: reutiliza la serie de score (ya filtrada por docente/asignatura si aplica).
   const historicalByEntity = (seriesScore?.points || []).map((p) => ({
     semester: p.periodo,
-    performance: normalizeScoreForDashboard(p.value),
+    performance: clampScore50(p.value) ?? 0,
   }));
 
   // Scatter: Real vs Predicted (sin mocks). Derivado de la serie (diagonal + offset determinístico).
@@ -388,31 +408,53 @@ const dashboardData = useMemo(() => {
   const scatterData =
     scatterBase.length > 0
       ? scatterBase.map((p, idx) => {
-          const real = normalizeScoreForDashboard((seriesScore?.points?.[idx]?.value as any) ?? avgScoreRaw);
-          const predicted = Math.max(60, Math.min(95, real + ((idx % 5) - 2)));
+          const real = clampScore50(((seriesScore?.points?.[idx]?.value as any) ?? avgScoreRaw)) ?? avgScore;
+          const predicted = Math.max(0, Math.min(50, real + ((idx % 5) - 2)));
           return { real: Math.round(real), predicted: Math.round(predicted) };
         })
       : Array.from({ length: 30 }, (_, idx) => {
           const real = avgScore;
-          const predicted = Math.max(60, Math.min(95, real + ((idx % 5) - 2)));
+          const predicted = Math.max(0, Math.min(50, real + ((idx % 5) - 2)));
           return { real: Math.round(real), predicted: Math.round(predicted) };
         });
 
-  // Radar (10 indicadores) — derivado del score promedio, sin aleatoriedad.
-  const baseLikert = 3.0 + ((avgScore - 70) / 20) * 2.0; // ~3..5
-  const bump = semester ? 0.1 : 0;
-  const radarData = [
-    { indicator: "Planificación", historico: baseLikert, actual: baseLikert + bump },
-    { indicator: "Metodología", historico: baseLikert + 0.1, actual: baseLikert + 0.2 + bump },
-    { indicator: "Claridad", historico: baseLikert - 0.1, actual: baseLikert + bump },
-    { indicator: "Evaluación", historico: baseLikert, actual: baseLikert + 0.1 + bump },
-    { indicator: "Materiales", historico: baseLikert + 0.05, actual: baseLikert + 0.15 + bump },
-    { indicator: "Interacción", historico: baseLikert + 0.15, actual: baseLikert + 0.25 + bump },
-    { indicator: "Retroalimentación", historico: baseLikert, actual: baseLikert + 0.1 + bump },
-    { indicator: "Innovación", historico: baseLikert - 0.05, actual: baseLikert + 0.05 + bump },
-    { indicator: "Puntualidad", historico: baseLikert + 0.1, actual: baseLikert + 0.2 + bump },
-    { indicator: "Disponibilidad", historico: baseLikert + 0.2, actual: baseLikert + 0.3 + bump },
+  // Radar (10 indicadores) — usa /dashboard/radar cuando está disponible.
+  const indicatorLabels = [
+    "Planificación",
+    "Metodología",
+    "Claridad",
+    "Evaluación",
+    "Materiales",
+    "Interacción",
+    "Retroalimentación",
+    "Innovación",
+    "Puntualidad",
+    "Disponibilidad",
   ];
+
+  const radarHistMap = new Map((radarHistorico?.items || []).map((it) => [it.key, it.value]));
+  const radarActMap = new Map((radarActual?.items || []).map((it) => [it.key, it.value]));
+  const hasRadarApi =
+    (radarHistorico?.items?.length || 0) > 0 && (radarActual?.items?.length || 0) > 0;
+
+  // Fallback visual: mantener comportamiento anterior si el endpoint aún no está disponible.
+  const baseLikert = avgScore > 0 ? Math.max(1, Math.min(5, score50ToRadar5(avgScore))) : 3.5; // ~1..5
+  const bump = semester ? 0.1 : 0;
+
+  const radarData = indicatorLabels.map((label, idx) => {
+    const key = `pregunta_${idx + 1}`;
+    if (hasRadarApi) {
+      const h = radarHistMap.get(key);
+      const a = radarActMap.get(key);
+      const historico = typeof h === "number" && Number.isFinite(h) ? h / 10 : 0;
+      const actual = typeof a === "number" && Number.isFinite(a) ? a / 10 : historico;
+      return { indicator: label, historico, actual };
+    }
+
+    const offsets = [0, 0.1, -0.1, 0, 0.05, 0.15, 0, -0.05, 0.1, 0.2];
+    const off = offsets[idx] ?? 0;
+    return { indicator: label, historico: baseLikert + off, actual: baseLikert + off + 0.1 + bump };
+  });
 
   return {
     kpiData,
@@ -423,10 +465,26 @@ const dashboardData = useMemo(() => {
     scatterData,
     radarData,
   };
-}, [kpis, seriesScore, seriesEvaluaciones, rankDocentes, rankAsignaturas, semester, subject, teacher, rankingMode, periodos]);
+}, [kpis, seriesScore, seriesEvaluaciones, rankDocentes, rankAsignaturas, radarHistorico, radarActual, semester, subject, teacher, rankingMode, periodos]);
+
+  // Wordcloud: usa /dashboard/wordcloud cuando está disponible; fallback a datos mock.
+  const wordCloudItems = useMemo(() => {
+    const apiItems = wordcloud?.items || [];
+    if (apiItems.length > 0) {
+      return apiItems
+        .filter((it) => it && typeof it.text === "string")
+        .map((it) => ({
+          word: it.text,
+          count: Number(it.value ?? 0),
+          sentiment: "neutral" as const,
+        }))
+        .filter((it) => it.word.trim().length > 0 && Number.isFinite(it.count) && it.count > 0);
+    }
+    return wordCloudData;
+  }, [wordcloud]);
 
   // Calculate word sizes for word cloud
-  const maxCount = Math.max(...wordCloudData.map(w => w.count));
+  const maxCount = Math.max(...wordCloudItems.map(w => w.count), 1);
   const getWordSize = (count: number) => 12 + (count / maxCount) * 24;
   const getWordColor = (sentiment: string) => {
     switch (sentiment) {
@@ -610,7 +668,7 @@ const dashboardData = useMemo(() => {
               <ResponsiveContainer width="100%" height={350}>
                 <BarChart data={dashboardData.teacherRankings} layout="vertical">
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis type="number" stroke="#9CA3AF" domain={[0, 100]} />
+                  <XAxis type="number" stroke="#9CA3AF" domain={[0, 50]} />
                   <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={150} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1a1f2e', border: '1px solid #374151' }}
@@ -621,8 +679,8 @@ const dashboardData = useMemo(() => {
                       <Cell 
                         key={`cell-${index}`}
                         fill={rankingMode === 'best' 
-                          ? entry.score > 85 ? '#3B82F6' : '#6B7280'
-                          : entry.score < 80 ? '#EF4444' : '#F59E0B'
+                          ? entry.score > 42 ? '#3B82F6' : '#6B7280'
+                          : entry.score < 40 ? '#EF4444' : '#F59E0B'
                         }
                       />
                     ))}
@@ -700,7 +758,7 @@ const dashboardData = useMemo(() => {
                 <LineChart data={dashboardData.historicalByEntity}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                   <XAxis dataKey="semester" stroke="#9CA3AF" />
-                  <YAxis stroke="#9CA3AF" domain={[70, 95]} />
+                  <YAxis stroke="#9CA3AF" domain={[0, 50]} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1a1f2e', border: '1px solid #374151' }}
                     labelStyle={{ color: '#fff' }}
@@ -731,7 +789,7 @@ const dashboardData = useMemo(() => {
                 <LineChart data={dashboardData.historicalTrend}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                   <XAxis dataKey="semester" stroke="#9CA3AF" />
-                  <YAxis stroke="#9CA3AF" domain={[70, 90]} />
+                  <YAxis stroke="#9CA3AF" domain={[0, 50]} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1a1f2e', border: '1px solid #374151' }}
                     labelStyle={{ color: '#fff' }}
@@ -829,7 +887,7 @@ const dashboardData = useMemo(() => {
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
             <h3 className="text-white mb-4">Nube de Palabras - Análisis de Sentimientos</h3>
             <div className="flex flex-wrap gap-3 justify-center items-center min-h-[300px] p-8">
-              {wordCloudData.map((item, index) => (
+              {wordCloudItems.map((item, index) => (
                 <motion.span
                   key={index}
                   initial={{ opacity: 0, scale: 0 }}

@@ -95,6 +95,28 @@ export type DashboardRankings = {
   items: DashboardRankingItem[];
 };
 
+/** Punto del radar (promedio por pregunta_1..10). */
+export type DashboardRadarItem = {
+  key: string;
+  value: number | null;
+};
+
+/** Respuesta de GET /dashboard/radar. */
+export type DashboardRadar = {
+  items: DashboardRadarItem[];
+};
+
+/** Término del wordcloud. */
+export type DashboardWordcloudItem = {
+  text: string;
+  value: number;
+};
+
+/** Respuesta de GET /dashboard/wordcloud. */
+export type DashboardWordcloud = {
+  items: DashboardWordcloudItem[];
+};
+
 // ---------------------------------------------------------------------------
 // Tipos de filtros (query params)
 // ---------------------------------------------------------------------------
@@ -197,5 +219,27 @@ export async function getRankings(args: { by: "docente" | "asignatura"; metric: 
   const { by, metric, order, limit, ...filters } = args;
   const q = qs({ by, metric, order, limit, ...filtersToQuery(filters) });
   const { data } = await api.get<DashboardRankings>(`/dashboard/rankings${q}`);
+  return data;
+}
+
+
+/** GET /dashboard/radar — promedios por pregunta_1..10 (histórico processed). */
+export async function getRadar(filters?: DashboardFilters) {
+  const q = qs(filtersToQuery(filters));
+  const { data } = await api.get<DashboardRadar>(`/dashboard/radar${q}`);
+  return data;
+}
+
+/**
+ * GET /dashboard/wordcloud — top términos desde histórico labeled.
+ *
+ * `limit` controla la cantidad máxima de tokens retornados.
+ */
+export async function getWordcloud(args?: ({ limit?: number } & DashboardFilters)) {
+  const a = args || {};
+  const limit = a.limit ?? undefined;
+  const { limit: _omit, ...filters } = a as any;
+  const q = qs({ limit, ...filtersToQuery(filters) });
+  const { data } = await api.get<DashboardWordcloud>(`/dashboard/wordcloud${q}`);
   return data;
 }

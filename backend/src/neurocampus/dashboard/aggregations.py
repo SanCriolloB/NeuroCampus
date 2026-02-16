@@ -31,6 +31,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import ast
+import re
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 
@@ -47,10 +51,13 @@ from neurocampus.dashboard.queries import (
 # Constantes y detección de columnas (defensivo)
 # ---------------------------------------------------------------------------
 
-# Preferimos score_total (labeled) si existe; en processed puede no existir.
+# Preferimos score canónico en escala 0–50 si existe; en processed se deriva si falta.
 _SCORE_CANDIDATES: Sequence[str] = (
+    "score_total_0_50",
+    "score_base_0_50",
     "score_total",
     "score",
+    "rating",
     "score_promedio",
     "promedio",
     "calificacion",
@@ -81,21 +88,22 @@ def _first_existing_col(df: pd.DataFrame, candidates: Sequence[str]) -> Optional
 
 
 def _detect_score_col(df: pd.DataFrame) -> Optional[str]:
-    """Detecta una columna numérica de score para agregaciones.
+    """Detecta una columna de score para agregaciones (defensivo).
 
-    La intención es mantener retro-compatibilidad entre datasets donde el score
-    pueda llamarse distinto (p.ej. ``score_total`` en labeled).
+    Priorizamos nombres canónicos en escala 0–50 (p.ej. ``score_total_0_50``)
+    y mantenemos compatibilidad con históricos que expongan ``score_total``/``score``.
+
+    Notes
+    -----
+    - A diferencia de una heurística "primera columna numérica", aquí **no**
+      hacemos fallback a columnas numéricas arbitrarias (IDs, cédulas, etc.).
+      Si no se detecta una columna conocida, retornamos ``None`` para que el
+      router responda con un error explícito.
     """
     for c in _SCORE_CANDIDATES:
         if c in df.columns:
             return c
-    # Fallback: primera columna numérica (excluyendo ids/textos comunes).
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    if not numeric_cols:
-        return None
-    # Orden determinista por nombre.
-    numeric_cols.sort(key=lambda x: str(x))
-    return str(numeric_cols[0])
+    return None
 
 
 def _require_columns(df: pd.DataFrame, required: Iterable[str]) -> None:
@@ -227,7 +235,10 @@ def series_por_periodo(metric: str, filters: DashboardFilters) -> List[Dict[str,
     else:  # score_promedio
         score_col = _detect_score_col(df)
         if score_col is None:
-            raise ValueError("No se pudo detectar columna de score para score_promedio")
+            raise ValueError(
+                "No se pudo detectar columna de score para score_promedio. "
+                f"candidates={list(_SCORE_CANDIDATES)}"
+            )
         ser = grouped[score_col].apply(_safe_mean)
 
     # Asegurar orden UX consistente (periodos ordenados).
@@ -241,6 +252,71 @@ def series_por_periodo(metric: str, filters: DashboardFilters) -> List[Dict[str,
             value = float(v)
         items.append({"periodo": str(periodo), "value": value})
     return items
+
+
+# ---------------------------------------------------------------------------
+# Radar (promedios por pregunta)
+# ---------------------------------------------------------------------------
+
+# Métricas del radar: preguntas 1..10 del histórico processed.
+# Se exponen como `pregunta_1`..`pregunta_10` para que la UI pueda mapear
+# directamente sin asumir nombres distintos.
+RADAR_PREGUNTAS: Tuple[str, ...] = tuple(f"pregunta_{i}" for i in range(1, 11))
+
+
+def radar_preguntas(filters: DashboardFilters) -> List[Dict[str, Any]]:
+    """Promedios por pregunta (radar) desde histórico processed.
+
+    La pestaña Dashboard muestra un radar con el desempeño promedio en las
+    preguntas del instrumento (``pregunta_1``..``pregunta_10``).
+
+    Dado que en algunos históricos las preguntas pueden venir en escala 1–5
+    o 0–50, aplicamos una normalización defensiva a escala 0–50:
+
+    - Si un valor es <= 5.5 se considera escala 1–5 y se multiplica por 10.
+    - Si un valor es > 5.5 se considera ya en 0–50 y se deja igual.
+
+    Parameters
+    ----------
+    filters:
+        Filtros estándar del Dashboard.
+
+    Returns
+    -------
+    list[dict]
+        ``[{"key": "pregunta_1", "value": 41.2}, ...]``
+        Cuando no hay datos para un filtro, retorna ``value=None``.
+    """
+    df = load_processed()
+    _ensure_dimension_column(df, 'docente')
+    _ensure_dimension_column(df, 'asignatura')
+    df = apply_filters(df, filters)
+
+    available = [c for c in RADAR_PREGUNTAS if c in df.columns]
+    if not available:
+        # No hay columnas de preguntas en el histórico; devolvemos estructura estable.
+        return [{"key": c, "value": None} for c in RADAR_PREGUNTAS]
+
+    if df.empty:
+        return [{"key": c, "value": None} for c in RADAR_PREGUNTAS]
+
+    q = df[available].apply(pd.to_numeric, errors='coerce')
+    q_0_50 = q.where(q > 5.5, q * 10.0)
+
+    means = q_0_50.mean(axis=0, skipna=True)
+
+    out: List[Dict[str, Any]] = []
+    for c in RADAR_PREGUNTAS:
+        if c not in means.index:
+            out.append({"key": c, "value": None})
+            continue
+        v = means.get(c)
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            out.append({"key": c, "value": None})
+        else:
+            # Clip defensivo a 0..50 para evitar outliers por datos corruptos.
+            out.append({"key": c, "value": float(np.clip(v, 0.0, 50.0))})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +389,10 @@ def rankings(
     else:
         score_col = _detect_score_col(df)
         if score_col is None:
-            raise ValueError("No se pudo detectar columna de score para rankings score_promedio")
+            raise ValueError(
+                "No se pudo detectar columna de score para rankings score_promedio. "
+                f"candidates={list(_SCORE_CANDIDATES)}"
+            )
         agg = grouped[score_col].apply(_safe_mean).astype(float)
 
     asc = order == "asc"
@@ -543,3 +622,153 @@ def sentimiento_serie_por_periodo(filters: DashboardFilters) -> List[Dict[str, A
             )
 
     return points
+
+
+# ---------------------------------------------------------------------------
+# Wordcloud (histórico labeled)
+# ---------------------------------------------------------------------------
+
+_TOKEN_RE = re.compile(r"^[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]+$")
+
+# Stopwords mínimas (no exhaustivas). El objetivo es evitar ruido en wordcloud.
+_STOPWORDS = {
+    "de","la","el","y","a","en","que","los","las","un","una","por","para","con","del","al","se",
+    "es","no","si","muy","mas","más","pero","como","lo","le","les","su","sus","mi","mis","tu","tus",
+}
+
+
+def _iter_wordcloud_tokens(value: Any) -> Iterable[str]:
+    """Extrae tokens desde una celda de texto/lemmas.
+
+    Soporta valores:
+    - list/tuple/set de tokens
+    - string con tokens separados por espacios/','/';'
+    - string con representación de lista (ej: "['a','b']")
+    """
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return
+    if isinstance(value, (list, tuple, set)):
+        for t in value:
+            if t is None:
+                continue
+            yield str(t)
+        return
+    if not isinstance(value, str):
+        return
+
+    s = value.strip()
+    if not s:
+        return
+
+    # Intentar parsear listas serializadas como string.
+    if s.startswith("[") and s.endswith("]"):
+        try:
+            parsed = ast.literal_eval(s)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, (list, tuple, set)):
+            for t in parsed:
+                if t is None:
+                    continue
+                yield str(t)
+            return
+
+    # Fallback: split por separadores comunes.
+    for t in re.split(r"[\s,;]+", s):
+        if t:
+            yield t
+
+
+def _pick_wordcloud_source_column(df: pd.DataFrame) -> Optional[str]:
+    """Elige la mejor columna fuente disponible para wordcloud.
+
+    Nota
+    ----
+    En el histórico labeled, ``sugerencias_lemmatizadas`` puede existir pero estar
+    completamente vacía (todo ``None``) para ciertos periodos. Si la elegimos solo
+    por existencia, el wordcloud queda vacío aunque haya texto en ``texto_lemmas``
+    u otras columnas.
+
+    Esta función elige la primera columna que realmente tenga contenido
+    tokenizable para el DataFrame ya filtrado.
+    """
+    candidates = (
+        "sugerencias_lemmatizadas",
+        "texto_lemmas",
+        "texto_clean",
+        "texto_raw_concat",
+        "comentario",
+        "observaciones",
+    )
+
+    for c in candidates:
+        if c not in df.columns:
+            continue
+
+        nonnull = df[c].dropna()
+        if nonnull.empty:
+            continue
+
+        # Caso especial: sugerencias_lemmatizadas suele ser lista (o string de lista).
+        # Validamos que existan tokens reales antes de escogerla.
+        if c == "sugerencias_lemmatizadas":
+            for raw in nonnull.head(200).tolist():
+                for tok in _iter_wordcloud_tokens(raw):
+                    if str(tok).strip():
+                        return c
+            continue
+
+        # Columnas string: basta con que exista al menos un string no vacío.
+        try:
+            if nonnull.astype(str).str.strip().ne("").any():
+                return c
+        except Exception:
+            for raw in nonnull.head(200).tolist():
+                if isinstance(raw, str) and raw.strip():
+                    return c
+
+    return None
+
+
+def wordcloud_terms(filters: DashboardFilters, limit: int = 80) -> List[Dict[str, Any]]:
+    """Construye wordcloud (top términos) desde histórico labeled.
+
+    Parameters
+    ----------
+    filters:
+        Filtros estándar del dashboard.
+    limit:
+        Cantidad máxima de tokens a retornar (ordenados por frecuencia desc).
+
+    Returns
+    -------
+    list[dict]
+        Lista de items: ``{"text": <token>, "value": <freq>}``.
+    """
+    df = load_labeled()
+    df = apply_filters(df, filters)
+
+    if df is None or df.empty:
+        return []
+
+    src = _pick_wordcloud_source_column(df)
+    if not src:
+        return []
+
+    counter: Counter[str] = Counter()
+    for raw in df[src].dropna().tolist():
+        for tok in _iter_wordcloud_tokens(raw):
+            t = tok.strip().lower()
+            if len(t) < 3:
+                continue
+            if t in _STOPWORDS:
+                continue
+            if not _TOKEN_RE.match(t):
+                continue
+            counter[t] += 1
+
+    if not counter:
+        return []
+
+    items = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[: max(1, int(limit))]
+    return [{"text": k, "value": int(v)} for k, v in items]

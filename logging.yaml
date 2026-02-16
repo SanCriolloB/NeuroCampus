@@ -1,0 +1,25 @@
+version: 1
+disable_existing_loggers: False
+formatters:
+  default:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+handlers:
+  file:
+    class: logging.FileHandler
+    filename: logs/uvicorn.log
+    formatter: default
+    level: DEBUG
+loggers:
+  uvicorn:
+    level: DEBUG
+    handlers: [file]
+  uvicorn.error:
+    level: DEBUG
+    handlers: [file]
+  uvicorn.access:
+    level: DEBUG
+    handlers: [file]
+root:
+  level: DEBUG
+  handlers: [file]

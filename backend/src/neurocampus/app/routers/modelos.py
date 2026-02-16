@@ -66,6 +66,8 @@ from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
 from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
+from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
+
 
 from ...observability.bus_eventos import BUS
 
@@ -116,6 +118,8 @@ BASE_DIR: Path = _find_project_root()
 if "NC_ARTIFACTS_DIR" not in os.environ:
     os.environ["NC_ARTIFACTS_DIR"] = str((BASE_DIR / "artifacts").resolve())
 
+ARTIFACTS_DIR: Path = Path(os.environ["NC_ARTIFACTS_DIR"]).expanduser().resolve()
+
 # Importar runs_io DESPUÉS de fijar NC_ARTIFACTS_DIR
 from ...utils.runs_io import (  # noqa: E402
     build_run_id,
@@ -130,11 +134,31 @@ from ...utils.runs_io import (  # noqa: E402
 
 
 def _relpath(p: Path) -> str:
-    """Devuelve una ruta relativa a BASE_DIR si es posible (si no, devuelve absoluta)."""
+    """Devuelve una ruta *lógica* estable para UI/contratos.
+
+    Regla:
+    - Si el path vive bajo NC_ARTIFACTS_DIR => devuelve "artifacts/<...>" (lógico).
+    - Si vive bajo BASE_DIR => devuelve path relativo a BASE_DIR.
+    - Si no => devuelve absoluto.
+
+    Nota: normaliza separadores a "/" para estabilidad cross-platform.
+    """
+    p_res = Path(p).expanduser().resolve()
+
+    # 1) Prioridad: artifacts lógicos (si el path vive en ARTIFACTS_DIR)
     try:
-        return str(p.resolve().relative_to(BASE_DIR.resolve()))
+        rel_art = p_res.relative_to(ARTIFACTS_DIR)
+        return str((Path("artifacts") / rel_art)).replace("\\", "/")
     except Exception:
-        return str(p.resolve())
+        pass
+
+    # 2) Fallback: relativo a BASE_DIR
+    try:
+        rel_base = p_res.relative_to(BASE_DIR.resolve())
+        return str(rel_base).replace("\\", "/")
+    except Exception:
+        return str(p_res).replace("\\", "/")
+
 
 
 def _strip_localfs(uri: str) -> str:
@@ -147,14 +171,115 @@ def _strip_localfs(uri: str) -> str:
 
 
 def _abs_path(ref: str) -> Path:
-    """
-    Convierte un ref (relativo/absoluto o localfs://) a un Path absoluto bajo BASE_DIR.
+    """Resuelve un ref (relativo/absoluto o localfs://) a un Path absoluto.
+
+    Regla:
+    - Si es absoluto => se respeta.
+    - Si empieza por "artifacts/..." => se resuelve bajo ARTIFACTS_DIR (NC_ARTIFACTS_DIR).
+    - En otro caso => se resuelve bajo BASE_DIR.
+
+    Esto permite que los contratos sigan usando "artifacts/..." aunque el storage
+    real esté fuera del repo (p. ej. volumen montado).
     """
     raw = _strip_localfs(ref)
     p = Path(raw)
-    if not p.is_absolute():
-        p = (BASE_DIR / p).resolve()
-    return p
+
+    if p.is_absolute():
+        return p.resolve()
+
+    norm = str(raw).replace("\\", "/").lstrip("/")
+    if norm.startswith("artifacts/"):
+        sub = Path(norm).relative_to("artifacts")
+        return (ARTIFACTS_DIR / sub).resolve()
+
+    return (BASE_DIR / p).resolve()
+
+def _try_write_predictor_bundle(
+    *,
+    run_dir: "Path | str",
+    req_norm: Any,
+    metrics: dict[str, Any] | None,
+    strategy: Any | None = None,
+) -> None:
+    """Best-effort: escribe el predictor bundle en el run_dir.
+
+    Contrato P2.x:
+    - `predictor.json` SIEMPRE (si el run llegó a completed).
+    - `preprocess.json` placeholder si no hay pipeline formal.
+    - `model.bin`:
+        - si existe persistencia real -> NO placeholder (marca “READY”)
+        - si no -> placeholder
+
+    Decisiones:
+    - No debe romper P0/P1/P2: cualquier error aquí se loguea y se ignora.
+    - Si no hay `save()` en la estrategia, dejamos placeholder y /predicciones/predict responderá 422.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        run_path = _Path(run_dir).expanduser().resolve()
+        bp = bundle_paths(run_path)
+
+        metrics = metrics or {}
+
+        # ------------------------------------------------------------
+        # 1) Persistencia real del modelo (si la estrategia soporta save())
+        # ------------------------------------------------------------
+        try:
+            save_fn = getattr(strategy, "save", None)
+            if callable(save_fn):
+                model_dir = run_path / "model"
+                model_dir.mkdir(parents=True, exist_ok=True)
+
+                # Soportar firmas tipo save(path: str)
+                save_fn(str(model_dir))
+
+                # Marcador NO-placeholder: el loader debe considerarlo “ready”.
+                # (el contenido exacto da igual, mientras no sea el placeholder P2.1)
+                bp.model_bin.write_bytes(b"DIR:model\n")
+        except Exception:
+            logger.exception("No se pudo persistir modelo en run_dir=%s (best-effort)", str(run_path))
+
+        # ------------------------------------------------------------
+        # 2) Manifest predictor.json (siempre)
+        # ------------------------------------------------------------
+        dataset_id = str(getattr(req_norm, "dataset_id", "") or metrics.get("dataset_id") or "")
+        model_name = str(getattr(req_norm, "modelo", "") or metrics.get("model_name") or metrics.get("model") or "")
+        family = str(getattr(req_norm, "family", "") or metrics.get("family") or "")
+
+        task_type = str(metrics.get("task_type") or metrics.get("params", {}).get("task_type") or "unknown")
+        input_level = str(metrics.get("input_level") or metrics.get("params", {}).get("input_level") or "row")
+        target_col = metrics.get("target_col") or metrics.get("params", {}).get("target_col")
+
+        manifest = build_predictor_manifest(
+            run_id=str(metrics.get("run_id") or ""),
+            dataset_id=dataset_id,
+            model_name=model_name,
+            task_type=task_type,
+            input_level=input_level,
+            target_col=str(target_col) if target_col else None,
+            extra={
+                "family": family,
+                "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
+            },
+        )
+        write_json(bp.predictor_json, manifest)
+
+        # ------------------------------------------------------------
+        # 3) preprocess.json placeholder (si no existe)
+        # ------------------------------------------------------------
+        if not bp.preprocess_json.exists():
+            write_json(bp.preprocess_json, {"schema_version": 1, "notes": "placeholder P2.x"})
+
+        # ------------------------------------------------------------
+        # 4) Fallback: si NO hubo persistencia real, dejar placeholder
+        # ------------------------------------------------------------
+        if not bp.model_bin.exists():
+            bp.model_bin.write_bytes(b"PLACEHOLDER_MODEL_BIN_P2_1")
+
+    except Exception:
+        logger.exception("No se pudo escribir predictor bundle (best-effort)")
+
 
 def _call_with_accepted_kwargs(fn, **kwargs):
     """
@@ -293,7 +418,7 @@ def _default_sweep_grid() -> list[dict[str, Any]]:
 
 
 def _sweeps_dir() -> Path:
-    return (BASE_DIR / "artifacts" / "sweeps").resolve()
+    return (ARTIFACTS_DIR / "sweeps").resolve()
 
 def _write_sweep_summary(sweep_id: str, payload: dict[str, Any]) -> Path:
     d = _sweeps_dir() / str(sweep_id)
@@ -698,7 +823,7 @@ def _ensure_feature_pack(dataset_id: str, input_uri: str, *, force: bool = False
     :returns: Diccionario con rutas *relativas* a los artefactos generados.
     :raises HTTPException: Si no se puede importar el builder o si falla el build.
     """
-    out_dir = BASE_DIR / "artifacts" / "features" / dataset_id
+    out_dir = _abs_path(f"artifacts/features/{dataset_id}")
     out = out_dir / "train_matrix.parquet"
 
     # Rutas esperadas (las devolvemos siempre, existan o no, para UI/debug).
@@ -786,7 +911,7 @@ def _read_json_safe(p: Path):
         return None
 
 def _feature_pack_meta_path(ds: str) -> Path:
-    return BASE_DIR / "artifacts" / "features" / ds / "meta.json"
+    return _abs_path(f"artifacts/features/{ds}/meta.json")
 
 def _feature_pack_has_sentiment(ds: str) -> bool:
     meta = _read_json_safe(_feature_pack_meta_path(ds)) or {}
@@ -806,7 +931,7 @@ def _should_rebuild_feature_pack(dataset_id: str, *, family: str, data_source: s
         fam = (family or "").lower()
         src = (data_source or "").lower()
 
-        feat_dir = BASE_DIR / "artifacts" / "features" / ds
+        feat_dir = _abs_path(f"artifacts/features/{ds}")
         meta_path = feat_dir / "meta.json"
         pair_meta_path = feat_dir / "pair_meta.json"
 
@@ -947,7 +1072,7 @@ def _period_key(ds: str) -> tuple[int, int]:
 
 
 def _list_pair_matrix_datasets() -> list[str]:
-    base = (BASE_DIR / "artifacts" / "features").resolve()
+    base = _abs_path("artifacts/features")
     if not base.exists():
         return []
     out: list[str] = []
@@ -987,7 +1112,7 @@ def _materialize_score_docente_pair_selection(req: EntrenarRequest, job_id: str)
     older = [d for d in eligible if d not in recent]
 
     def _read_pair(ds: str) -> pd.DataFrame:
-        p = (BASE_DIR / "artifacts" / "features" / ds / "pair_matrix.parquet").resolve()
+        p = _abs_path(f"artifacts/features/{ds}/pair_matrix.parquet")
         if not p.exists():
             raise HTTPException(status_code=404, detail=f"pair_matrix no encontrado para {ds}: {p}")
         df = pd.read_parquet(p)
@@ -1509,8 +1634,11 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         if inferred_target_col is not None:
             update_payload["target_col"] = inferred_target_col
 
-        # filtrar solo campos existentes (evita problemas si el schema cambia)
-        model_fields = getattr(req, "model_fields", None)
+        # Filtrar solo campos existentes (evita problemas si el schema cambia).
+        #
+        # Nota (Pydantic v2.11+): acceder a `model_fields` desde la instancia está deprecado.
+        # Se debe acceder desde la clase.
+        model_fields = getattr(type(req), "model_fields", None)
         if isinstance(model_fields, dict):
             update_payload = {k: v for k, v in update_payload.items() if k in model_fields}
 
@@ -1554,7 +1682,14 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         req_snapshot = req_norm.model_dump()
         params = {"req": req_snapshot, "hparams": run_hparams}
 
-        run_id = build_run_id(str(req_norm.dataset_id), str(req_norm.modelo), job_id)
+        run_id = build_run_id(
+            dataset_id=str(req_norm.dataset_id),
+            model_name=str(req_norm.modelo),
+            job_id=str(job_id),
+        )
+        # Asegurar run_id en métricas para que predictor.json quede consistente.
+        final_metrics.setdefault("run_id", str(run_id))
+
         run_dir = save_run(
             run_id=str(run_id),
             job_id=str(job_id),
@@ -1565,6 +1700,16 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             final_metrics=final_metrics,
             history=history,
         )
+
+        # (best-effort): persistir predictor bundle + modelo serializado para inferencia.
+        # Importante: NO debe romper P0 si falla; solo deja bundle en placeholder.
+        _try_write_predictor_bundle(
+            run_dir=run_dir,
+            req_norm=req_norm,
+            metrics=final_metrics,
+            strategy=strategy,
+        )
+
 
         # 7) Champion (si aplica) - usar metrics.json como contrato (incluye params.req)
         champion_promoted = None
@@ -1734,7 +1879,9 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
         if inferred_target_col is not None:
             update_payload["target_col"] = inferred_target_col
 
-        model_fields = getattr(cand_req, "model_fields", None)
+        # Nota (Pydantic v2.11+): acceder a `model_fields` desde la instancia está deprecado.
+        # Se debe acceder desde la clase.
+        model_fields = getattr(type(cand_req), "model_fields", None)
         if isinstance(model_fields, dict):
             update_payload = {k: v for k, v in update_payload.items() if k in model_fields}
 
@@ -2302,17 +2449,18 @@ def get_champion(
 
     # path es OBLIGATORIO en ChampionInfo => si falta, lo calculamos
     if not champ.get("path"):
-        artifacts_dir = BASE_DIR / "artifacts" / "champions"
+        artifacts_dir = (ARTIFACTS_DIR / "champions").resolve()
         ds_dir = (artifacts_dir / champ_family / str(ds)) if champ_family else (artifacts_dir / str(ds))
 
         mn = champ.get("model_name") or model_name
         model_dir = ds_dir / str(mn) if mn else None
 
-        # Mantener comportamiento: si existe el directorio del modelo úsalo, si no usa ds_dir
+        # Mantener semántica: si existe el dir del modelo úsalo; si no, usa ds_dir
         if model_dir and model_dir.exists():
-            champ["path"] = str(model_dir)
+            champ["path"] = _relpath(model_dir)
         else:
-            champ["path"] = str(ds_dir)
+            champ["path"] = _relpath(ds_dir)
+
 
     # 3) Validar explícitamente aquí para evitar response-validation 500 opaco
     try:

@@ -162,7 +162,16 @@ def compute_score_total_0_50(
 
     p_pos = pd.to_numeric(df["p_pos"], errors="coerce").fillna(0.0).astype(float)
     p_neg = pd.to_numeric(df["p_neg"], errors="coerce").fillna(0.0).astype(float)
-    conf = pd.to_numeric(df.get("sentiment_conf", 1.0), errors="coerce").fillna(1.0).astype(float).clip(0.0, 1.0)
+
+    # Robustez: si falta sentiment_conf, df.get(...) retornaría un float y rompería .fillna().
+    # Creamos una Serie default para mantener contrato vectorizado.
+    if "sentiment_conf" in df.columns:
+        conf_raw = df["sentiment_conf"]
+    else:
+        conf_raw = pd.Series(1.0, index=df.index)
+
+    conf = pd.to_numeric(conf_raw, errors="coerce").fillna(1.0).astype(float).clip(0.0, 1.0)
+
 
     sent_delta = (p_pos - p_neg).astype(float)
     sent_signal = (sent_delta * conf).astype(float)
@@ -175,7 +184,7 @@ def compute_score_total_0_50(
     df["sentiment_delta"] = sent_delta
     df["sentiment_signal"] = sent_signal
 
-        # Calibración beta (y qv para auditoría)
+    # Calibración beta (y qv para auditoría)
     # calibrar sobre filas con texto (si existe has_text)
     if "has_text" in df.columns:
         mask_text = df["has_text"].fillna(0).astype(int) == 1

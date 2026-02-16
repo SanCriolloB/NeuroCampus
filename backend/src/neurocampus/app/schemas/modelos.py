@@ -39,9 +39,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Literal
 
-from pydantic import BaseModel, Field, model_validator, ConfigDict, field_validator
-
-
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 # ---------------------------------------------------------------------------
 # Tipos comunes (enums via Literal)
 # ---------------------------------------------------------------------------
@@ -157,10 +162,15 @@ class EntrenarRequest(BaseModel):
     """
 
     # Mantener tolerancia a campos extra (compatibilidad)
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    modelo: ModeloName = Field(
-        description="Tipo de modelo a entrenar (rbm_general | rbm_restringida | dbm_manual)."
+    modelo: str = Field(
+        ...,
+        validation_alias=AliasChoices("modelo", "model_name", "model"),
+        description=(
+            "Nombre del modelo a entrenar. Backward compatible: acepta `modelo` "
+            "y también `model_name`/`model` como alias para integraciones futuras."
+        ),
     )
 
     # -----------------------------

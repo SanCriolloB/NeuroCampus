@@ -171,6 +171,13 @@ def apply_filters(df: pd.DataFrame, f: DashboardFilters) -> pd.DataFrame:
     if df.empty:
         return df
 
+    # Normalizamos alias de columnas de dimensiones para que el resto del
+    # pipeline pueda operar con nombres canónicos (docente/asignatura/programa)
+    # incluso si el histórico viene con nombres alternativos (p.ej. profesor,
+    # materia). Esto evita que endpoints como /dashboard/catalogos queden vacíos
+    # en datasets reales.
+    df = _normalize_dim_aliases(df)
+
     _ensure_periodo_column(df)
 
     mask = pd.Series(True, index=df.index)
@@ -221,7 +228,8 @@ def load_processed(columns: Optional[List[str]] = None) -> pd.DataFrame:
     """
     if not _PROCESSED_PATH.exists():
         raise FileNotFoundError(f"No existe {_PROCESSED_PATH.as_posix()} (ejecuta unificación)")
-    return pd.read_parquet(_PROCESSED_PATH, columns=columns)
+    df = pd.read_parquet(_PROCESSED_PATH, columns=_augment_columns_for_aliases(columns))
+    return _normalize_dim_aliases(df)
 
 
 def load_labeled(columns: Optional[List[str]] = None) -> pd.DataFrame:
@@ -230,7 +238,8 @@ def load_labeled(columns: Optional[List[str]] = None) -> pd.DataFrame:
         raise FileNotFoundError(
             f"No existe {_LABELED_PATH.as_posix()} (ejecuta BETO + unificación labeled)"
         )
-    return pd.read_parquet(_LABELED_PATH, columns=columns)
+    df = pd.read_parquet(_LABELED_PATH, columns=_augment_columns_for_aliases(columns))
+    return _normalize_dim_aliases(df)
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +248,7 @@ def load_labeled(columns: Optional[List[str]] = None) -> pd.DataFrame:
 
 def compute_catalogos(df: pd.DataFrame) -> Tuple[List[str], List[str], List[str]]:
     """Computa catálogos (docentes, asignaturas, programas) desde histórico filtrado."""
+    df = _normalize_dim_aliases(df)
     if "docente" in df.columns:
         docentes = sorted({str(x).strip() for x in df["docente"].dropna().tolist() if str(x).strip()})
     else:
@@ -257,6 +267,77 @@ def compute_catalogos(df: pd.DataFrame) -> Tuple[List[str], List[str], List[str]
         programas = []
 
     return docentes, asignaturas, programas
+
+
+def _augment_columns_for_aliases(columns: Optional[List[str]]) -> Optional[List[str]]:
+    """Aumenta `columns` para soportar creación de alias de dimensiones.
+
+    Cuando un caller pide columnas canónicas (p.ej. ``docente``), pero el parquet
+    contiene el nombre alternativo (p.ej. ``profesor``), necesitamos leer también
+    la columna fuente para poder generar el alias.
+
+    La función es conservadora: si `columns` es None, no hace nada.
+    """
+    if columns is None:
+        return None
+
+    wanted = {str(c) for c in columns}
+
+    # Dimensiones canónicas -> posibles alias históricos.
+    if "docente" in wanted:
+        wanted.add("profesor")
+        wanted.add("docente_nombre")
+        wanted.add("nombre_docente")
+    if "asignatura" in wanted:
+        wanted.add("materia")
+        wanted.add("asignatura_nombre")
+        wanted.add("nombre_asignatura")
+    if "programa" in wanted:
+        wanted.add("programa_nombre")
+        wanted.add("nombre_programa")
+
+    # Orden determinista.
+    return sorted(wanted)
+
+
+def _normalize_dim_aliases(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza nombres de columnas de dimensiones para el Dashboard.
+
+    El histórico real puede venir con nombres como ``profesor``/``materia`` en vez
+    de ``docente``/``asignatura``. Para evitar duplicar heurísticas en cada
+    agregación/endpoint, creamos columnas canónicas cuando sea posible.
+
+    Notes
+    -----
+    - Se crean *aliases* solo si la columna canónica no existe y la fuente sí.
+    - No se elimina ninguna columna original (retro-compatibilidad).
+    - Se retorna el mismo DataFrame (mutado in-place) para evitar copias grandes.
+    """
+    if df is None or df.empty:
+        return df
+
+    # Docente
+    if "docente" not in df.columns:
+        for src in ("profesor", "docente_nombre", "nombre_docente"):
+            if src in df.columns:
+                df["docente"] = df[src]
+                break
+
+    # Asignatura
+    if "asignatura" not in df.columns:
+        for src in ("materia", "asignatura_nombre", "nombre_asignatura"):
+            if src in df.columns:
+                df["asignatura"] = df[src]
+                break
+
+    # Programa
+    if "programa" not in df.columns:
+        for src in ("programa_nombre", "nombre_programa"):
+            if src in df.columns:
+                df["programa"] = df[src]
+                break
+
+    return df
 
 
 def compute_kpis(df: pd.DataFrame) -> dict:

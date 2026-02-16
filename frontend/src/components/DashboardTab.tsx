@@ -9,6 +9,7 @@ import { useAppFilters, setAppFilters } from "@/state/appFilters.store";
 
 // Dashboard API (histórico). No modifica UI; solo conecta datos reales.
 import {
+  getDashboardStatus,
   getCatalogos,
   getKpis,
   getRankings,
@@ -24,6 +25,7 @@ import type {
   DashboardSeries,
   DashboardSentimiento,
   DashboardFilters,
+  DashboardStatus,
 } from "@/services/dashboard";
 
 // Valor especial para consultar todo el histórico (rango min..max)
@@ -127,6 +129,7 @@ export function DashboardTab() {
 
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [dashStatus, setDashStatus] = useState<DashboardStatus | null>(null);
 
   // Carga inicial: periodos disponibles.
   useEffect(() => {
@@ -144,6 +147,14 @@ export function DashboardTab() {
         const normalized = validItems.length > 0 ? validItems : items;
 
         setPeriodos(normalized);
+
+        // Estado del histórico (para UX y para evitar errores si aún no está listo)
+        try {
+          const st = await getDashboardStatus();
+          if (alive) setDashStatus(st);
+        } catch {
+          // no bloquea
+        }
 
         // Guardamos rango histórico (min/max) para modo ALL.
         if (normalized.length > 0) {
@@ -425,6 +436,9 @@ const dashboardData = useMemo(() => {
     }
   };
 
+
+  const controlsDisabled = loading || (dashStatus !== null && !dashStatus.ready_processed);
+
   return (
     <div className="p-8 space-y-6">
       {/* Header */}
@@ -437,6 +451,12 @@ const dashboardData = useMemo(() => {
         <p className="text-gray-400">Diagnóstico General de la Institución</p>
         {loading && <p className="text-gray-500 text-xs">Cargando datos del histórico…</p>}
         {error && <p className="text-red-400 text-xs">Error: {error}</p>}
+        {dashStatus && (!dashStatus.ready_processed || !dashStatus.ready_labeled) && (
+          <p className="text-amber-400 text-xs">
+            Histórico en actualización… processed: {dashStatus.ready_processed ? "OK" : "pendiente"} · labeled:{" "}
+            {dashStatus.ready_labeled ? "OK" : "pendiente"}
+          </p>
+        )}
       </motion.div>
 
       {/* Global Filters Bar */}
@@ -449,7 +469,7 @@ const dashboardData = useMemo(() => {
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-gray-400 mb-2">Semestre / Periodo</label>
-              <Select value={semester} onValueChange={setSemester}>
+              <Select value={semester} onValueChange={setSemester} disabled={controlsDisabled}>
                 <SelectTrigger className="bg-[#0f1419] border-gray-700">
                   <SelectValue />
                 </SelectTrigger>
@@ -467,7 +487,7 @@ const dashboardData = useMemo(() => {
             </div>
             <div>
               <label className="block text-sm text-gray-400 mb-2">Asignatura</label>
-              <Select value={subject} onValueChange={setSubject}>
+              <Select value={subject} onValueChange={setSubject} disabled={controlsDisabled}>
                 <SelectTrigger className="bg-[#0f1419] border-gray-700">
                   <SelectValue />
                 </SelectTrigger>
@@ -481,7 +501,7 @@ const dashboardData = useMemo(() => {
             </div>
             <div>
               <label className="block text-sm text-gray-400 mb-2">Docente</label>
-              <Select value={teacher} onValueChange={setTeacher}>
+              <Select value={teacher} onValueChange={setTeacher} disabled={controlsDisabled}>
                 <SelectTrigger className="bg-[#0f1419] border-gray-700">
                   <SelectValue />
                 </SelectTrigger>

@@ -65,5 +65,14 @@ backend/.venv/
 # Jobs locales (estado/polling)
 jobs/preproc_beto/*.json
 
+# --- NeuroCampus: outputs del histórico (NO versionar) ---
+# Nota: esto apunta al directorio raíz /historico (no afecta backend/src/neurocampus/historico)
+/historico/
+!/historico/.gitkeep
+!/historico/.gitignore
+
+# Jobs locales generados por unificación
+/jobs/data_unify/*.json
+
 # NeuroCampus: runtime job outputs
 jobs/features_prepare/*.json

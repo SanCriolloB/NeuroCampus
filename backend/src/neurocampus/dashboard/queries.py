@@ -114,7 +114,16 @@ def _ensure_score_0_50_columns(df: pd.DataFrame) -> pd.DataFrame:
             return df
 
         q = df[available].apply(pd.to_numeric, errors="coerce")
-        score_0_50 = q.mean(axis=1, skipna=True) * 10.0
+
+        # Heurística de escala:
+        # - Si un valor está en 1–5 (o 0–5), lo re-escalamos a 0–50 multiplicando por 10.
+        # - Si un valor ya está en 0–50 (por ejemplo 47, 38, 42...), lo dejamos tal cual.
+        #
+        # Umbral 5.5: evita que valores decimales como 4.7 (=> 47) se traten como 0–50.
+        q_0_50 = q.where(q > 5.5, q * 10.0)
+
+        # Score final del dashboard en 0–50: promedio de preguntas ya normalizadas.
+        score_0_50 = q_0_50.mean(axis=1, skipna=True)
 
         df["score_total_0_50"] = score_0_50.astype(float)
         base_col = "score_total_0_50"

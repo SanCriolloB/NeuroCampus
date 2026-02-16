@@ -137,6 +137,23 @@ class DashboardRadar(BaseModel):
     items: List[DashboardRadarItem] = Field(default_factory=list)
 
 
+class DashboardWordcloudItem(BaseModel):
+    """Ítem del wordcloud.
+
+    - ``text``: token normalizado (minúscula, sin stopwords).
+    - ``value``: frecuencia absoluta del token en el subconjunto filtrado.
+    """
+
+    text: str
+    value: int
+
+
+class DashboardWordcloud(BaseModel):
+    """Contrato para ``GET /dashboard/wordcloud``."""
+
+    items: List[DashboardWordcloudItem] = Field(default_factory=list)
+
+
 class DashboardSentimientoBucket(BaseModel):
     """Bucket de sentimiento (solo si labeled disponible)."""
 

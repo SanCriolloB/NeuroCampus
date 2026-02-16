@@ -17,6 +17,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from typing import Any
 
 from neurocampus.app.schemas.predicciones import (
@@ -24,6 +25,7 @@ from neurocampus.app.schemas.predicciones import (
     PredictRequest,
     PredictResolvedResponse,
     ModelInfoResponse,
+    PredictionsPreviewResponse,
 )
 from neurocampus.predictions.loader import (
     ChampionNotFoundError,
@@ -36,6 +38,8 @@ from neurocampus.services.predictions_service import (
     InferenceNotAvailableError,
     predict_from_feature_pack,
     save_predictions_parquet,
+    resolve_predictions_parquet_path,
+    load_predictions_preview,
 )
 from neurocampus.utils.paths import artifacts_dir, rel_artifact_path
 from neurocampus.predictions.bundle import bundle_paths
@@ -259,4 +263,45 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
 
         # En runtime normal, mantener mensaje estable (sin filtrar stacktrace al cliente).
         raise HTTPException(status_code=500, detail="Error interno resolviendo predictor bundle") from e
+
+@router.get("/outputs/preview", response_model=PredictionsPreviewResponse)
+def outputs_preview(
+    predictions_uri: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> PredictionsPreviewResponse:
+    """Retorna una vista previa (JSON) de un `predictions.parquet` persistido."""
+    try:
+        rows, columns, schema = load_predictions_preview(
+            predictions_uri=predictions_uri,
+            limit=limit,
+            offset=offset,
+        )
+        return PredictionsPreviewResponse(
+            predictions_uri=str(predictions_uri),
+            rows=rows,
+            columns=columns,
+            output_schema=schema,
+            note="P2.4: preview de outputs persistidos.",
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/outputs/file")
+def outputs_file(predictions_uri: str):
+    """Descarga el `predictions.parquet` persistido como archivo."""
+    try:
+        path = resolve_predictions_parquet_path(predictions_uri)
+        return FileResponse(
+            path=path,
+            media_type="application/octet-stream",
+            filename=path.name,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 

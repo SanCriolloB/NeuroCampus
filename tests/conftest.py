@@ -21,13 +21,13 @@ if str(BACKEND_SRC) not in sys.path:
 
 # IMPORTANT: setear NC_ARTIFACTS_DIR ANTES de importar el app/router/runs_io.
 _ARTIFACTS_TMP = Path(tempfile.mkdtemp(prefix="neurocampus_artifacts_")).resolve()
-os.environ.setdefault("NC_ARTIFACTS_DIR", str(_ARTIFACTS_TMP))
+os.environ["NC_ARTIFACTS_DIR"] = str(_ARTIFACTS_TMP)  # evitar setdefault (NC_ARTIFACTS_DIR preexistente)
 
 
 @pytest.fixture(scope="session")
 def artifacts_dir() -> Path:
     """Directorio temporal de artifacts (session-scoped)."""
-    return _ARTIFACTS_TMP
+    return Path(os.environ["NC_ARTIFACTS_DIR"]).resolve()
 
 
 @pytest.fixture(scope="session")

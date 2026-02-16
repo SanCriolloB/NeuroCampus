@@ -146,6 +146,26 @@ class ModelInfoResponse(BaseModel):
     note: str = Field(description="Nota informativa del estado del endpoint.")
 
 
+
+
+class PredictionsPreviewResponse(BaseModel):
+    """Vista previa de predicciones persistidas."""
+
+    predictions_uri: str = Field(description="Ruta lógica donde están persistidas las predicciones.")
+    rows: list[Dict[str, Any]] = Field(description="Filas (preview) desde predictions.parquet.")
+    columns: list[str] = Field(description="Columnas presentes en `rows`.")
+
+    output_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        validation_alias=AliasChoices("schema", "output_schema"),
+        serialization_alias="schema",
+        description="schema.json asociado (si existe).",
+    )
+
+    note: str = Field(description="Nota informativa del endpoint.")
+
+
+
 class HealthResponse(BaseModel):
     """Health check de predicciones."""
 

@@ -443,6 +443,16 @@ def compute_kpis(df: pd.DataFrame) -> dict:
 
     Este helper se usará en el endpoint ``/dashboard/kpis``.
     """
+    # Si el filtro deja el histórico sin filas, evitamos calcular promedios.
+    # Pandas retornaría NaN y Starlette no serializa NaN a JSON (allow_nan=False).
+    if df is None or df.empty:
+        return {
+            "evaluaciones": 0,
+            "docentes": 0,
+            "asignaturas": 0,
+            "score_promedio": None,
+        }
+
     kpis = {
         "evaluaciones": int(len(df)),
         "docentes": int(df["docente"].nunique()) if "docente" in df.columns else 0,
@@ -454,7 +464,11 @@ def compute_kpis(df: pd.DataFrame) -> dict:
     for col in ("score", "rating", "score_total", "score_promedio"):
         if col in df.columns:
             try:
-                kpis["score_promedio"] = float(pd.to_numeric(df[col], errors="coerce").mean())
+                mean_val = pd.to_numeric(df[col], errors="coerce").mean()
+                if pd.isna(mean_val) or mean_val in (float("inf"), float("-inf")):
+                    kpis["score_promedio"] = None
+                else:
+                    kpis["score_promedio"] = float(mean_val)
             except Exception:
                 kpis["score_promedio"] = None
             break

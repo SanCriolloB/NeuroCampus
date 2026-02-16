@@ -13,12 +13,18 @@ En P2.3/P2.4 se agregará inferencia y escritura de outputs.
 from __future__ import annotations
 
 import os
+import json
 import logging
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, HTTPException
 from typing import Any
 
-from neurocampus.app.schemas.predicciones import HealthResponse, PredictRequest, PredictResolvedResponse
+from neurocampus.app.schemas.predicciones import (
+    HealthResponse,
+    PredictRequest,
+    PredictResolvedResponse,
+    ModelInfoResponse,
+)
 from neurocampus.predictions.loader import (
     ChampionNotFoundError,
     PredictorNotFoundError,
@@ -39,6 +45,71 @@ def health() -> HealthResponse:
     """Health-check del módulo de Predicciones."""
     base = artifacts_dir()
     return HealthResponse(status="ok", artifacts_dir=str(base))
+
+
+
+@router.get("/model-info", response_model=ModelInfoResponse)
+def model_info(
+    run_id: str | None = None,
+    dataset_id: str | None = None,
+    family: str | None = None,
+    use_champion: bool = False,
+) -> ModelInfoResponse:
+    """Retorna metadata del modelo (P2.2: resolve/validate sin inferencia).
+
+    Permite a clientes (p.ej. frontend) consultar qué predictor se usará y con qué contrato.
+
+    Errores esperados:
+    - 404: champion.json o predictor bundle no existe.
+    - 422: request inválido o predictor no listo.
+    """
+    try:
+        if use_champion:
+            if not dataset_id:
+                raise HTTPException(status_code=422, detail="dataset_id es requerido cuando use_champion=true")
+            loaded = load_predictor_by_champion(dataset_id=dataset_id, family=family)
+            resolved_from = "champion"
+        else:
+            if not run_id:
+                raise HTTPException(status_code=422, detail="run_id es requerido cuando use_champion=false")
+            loaded = load_predictor_by_run_id(run_id)
+            resolved_from = "run_id"
+
+        metrics = None
+        metrics_path = loaded.run_dir / "metrics.json"
+        if metrics_path.exists():
+            try:
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                logger.warning("metrics.json inválido en %s; se omite en model-info", metrics_path)
+
+        run_dir_logical = f"artifacts/runs/{loaded.run_id}"
+
+        return ModelInfoResponse(
+            resolved_run_id=loaded.run_id,
+            resolved_from=resolved_from,
+            run_dir=run_dir_logical,
+            predictor=loaded.predictor,
+            preprocess=loaded.preprocess,
+            metrics=metrics,
+            note="P2.2: model-info (resolución/validación del bundle; sin inferencia).",
+        )
+
+    except ChampionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotReadyError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error resolviendo predictor bundle en model-info")
+
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            raise
+
+        raise HTTPException(status_code=500, detail="Error interno resolviendo predictor bundle") from e
 
 
 @router.post("/predict", response_model=PredictResolvedResponse)

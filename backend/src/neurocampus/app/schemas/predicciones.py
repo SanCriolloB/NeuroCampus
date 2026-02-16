@@ -73,6 +73,25 @@ class PredictResolvedResponse(BaseModel):
     note: str = Field(description="Nota informativa del estado del endpoint.")
 
 
+
+class ModelInfoResponse(BaseModel):
+    """Respuesta de P2.2: metadata del modelo/predictor bundle (sin inferencia)."""
+
+    resolved_run_id: str
+    resolved_from: str = Field(description="run_id|champion")
+    run_dir: str = Field(description="Ruta lógica/absoluta del run_dir (según configuración).")
+
+    predictor: Dict[str, Any] = Field(description="Contenido de predictor.json")
+    preprocess: Dict[str, Any] = Field(description="Contenido de preprocess.json (puede ser vacío).")
+
+    metrics: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Contenido de metrics.json (si existe).",
+    )
+
+    note: str = Field(description="Nota informativa del estado del endpoint.")
+
+
 class HealthResponse(BaseModel):
     """Health check de predicciones."""
 

@@ -104,6 +104,8 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
 
     except ChampionNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except PredictorNotReadyError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except HTTPException:

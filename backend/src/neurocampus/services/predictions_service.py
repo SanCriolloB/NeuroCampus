@@ -42,7 +42,7 @@ import pandas as pd
 
 from neurocampus.predictions.loader import LoadedPredictorBundle, PredictorNotReadyError
 from neurocampus.data.features_prepare import load_feature_pack
-from neurocampus.utils.paths import artifacts_dir, safe_segment
+from neurocampus.utils.paths import artifacts_dir, safe_segment, abs_artifact_path
 
 
 class InferenceNotAvailableError(RuntimeError):
@@ -346,3 +346,79 @@ def save_predictions_parquet(
         paths["schema"] = schema_path
 
     return paths
+
+# ---------------------------------------------------------------------------
+# P2.4-E: lectura de outputs persistidos (predictions.parquet)
+# ---------------------------------------------------------------------------
+
+def resolve_predictions_parquet_path(predictions_uri: str) -> Path:
+    """Resuelve un `predictions_uri` (lógico) a un path absoluto y seguro.
+
+    Reglas de seguridad:
+    - Solo se permite leer dentro de `artifacts/predictions/`.
+    - El path debe apuntar a un archivo llamado `predictions.parquet`.
+
+    Raises
+    ------
+    ValueError
+        Si `predictions_uri` es inválido o apunta fuera del sandbox permitido.
+    FileNotFoundError
+        Si el archivo no existe.
+    """
+    ref = str(predictions_uri or "").strip()
+    if not ref:
+        raise ValueError("predictions_uri vacío")
+
+    p = abs_artifact_path(ref).expanduser().resolve()
+    base = (artifacts_dir() / "predictions").expanduser().resolve()
+
+    try:
+        _ = p.relative_to(base)
+    except Exception as e:
+        raise ValueError("predictions_uri debe estar bajo artifacts/predictions") from e
+
+    if p.name != "predictions.parquet" or p.suffix.lower() != ".parquet":
+        raise ValueError("predictions_uri debe apuntar a predictions.parquet")
+
+    if not p.exists():
+        raise FileNotFoundError(f"No existe predictions.parquet: {ref}")
+
+    return p
+
+
+def load_predictions_preview(
+    *,
+    predictions_uri: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], List[str], Optional[Dict[str, Any]]]:
+    """Carga una vista previa (preview) de predicciones persistidas.
+
+    Notes
+    -----
+    - Implementación simple para P2: usa pandas para leer el parquet.
+    - Para outputs grandes, se puede optimizar con lectura por row-groups (pyarrow).
+
+    Returns
+    -------
+    (rows, columns, schema)
+    """
+    path = resolve_predictions_parquet_path(predictions_uri)
+    df = pd.read_parquet(path)
+
+    off = max(0, int(offset or 0))
+    lim = max(1, int(limit or 1))
+    sliced = df.iloc[off : off + lim].copy()
+
+    rows: List[Dict[str, Any]] = sliced.to_dict(orient="records")
+    columns: List[str] = [str(c) for c in list(sliced.columns)]
+
+    schema_path = path.parent / "schema.json"
+    schema: Optional[Dict[str, Any]] = None
+    if schema_path.exists():
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            schema = None
+
+    return rows, columns, schema

@@ -24,6 +24,21 @@ from pathlib import Path
 
 import pandas as pd
 
+import logging
+
+# El Dashboard consume únicamente histórico. Para exponer estado/periodos sin leer parquets
+# grandes, persistimos un manifest liviano en `historico/manifest.json`.
+#
+# Import defensivo: la unificación NO debe fallar si el manifest no se puede escribir
+# (por ejemplo, permisos/IO). En ese caso reportamos el error en el meta y registramos
+# el incidente para diagnóstico.
+try:
+    from ...historico.manifest import update_manifest
+except Exception:  # pragma: no cover - fallback defensivo
+    update_manifest = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
 from ..adapters.almacen_adapter import AlmacenAdapter
 from ..adapters.formato_adapter import read_file
 from ..adapters.dataframe_adapter import as_df
@@ -446,7 +461,28 @@ class UnificacionStrategy:
 
         out_uri = "historico/unificado.parquet"
         self._write_parquet(pdf, out_uri)
-        return out_uri, {"datasets": ids, "rows": int(len(pdf))}
+
+        meta: Dict[str, Any] = {"datasets": ids, "rows": int(len(pdf))}
+
+        # Actualización eager del manifest del histórico (para Dashboard).
+        if update_manifest is not None:
+            try:
+                update_manifest(
+                    mode="acumulado",
+                    dataset_id=ids,
+                    paths={"parquet": out_uri},
+                    row_counts={"rows": meta["rows"]},
+                )
+                meta["manifest_updated"] = True
+            except Exception as exc:  # pragma: no cover - depende de IO/FS
+                logger.exception("No se pudo actualizar historico/manifest.json (acumulado)")
+                meta["manifest_updated"] = False
+                meta["manifest_error"] = str(exc)
+        else:
+            meta["manifest_updated"] = False
+            meta["manifest_error"] = "update_manifest no disponible"
+
+        return out_uri, meta
 
     def ventana(
         self,
@@ -496,4 +532,35 @@ class UnificacionStrategy:
         out_uri = "historico/unificado_labeled.parquet"
         self._write_parquet(pdf, out_uri)
 
-        return out_uri, {"datasets": ids, "rows": int(len(pdf)), "skipped": skipped}
+        unificados = [i for i in ids if i not in skipped]
+        meta: Dict[str, Any] = {
+            "datasets": ids,
+            "datasets_unificados": unificados,
+            "rows": int(len(pdf)),
+            "skipped": skipped,
+        }
+
+        # Actualización eager del manifest (labeled).
+        # Importante: NO pasamos la lista completa como dataset_id, porque update_manifest
+        # interpreta list[str] como "universo" y sobre-escribe `periodos_disponibles`.
+        # En labeled esto suele ser un subconjunto; por eso añadimos solo el último periodo
+        # unificado para que se acumule sin borrar los periodos del histórico processed.
+        if update_manifest is not None:
+            try:
+                last_id = unificados[-1] if unificados else None
+                update_manifest(
+                    mode="acumulado_labeled",
+                    dataset_id=last_id,
+                    paths={"parquet": out_uri},
+                    row_counts={"rows": meta["rows"]},
+                )
+                meta["manifest_updated"] = True
+            except Exception as exc:  # pragma: no cover - depende de IO/FS
+                logger.exception("No se pudo actualizar historico/manifest.json (acumulado_labeled)")
+                meta["manifest_updated"] = False
+                meta["manifest_error"] = str(exc)
+        else:
+            meta["manifest_updated"] = False
+            meta["manifest_error"] = "update_manifest no disponible"
+
+        return out_uri, meta

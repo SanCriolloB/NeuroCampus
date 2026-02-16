@@ -194,23 +194,55 @@ def _abs_path(ref: str) -> Path:
 
     return (BASE_DIR / p).resolve()
 
-def _try_write_predictor_bundle(*, run_dir: Path, req_norm: Any, metrics: Dict[str, Any]) -> None:
+def _try_write_predictor_bundle(
+    *,
+    run_dir: "Path | str",
+    req_norm: Any,
+    metrics: dict[str, Any] | None,
+    strategy: Any | None = None,
+) -> None:
     """Best-effort: escribe el predictor bundle en el run_dir.
 
-    Contrato P2.1:
+    Contrato P2.x:
     - `predictor.json` SIEMPRE (si el run llegó a completed).
-    - `model.bin` y `preprocess.json` son placeholders por ahora si no hay soporte de dump.
+    - `preprocess.json` placeholder si no hay pipeline formal.
+    - `model.bin`:
+        - si existe persistencia real -> NO placeholder (marca “READY”)
+        - si no -> placeholder
 
     Decisiones:
-    - No debe romper P0/P1: cualquier error aquí se loguea y se ignora.
-    - La inferencia P2 detectará ausencia de `model.bin` real y responderá 422/501.
+    - No debe romper P0/P1/P2: cualquier error aquí se loguea y se ignora.
+    - Si no hay `save()` en la estrategia, dejamos placeholder y /predicciones/predict responderá 422.
     """
     try:
         from pathlib import Path as _Path
 
-        run_dir = _Path(run_dir).expanduser().resolve()
-        bp = bundle_paths(run_dir)
+        run_path = _Path(run_dir).expanduser().resolve()
+        bp = bundle_paths(run_path)
 
+        metrics = metrics or {}
+
+        # ------------------------------------------------------------
+        # 1) Persistencia real del modelo (si la estrategia soporta save())
+        # ------------------------------------------------------------
+        try:
+            save_fn = getattr(strategy, "save", None)
+            if callable(save_fn):
+                model_dir = run_path / "model"
+                model_dir.mkdir(parents=True, exist_ok=True)
+
+                # Soportar firmas tipo save(path: str)
+                save_fn(str(model_dir))
+
+                # Marcador NO-placeholder: el loader debe considerarlo “ready”.
+                # (el contenido exacto da igual, mientras no sea el placeholder P2.1)
+                bp.model_bin.write_bytes(b"DIR:model\n")
+        except Exception:
+            logger.exception("No se pudo persistir modelo en run_dir=%s (best-effort)", str(run_path))
+
+        # ------------------------------------------------------------
+        # 2) Manifest predictor.json (siempre)
+        # ------------------------------------------------------------
         dataset_id = str(getattr(req_norm, "dataset_id", "") or metrics.get("dataset_id") or "")
         model_name = str(getattr(req_norm, "modelo", "") or metrics.get("model_name") or metrics.get("model") or "")
         family = str(getattr(req_norm, "family", "") or metrics.get("family") or "")
@@ -228,17 +260,21 @@ def _try_write_predictor_bundle(*, run_dir: Path, req_norm: Any, metrics: Dict[s
             target_col=str(target_col) if target_col else None,
             extra={
                 "family": family,
-                "note": "P2.1 bundle inicial: model.bin puede ser placeholder hasta implementar dump real por estrategia.",
+                "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
             },
         )
         write_json(bp.predictor_json, manifest)
 
-        # Placeholders (no romper si ya existen)
+        # ------------------------------------------------------------
+        # 3) preprocess.json placeholder (si no existe)
+        # ------------------------------------------------------------
         if not bp.preprocess_json.exists():
-            write_json(bp.preprocess_json, {"schema_version": 1, "notes": "placeholder P2.1"})
+            write_json(bp.preprocess_json, {"schema_version": 1, "notes": "placeholder P2.x"})
 
+        # ------------------------------------------------------------
+        # 4) Fallback: si NO hubo persistencia real, dejar placeholder
+        # ------------------------------------------------------------
         if not bp.model_bin.exists():
-            # No escribimos bytes reales aún (depende de estrategia). Un placeholder simple.
             bp.model_bin.write_bytes(b"PLACEHOLDER_MODEL_BIN_P2_1")
 
     except Exception:
@@ -1651,6 +1687,9 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             model_name=str(req_norm.modelo),
             job_id=str(job_id),
         )
+        # Asegurar run_id en métricas para que predictor.json quede consistente.
+        final_metrics.setdefault("run_id", str(run_id))
+
         run_dir = save_run(
             run_id=str(run_id),
             job_id=str(job_id),
@@ -1662,8 +1701,14 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             history=history,
         )
 
-        # P2.1 (best-effort): persistir predictor bundle para futura inferencia.
-        _try_write_predictor_bundle(run_dir=run_dir, req_norm=req_norm, metrics=final_metrics)
+        # (best-effort): persistir predictor bundle + modelo serializado para inferencia.
+        # Importante: NO debe romper P0 si falla; solo deja bundle en placeholder.
+        _try_write_predictor_bundle(
+            run_dir=run_dir,
+            req_norm=req_norm,
+            metrics=final_metrics,
+            strategy=strategy,
+        )
 
 
         # 7) Champion (si aplica) - usar metrics.json como contrato (incluye params.req)

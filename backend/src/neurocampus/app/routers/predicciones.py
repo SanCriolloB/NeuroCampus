@@ -67,8 +67,19 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
         # Esto mantiene compatibilidad con tests P2.2 (resolve) que no crean feature-pack.
         if req.input_uri and str(req.input_uri).strip().lower() == "feature_pack":
             dataset_id = str(loaded.predictor.get("dataset_id") or req.dataset_id or "")
-            feature_df, _meta = load_feature_pack(dataset_id=dataset_id, kind="train")
-            # TODO(P2.3.x): usar feature_df para inferencia real con el modelo cargado desde run_dir/model/
+            if not dataset_id:
+                raise HTTPException(status_code=422, detail="No se pudo resolver dataset_id para cargar feature_pack")
+
+            try:
+                feature_df, _meta = load_feature_pack(dataset_id=dataset_id, kind="train")
+            except FileNotFoundError as e:
+                # Si el server está apuntando a otra carpeta de artifacts o no existe el pack, que sea claro.
+                raise HTTPException(status_code=404, detail=str(e)) from e
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
+
+            # TODO(P2.3.x): usar feature_df para inferencia real con modelo en run_dir/model/
+
 
         
         # Ejecutar la inferencia

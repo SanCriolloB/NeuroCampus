@@ -32,7 +32,11 @@ from neurocampus.predictions.loader import (
     load_predictor_by_champion,
     load_predictor_by_run_id,
 )
-from neurocampus.services.predictions_service import InferenceNotAvailableError, predict_from_feature_pack
+from neurocampus.services.predictions_service import (
+    InferenceNotAvailableError,
+    predict_from_feature_pack,
+    save_predictions_parquet,
+)
 from neurocampus.utils.paths import artifacts_dir, rel_artifact_path
 from neurocampus.predictions.bundle import bundle_paths
 from neurocampus.data.features_prepare import load_feature_pack
@@ -148,6 +152,7 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
         )
 
         predictions = None
+        predictions_uri = None
         out_schema = None
         warnings = None
         model_info = None
@@ -190,6 +195,34 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
             }
             note = "P2.4: inferencia ejecutada desde feature_pack."
 
+
+        # ------------------------------------------------------------
+        # P2.4-C: persistencia opt-in
+        #
+        # Si `persist=true`, guardamos predictions.parquet bajo artifacts/predictions/
+        # y devolvemos `predictions_uri` para consumo posterior.
+        # ------------------------------------------------------------
+        if bool(getattr(req, "persist", False)):
+            if not do_inference:
+                raise HTTPException(status_code=422, detail="persist requiere do_inference=true")
+
+            # Intentar resolver family de forma robusta
+            extra = loaded.predictor.get("extra") if isinstance(loaded.predictor, dict) else None
+            fam_val = req.family
+            if not fam_val and isinstance(extra, dict):
+                fam_val = extra.get("family")
+
+            paths = save_predictions_parquet(
+                run_id=loaded.run_id,
+                dataset_id=dataset_id,
+                family=str(fam_val) if fam_val else None,
+                input_level=input_level,
+                predictions=predictions or [],
+                schema=out_schema,
+            )
+            predictions_uri = rel_artifact_path(paths["predictions"])
+            note = note + f" Persistido en {predictions_uri}."
+
         # Nota: evitamos relativizar Paths porque en tests se sobreescribe NC_ARTIFACTS_DIR
         # luego de import-time en algunos módulos. Este string es el contrato estable.
         run_dir_logical = f"artifacts/runs/{loaded.run_id}"
@@ -201,6 +234,7 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
             predictor=loaded.predictor,
             preprocess=loaded.preprocess,
             predictions=predictions,
+            predictions_uri=predictions_uri,
             model_info=model_info,
             output_schema=out_schema,
             warnings=warnings,

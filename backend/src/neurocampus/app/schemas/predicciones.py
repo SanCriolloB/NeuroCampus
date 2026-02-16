@@ -46,6 +46,28 @@ class PredictRequest(BaseModel):
         description="Si true, resuelve run_id desde champion.json usando dataset_id/family.",
     )
 
+    # P2.4: control explícito de inferencia (mantiene compatibilidad con P2.2)
+    do_inference: bool = Field(
+        default=False,
+        description="Si true, ejecuta inferencia. Si false, solo resuelve/valida el bundle (P2.2).",
+    )
+
+    # Selección del feature_pack
+    input_level: Optional[str] = Field(
+        default=None,
+        description="Nivel de entrada: row|pair. Si None, se usa predictor.json[input_level].",
+    )
+    limit: int = Field(default=50, ge=1, le=500, description="Máximo de filas a predecir (para respuestas pequeñas).")
+    offset: int = Field(default=0, ge=0, description="Offset posicional dentro del feature_pack.")
+    ids: Optional[list[int]] = Field(
+        default=None,
+        description="Índices posicionales a predecir (toma prioridad sobre offset/limit).",
+    )
+    return_proba: bool = Field(
+        default=True,
+        description="Si true, incluye probabilidades para clasificación (cuando el modelo lo soporte).",
+    )
+
     # Para P2.3+ (cuando haya inferencia real)
     input_uri: Optional[str] = Field(default=None, description="Fuente de datos a predecir (parquet/csv).")
     data_source: str = Field(default="feature_pack", description="Origen de datos: feature_pack (default).")
@@ -57,7 +79,7 @@ class PredictRequest(BaseModel):
         description="Opcional. Para integraciones futuras; actualmente se infiere del run/champion.",
     )
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
 
 
 class PredictResolvedResponse(BaseModel):
@@ -70,7 +92,29 @@ class PredictResolvedResponse(BaseModel):
     predictor: Dict[str, Any] = Field(description="Contenido de predictor.json")
     preprocess: Dict[str, Any] = Field(description="Contenido de preprocess.json (puede ser vacío).")
 
+    # P2.4: salida de inferencia (opcional). Si no hay inferencia, estos campos serán None.
+    predictions: Optional[list[Dict[str, Any]]] = Field(
+        default=None,
+        description="Predicciones normalizadas (row/pair).",
+    )
+    model_info: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Metadatos del modelo/run usados para inferir (subset estable para UI).",
+    )
+    output_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        validation_alias=AliasChoices("schema", "output_schema"),
+        serialization_alias="schema",
+        description="Esquema de salida (campos/probabilidades).",
+    )
+    warnings: Optional[list[str]] = Field(
+        default=None,
+        description="Advertencias (fallbacks, supuestos, etc.).",
+    )
+
     note: str = Field(description="Nota informativa del estado del endpoint.")
+
+    model_config = ConfigDict(protected_namespaces=())
 
 
 

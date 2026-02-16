@@ -29,6 +29,8 @@ mapee a 404/422 de forma consistente.
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,6 +42,7 @@ import pandas as pd
 
 from neurocampus.predictions.loader import LoadedPredictorBundle, PredictorNotReadyError
 from neurocampus.data.features_prepare import load_feature_pack
+from neurocampus.utils.paths import artifacts_dir, safe_segment
 
 
 class InferenceNotAvailableError(RuntimeError):
@@ -295,3 +298,51 @@ def predict_from_feature_pack(
         warnings.append("input_level=pair: las predicciones son por par docente-materia")
 
     return predictions, schema, warnings
+
+
+def save_predictions_parquet(
+    *,
+    run_id: str,
+    dataset_id: str,
+    family: Optional[str],
+    input_level: str,
+    predictions: List[Dict[str, Any]],
+    schema: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Path]:
+    """Persiste predicciones en artifacts para consumo posterior.
+
+    Layout (P2.4-C)
+    -------------
+    ``artifacts/predictions/<dataset_id>/<family>/<run_id>/<input_level>/predictions.parquet``
+
+    Notes:
+    - Este método NO asume HTTP. Retorna paths absolutos para que el router decida
+      cómo exponerlos (p.ej. vía :func:`neurocampus.utils.paths.rel_artifact_path`).
+    - Si `predictions` está vacío, se escribe un parquet vacío (válido para flujos batch).
+    """
+
+    ds = safe_segment(dataset_id)
+    fam = safe_segment(family) if family else "no_family"
+    rid = safe_segment(run_id)
+    lvl = safe_segment(input_level or "row")
+
+    out_dir = artifacts_dir() / "predictions" / ds / fam / rid / lvl
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = out_dir / "predictions.parquet"
+
+    # Aplanamos nested dicts (p.ej. proba.{neg,neu,pos}) a columnas.
+    df = pd.json_normalize(predictions, sep=".")
+    df.to_parquet(parquet_path, index=False)
+
+    paths: Dict[str, Path] = {"predictions": parquet_path}
+
+    if schema is not None:
+        schema_path = out_dir / "schema.json"
+        schema_path.write_text(
+            json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        paths["schema"] = schema_path
+
+    return paths

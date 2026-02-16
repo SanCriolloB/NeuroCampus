@@ -1,7 +1,10 @@
 # P2 — Predicciones (Backend) — Runbook + Contratos
 
-Este documento describe la fase P2 del backend: **predicción/inferencia** usando artifacts generados en P0/P1
-(feature-pack, runs, champions). No toca frontend.
+Este documento describe la fase P2 del backend enfocada en **resolver y validar el predictor bundle** (P2.2)
+usando artifacts generados en P0/P1 (feature-pack, runs, champions).
+
+> Nota: en P2.2 el endpoint `/predicciones/predict` **no ejecuta inferencia real**; solo resuelve el `run_id`,
+> valida el bundle y retorna metadata. La inferencia real está prevista para P2.4+.
 
 ## Conceptos
 
@@ -75,26 +78,41 @@ La inferencia se soporta por **run_id** o por **champion**.
 2) Leer `source_run_id`
 3) Continuar como run_id
 
-## Endpoints previstos (P2)
+## Endpoints implementados (P2.2)
 
-> Se implementarán en P2.x. Esta sección es el contrato inicial para integración.
-
-### POST /predicciones/predict
-Entrada posible:
-- Por run: `{ "run_id": "...", "dataset_id": "...", "input_uri": "...", "data_source": "feature_pack" }`
-- Por champion: `{ "family": "...", "dataset_id": "...", "input_uri": "...", "use_champion": true }`
-
-Salida:
-- `predictions_uri` o `predictions` (según tamaño; para datasets grandes preferir artifact parquet)
-- `run_id` resuelto
-- `model_name`, `task_type`
-- `summary` (n_rows, columnas output, warnings)
+En P2.2 hay dos endpoints estables:
+- `GET /predicciones/health`
+- `POST /predicciones/predict` (**resolve/validate**, sin inferencia)
 
 ### GET /predicciones/health
-Retorna:
-- estado del servicio
-- ruta artifacts base
-- versión del contrato P2
+Devuelve estado y la ruta efectiva de artifacts.
+
+Ejemplo:
+```bash
+curl -s "http://127.0.0.1:8000/predicciones/health"
+```
+
+### POST /predicciones/predict
+**Objetivo:** resolver `run_id` y validar el bundle mínimo de inferencia.
+
+Request (modo run_id directo):
+```json
+{ "run_id": "2025-1__rbm_general__20260216T003747Z__b56428df" }
+```
+
+Request (modo champion):
+```json
+{ "use_champion": true, "dataset_id": "2025-1", "family": "sentiment_desempeno" }
+```
+
+#### Códigos de respuesta esperados
+- `200`: bundle resuelto y válido.
+- `404`: no existe el champion o no existe el bundle del run (por ejemplo faltan `predictor.json`/`model.bin`).
+- `422`: request inválido o predictor “no listo”.
+  - Ejemplos:
+    - `champion.json` existe pero no incluye `source_run_id`.
+    - `model.bin` existe pero es placeholder/no listo.
+- `500`: solo para errores inesperados.
 
 ## Variables de entorno (P2)
 
@@ -107,10 +125,46 @@ Retorna:
 
 ## Verificación (manual)
 
-### Resolver run_id desde entrenamiento (P0/P1)
-1) Entrenar: `POST /modelos/entrenar` => `job_id`
-2) Estado: `GET /modelos/estado/<job_id>` => `run_id`
-
-### Verificar artifacts de run
+### 1) Levantar backend
+Ejemplo (ajusta según tu entorno):
 ```bash
-ls -1 artifacts/runs/<run_id>
+uvicorn neurocampus.app.main:app --reload --app-dir backend/src
+```
+
+### 2) Health
+```bash
+curl -s "http://127.0.0.1:8000/predicciones/health"
+```
+
+### 3) Resolver por run_id
+```bash
+curl -s -X POST "http://127.0.0.1:8000/predicciones/predict" \
+  -H "Content-Type: application/json" \
+  -d '{ "run_id": "<run_id>" }'
+```
+
+### 4) Resolver por champion
+Primero promueve un run a champion (P0/P1):
+```bash
+curl -s -X POST "http://127.0.0.1:8000/modelos/champion/promote" \
+  -H "Content-Type: application/json" \
+  -d '{ "dataset_id": "<dataset_id>", "family": "<family>", "run_id": "<run_id>" }'
+```
+
+Luego resuelve:
+```bash
+curl -s -X POST "http://127.0.0.1:8000/predicciones/predict" \
+  -H "Content-Type: application/json" \
+  -d '{ "use_champion": true, "dataset_id": "<dataset_id>", "family": "<family>" }'
+```
+
+### 5) Verificar bundle en disco
+```bash
+ls -la artifacts/runs/<run_id>
+cat artifacts/runs/<run_id>/predictor.json
+cat artifacts/runs/<run_id>/preprocess.json
+```
+
+> Si al resolver por champion obtienes 404 indicando que faltan `predictor.json`/`model.bin`,
+> es muy probable que el champion esté apuntando a un run “viejo” o incompleto.
+> La solución recomendada es promover como champion un run nuevo que sí tenga bundle completo.

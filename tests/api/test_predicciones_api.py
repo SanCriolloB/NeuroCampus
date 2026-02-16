@@ -124,3 +124,34 @@ def test_predicciones_predict_placeholder_422(client, artifacts_dir: Path, monke
 
     r = client.post("/predicciones/predict", json={"run_id": run_id})
     assert r.status_code == 422, r.text
+
+
+def test_predicciones_predict_run_not_found_404(client, artifacts_dir: Path, monkeypatch):
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+
+    run_id = "run_missing_bundle"
+    r = client.post("/predicciones/predict", json={"run_id": run_id})
+
+    assert r.status_code == 404, r.text
+    detail = r.json().get("detail", "")
+    assert run_id in detail
+
+
+def test_predicciones_predict_champion_points_to_missing_run_404(client, artifacts_dir: Path, monkeypatch):
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_missing_bundle_champ"
+    dataset_id = "ds_champ_missing_bundle"
+    family = "sentiment_desempeno"
+
+    _write_champion(base, family=family, dataset_id=dataset_id, run_id=run_id)
+
+    r = client.post(
+        "/predicciones/predict",
+        json={"use_champion": True, "dataset_id": dataset_id, "family": family},
+    )
+
+    assert r.status_code == 404, r.text
+    detail = r.json().get("detail", "")
+    assert run_id in detail

@@ -15,6 +15,8 @@ import {
   getRankings,
   getSentimiento,
   getSeries,
+  getRadar,
+  getWordcloud,
   listPeriodos,
 } from "@/services/dashboard";
 
@@ -26,6 +28,8 @@ import type {
   DashboardSentimiento,
   DashboardFilters,
   DashboardStatus,
+  DashboardRadar,
+  DashboardWordcloud,
 } from "@/services/dashboard";
 
 // Valor especial para consultar todo el histórico (rango min..max)
@@ -126,6 +130,10 @@ export function DashboardTab() {
   const [rankDocentes, setRankDocentes] = useState<DashboardRankings | null>(null);
   const [rankAsignaturas, setRankAsignaturas] = useState<DashboardRankings | null>(null);
   const [sentimiento, setSentimientoState] = useState<DashboardSentimiento | null>(null);
+
+  const [radarHistorico, setRadarHistorico] = useState<DashboardRadar | null>(null);
+  const [radarActual, setRadarActual] = useState<DashboardRadar | null>(null);
+  const [wordcloud, setWordcloud] = useState<DashboardWordcloud | null>(null);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -229,22 +237,27 @@ export function DashboardTab() {
           ...common,
         };
 
+    const rankingOrder: "asc" | "desc" = rankingMode === "best" ? "desc" : "asc";
+
     let alive = true;
     setLoading(true);
     setError(null);
 
     async function load() {
       try {
-        const [cat, k, sScore, sEval, rDoc, rAsig, sent] = await Promise.all([
+        const [cat, k, sScore, sEval, rDoc, rAsig, sent, radHist, radAct, wc] = await Promise.all([
           getCatalogos(catalogosFilters),
           getKpis(periodoFilters),
           getSeries({ metric: "score_promedio", ...rangeFilters }),
           getSeries({ metric: "evaluaciones", ...rangeFilters }),
           // Rankings pueden estar temporalmente no disponibles; no deben tumbar la pestaña.
-          getRankings({ by: "docente", metric: "score_promedio", limit: 8, ...periodoFilters }).catch(() => null),
+          getRankings({ by: "docente", metric: "score_promedio", order: rankingOrder, limit: 8, ...periodoFilters }).catch(() => null),
           getRankings({ by: "asignatura", metric: "evaluaciones", limit: 8, ...periodoFilters }).catch(() => null),
           // Sentimiento depende de histórico labeled; si no existe aún, el backend puede responder 404.
           getSentimiento(periodoFilters).catch(() => null),
+          getRadar({ periodoFrom, periodoTo, ...common }).catch(() => null),
+          getRadar(periodoFilters).catch(() => null),
+          getWordcloud({ limit: 80, ...periodoFilters }).catch(() => null),
         ]);
 
         if (!alive) return;
@@ -270,6 +283,9 @@ export function DashboardTab() {
         setRankDocentes(rDoc);
         setRankAsignaturas(rAsig);
         setSentimientoState(sent);
+        setRadarHistorico(radHist);
+        setRadarActual(radAct);
+        setWordcloud(wc);
       } catch (e: any) {
         if (!alive) return;
         setError(e?.message ? String(e.message) : "Error cargando dashboard");
@@ -283,7 +299,7 @@ export function DashboardTab() {
     return () => {
       alive = false;
     };
-  }, [semester, subject, teacher, periodos, periodoFromStore, periodoToStore]);
+  }, [semester, subject, teacher, periodos, periodoFromStore, periodoToStore, rankingMode]);
 
   // Generate dynamic data based on filters
   // Datos derivados para la UI: conservamos exactamente la misma estructura que
@@ -361,7 +377,6 @@ const dashboardData = useMemo(() => {
       name: it.name,
       score: Math.round(normalizeScoreForDashboard(it.value)),
     }))
-    .sort((a, b) => (rankingMode === "best" ? b.score - a.score : a.score - b.score))
     .slice(0, 8);
 
   // Riesgo por asignatura: el backend provee rankings por asignatura (métrica evaluaciones).
@@ -398,21 +413,43 @@ const dashboardData = useMemo(() => {
           return { real: Math.round(real), predicted: Math.round(predicted) };
         });
 
-  // Radar (10 indicadores) — derivado del score promedio, sin aleatoriedad.
+  // Radar (10 indicadores) — usa /dashboard/radar cuando está disponible.
+  const indicatorLabels = [
+    "Planificación",
+    "Metodología",
+    "Claridad",
+    "Evaluación",
+    "Materiales",
+    "Interacción",
+    "Retroalimentación",
+    "Innovación",
+    "Puntualidad",
+    "Disponibilidad",
+  ];
+
+  const radarHistMap = new Map((radarHistorico?.items || []).map((it) => [it.key, it.value]));
+  const radarActMap = new Map((radarActual?.items || []).map((it) => [it.key, it.value]));
+  const hasRadarApi =
+    (radarHistorico?.items?.length || 0) > 0 && (radarActual?.items?.length || 0) > 0;
+
+  // Fallback visual: mantener comportamiento anterior si el endpoint aún no está disponible.
   const baseLikert = 3.0 + ((avgScore - 70) / 20) * 2.0; // ~3..5
   const bump = semester ? 0.1 : 0;
-  const radarData = [
-    { indicator: "Planificación", historico: baseLikert, actual: baseLikert + bump },
-    { indicator: "Metodología", historico: baseLikert + 0.1, actual: baseLikert + 0.2 + bump },
-    { indicator: "Claridad", historico: baseLikert - 0.1, actual: baseLikert + bump },
-    { indicator: "Evaluación", historico: baseLikert, actual: baseLikert + 0.1 + bump },
-    { indicator: "Materiales", historico: baseLikert + 0.05, actual: baseLikert + 0.15 + bump },
-    { indicator: "Interacción", historico: baseLikert + 0.15, actual: baseLikert + 0.25 + bump },
-    { indicator: "Retroalimentación", historico: baseLikert, actual: baseLikert + 0.1 + bump },
-    { indicator: "Innovación", historico: baseLikert - 0.05, actual: baseLikert + 0.05 + bump },
-    { indicator: "Puntualidad", historico: baseLikert + 0.1, actual: baseLikert + 0.2 + bump },
-    { indicator: "Disponibilidad", historico: baseLikert + 0.2, actual: baseLikert + 0.3 + bump },
-  ];
+
+  const radarData = indicatorLabels.map((label, idx) => {
+    const key = `pregunta_${idx + 1}`;
+    if (hasRadarApi) {
+      const h = radarHistMap.get(key);
+      const a = radarActMap.get(key);
+      const historico = typeof h === "number" && Number.isFinite(h) ? h / 10 : 0;
+      const actual = typeof a === "number" && Number.isFinite(a) ? a / 10 : historico;
+      return { indicator: label, historico, actual };
+    }
+
+    const offsets = [0, 0.1, -0.1, 0, 0.05, 0.15, 0, -0.05, 0.1, 0.2];
+    const off = offsets[idx] ?? 0;
+    return { indicator: label, historico: baseLikert + off, actual: baseLikert + off + 0.1 + bump };
+  });
 
   return {
     kpiData,
@@ -423,10 +460,26 @@ const dashboardData = useMemo(() => {
     scatterData,
     radarData,
   };
-}, [kpis, seriesScore, seriesEvaluaciones, rankDocentes, rankAsignaturas, semester, subject, teacher, rankingMode, periodos]);
+}, [kpis, seriesScore, seriesEvaluaciones, rankDocentes, rankAsignaturas, radarHistorico, radarActual, semester, subject, teacher, rankingMode, periodos]);
+
+  // Wordcloud: usa /dashboard/wordcloud cuando está disponible; fallback a datos mock.
+  const wordCloudItems = useMemo(() => {
+    const apiItems = wordcloud?.items || [];
+    if (apiItems.length > 0) {
+      return apiItems
+        .filter((it) => it && typeof it.text === "string")
+        .map((it) => ({
+          word: it.text,
+          count: Number(it.value ?? 0),
+          sentiment: "neutral" as const,
+        }))
+        .filter((it) => it.word.trim().length > 0 && Number.isFinite(it.count) && it.count > 0);
+    }
+    return wordCloudData;
+  }, [wordcloud]);
 
   // Calculate word sizes for word cloud
-  const maxCount = Math.max(...wordCloudData.map(w => w.count));
+  const maxCount = Math.max(...wordCloudItems.map(w => w.count), 1);
   const getWordSize = (count: number) => 12 + (count / maxCount) * 24;
   const getWordColor = (sentiment: string) => {
     switch (sentiment) {
@@ -829,7 +882,7 @@ const dashboardData = useMemo(() => {
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
             <h3 className="text-white mb-4">Nube de Palabras - Análisis de Sentimientos</h3>
             <div className="flex flex-wrap gap-3 justify-center items-center min-h-[300px] p-8">
-              {wordCloudData.map((item, index) => (
+              {wordCloudItems.map((item, index) => (
                 <motion.span
                   key={index}
                   initial={{ opacity: 0, scale: 0 }}

@@ -47,10 +47,13 @@ from neurocampus.dashboard.queries import (
 # Constantes y detección de columnas (defensivo)
 # ---------------------------------------------------------------------------
 
-# Preferimos score_total (labeled) si existe; en processed puede no existir.
+# Preferimos score canónico en escala 0–50 si existe; en processed se deriva si falta.
 _SCORE_CANDIDATES: Sequence[str] = (
+    "score_total_0_50",
+    "score_base_0_50",
     "score_total",
     "score",
+    "rating",
     "score_promedio",
     "promedio",
     "calificacion",
@@ -81,21 +84,22 @@ def _first_existing_col(df: pd.DataFrame, candidates: Sequence[str]) -> Optional
 
 
 def _detect_score_col(df: pd.DataFrame) -> Optional[str]:
-    """Detecta una columna numérica de score para agregaciones.
+    """Detecta una columna de score para agregaciones (defensivo).
 
-    La intención es mantener retro-compatibilidad entre datasets donde el score
-    pueda llamarse distinto (p.ej. ``score_total`` en labeled).
+    Priorizamos nombres canónicos en escala 0–50 (p.ej. ``score_total_0_50``)
+    y mantenemos compatibilidad con históricos que expongan ``score_total``/``score``.
+
+    Notes
+    -----
+    - A diferencia de una heurística "primera columna numérica", aquí **no**
+      hacemos fallback a columnas numéricas arbitrarias (IDs, cédulas, etc.).
+      Si no se detecta una columna conocida, retornamos ``None`` para que el
+      router responda con un error explícito.
     """
     for c in _SCORE_CANDIDATES:
         if c in df.columns:
             return c
-    # Fallback: primera columna numérica (excluyendo ids/textos comunes).
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    if not numeric_cols:
-        return None
-    # Orden determinista por nombre.
-    numeric_cols.sort(key=lambda x: str(x))
-    return str(numeric_cols[0])
+    return None
 
 
 def _require_columns(df: pd.DataFrame, required: Iterable[str]) -> None:
@@ -227,7 +231,10 @@ def series_por_periodo(metric: str, filters: DashboardFilters) -> List[Dict[str,
     else:  # score_promedio
         score_col = _detect_score_col(df)
         if score_col is None:
-            raise ValueError("No se pudo detectar columna de score para score_promedio")
+            raise ValueError(
+                "No se pudo detectar columna de score para score_promedio. "
+                f"candidates={list(_SCORE_CANDIDATES)}"
+            )
         ser = grouped[score_col].apply(_safe_mean)
 
     # Asegurar orden UX consistente (periodos ordenados).
@@ -313,7 +320,10 @@ def rankings(
     else:
         score_col = _detect_score_col(df)
         if score_col is None:
-            raise ValueError("No se pudo detectar columna de score para rankings score_promedio")
+            raise ValueError(
+                "No se pudo detectar columna de score para rankings score_promedio. "
+                f"candidates={list(_SCORE_CANDIDATES)}"
+            )
         agg = grouped[score_col].apply(_safe_mean).astype(float)
 
     asc = order == "asc"

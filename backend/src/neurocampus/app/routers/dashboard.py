@@ -50,6 +50,8 @@ from neurocampus.dashboard.aggregations import (
     series_por_periodo,
 )
 
+from neurocampus.app.schemas.dashboard import DashboardWordcloud, DashboardWordcloudItem
+
 from neurocampus.dashboard.queries import (
     DashboardFilters,
     apply_filters,
@@ -258,6 +260,44 @@ def dashboard_radar(
         for r in (rows or [])
     ]
     return DashboardRadar(items=items)
+
+
+@router.get("/wordcloud", response_model=DashboardWordcloud)
+def dashboard_wordcloud(
+    limit: int = Query(80, description="Cantidad máxima de tokens.", ge=1, le=500),  # noqa: B008
+    periodo: Optional[str] = Query(None, description="Periodo exacto (prioriza sobre rango)."),  # noqa: B008
+    periodo_from: Optional[str] = Query(None, description="Inicio de rango (incl.)."),  # noqa: B008
+    periodo_to: Optional[str] = Query(None, description="Fin de rango (incl.)."),  # noqa: B008
+    docente: Optional[str] = Query(None, description="Filtro por docente (opcional)."),  # noqa: B008
+    asignatura: Optional[str] = Query(None, description="Filtro por asignatura (opcional)."),  # noqa: B008
+    programa: Optional[str] = Query(None, description="Filtro por programa (opcional)."),  # noqa: B008
+) -> DashboardWordcloud:
+    """Wordcloud (top términos) desde histórico labeled.
+
+    Devuelve los tokens más frecuentes a partir del texto procesado en
+    ``historico/unificado_labeled.parquet``.
+
+    Respuestas
+    ----------
+    - 200: lista (posiblemente vacía) de tokens y sus frecuencias
+    - 404: histórico labeled no disponible
+    """
+    filters = _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa)
+
+    from neurocampus.dashboard.aggregations import wordcloud_terms
+
+    try:
+        rows = wordcloud_terms(filters, limit=limit)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    items = [
+        DashboardWordcloudItem(text=str(r.get("text")), value=int(r.get("value") or 0))
+        for r in (rows or [])
+    ]
+    return DashboardWordcloud(items=items)
 
 @router.get("/sentimiento", response_model=DashboardSentimiento)
 def dashboard_sentimiento(

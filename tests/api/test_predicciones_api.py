@@ -293,6 +293,32 @@ def test_predicciones_model_info_run_not_found_404(client, artifacts_dir: Path, 
     assert r.status_code == 404, r.text
 
 
+def test_predicciones_cache_isolated_by_artifacts_dir(client, artifacts_dir: Path, monkeypatch):
+    """El cache LRU debe aislarse por NC_ARTIFACTS_DIR.
+
+    Si cambiamos NC_ARTIFACTS_DIR entre requests, no debe re-usar el bundle
+    cacheado del directorio anterior.
+    """
+
+    # artifacts A
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base_a = artifacts_dir
+
+    run_id = "run_cache_isolation"
+    _write_real_run_bundle(base_a, run_id=run_id, dataset_id="ds_cache")
+
+    r1 = client.post("/predicciones/predict", json={"run_id": run_id})
+    assert r1.status_code == 200, r1.text
+
+    # artifacts B (vacío)
+    base_b = artifacts_dir.parent / "artifacts_b"
+    base_b.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(base_b))
+
+    r2 = client.post("/predicciones/predict", json={"run_id": run_id})
+    assert r2.status_code == 404, r2.text
+
+
 def test_predicciones_predict_feature_pack_inference_ok(client, artifacts_dir: Path, monkeypatch):
     """Smoke test P2.4: inferencia opt-in desde feature_pack (train_matrix.parquet)."""
 

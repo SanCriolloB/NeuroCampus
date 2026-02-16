@@ -68,6 +68,11 @@ class PredictRequest(BaseModel):
         description="Si true, incluye probabilidades para clasificación (cuando el modelo lo soporte).",
     )
 
+    persist: bool = Field(
+        default=False,
+        description="Si true, persiste predictions.parquet en artifacts/predictions/... y retorna predictions_uri.",
+    )
+
     # Para P2.3+ (cuando haya inferencia real)
     input_uri: Optional[str] = Field(default=None, description="Fuente de datos a predecir (parquet/csv).")
     data_source: str = Field(default="feature_pack", description="Origen de datos: feature_pack (default).")
@@ -96,6 +101,11 @@ class PredictResolvedResponse(BaseModel):
     predictions: Optional[list[Dict[str, Any]]] = Field(
         default=None,
         description="Predicciones normalizadas (row/pair).",
+    )
+
+    predictions_uri: Optional[str] = Field(
+        default=None,
+        description="Ruta lógica donde se persistieron las predicciones (cuando persist=true).",
     )
     model_info: Optional[Dict[str, Any]] = Field(
         default=None,

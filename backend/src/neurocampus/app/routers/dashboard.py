@@ -38,10 +38,17 @@ from neurocampus.app.schemas.dashboard import (
     DashboardSentimientoBucket,
     DashboardRankings,
     DashboardRankingItem,
+    DashboardRadar,
+    DashboardRadarItem,
     DashboardStatus,
     FileStatus,
 )
-from neurocampus.dashboard.aggregations import series_por_periodo, sentimiento_distribucion, rankings
+from neurocampus.dashboard.aggregations import (
+    rankings,
+    radar_preguntas,
+    sentimiento_distribucion,
+    series_por_periodo,
+)
 
 from neurocampus.dashboard.queries import (
     DashboardFilters,
@@ -217,6 +224,40 @@ def dashboard_series(
         for p in points
     ]
     return DashboardSeries(metric=metric, points=out_points)
+
+@router.get("/radar", response_model=DashboardRadar)
+def dashboard_radar(
+    periodo: Optional[str] = Query(None, description="Periodo exacto (prioriza sobre rango)."),  # noqa: B008
+    periodo_from: Optional[str] = Query(None, description="Inicio de rango (incl.)."),  # noqa: B008
+    periodo_to: Optional[str] = Query(None, description="Fin de rango (incl.)."),  # noqa: B008
+    docente: Optional[str] = Query(None, description="Filtro por docente (opcional)."),  # noqa: B008
+    asignatura: Optional[str] = Query(None, description="Filtro por asignatura (opcional)."),  # noqa: B008
+    programa: Optional[str] = Query(None, description="Filtro por programa (opcional)."),  # noqa: B008
+) -> DashboardRadar:
+    """Radar de indicadores (promedio de preguntas 1..10).
+
+    El Dashboard usa este endpoint para construir el radar "Perfil Global de Indicadores".
+
+    Notas
+    -----
+    - Se basa únicamente en histórico processed (``historico/unificado.parquet``).
+    - El output está en la escala del histórico (típicamente 0–50).
+      Si el frontend desea 0–5, puede dividir por 10.
+    """
+    filters = _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa)
+
+    try:
+        rows = radar_preguntas(filters)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    items = [
+        DashboardRadarItem(key=str(r.get("key")), value=float(r.get("value") or 0.0))
+        for r in (rows or [])
+    ]
+    return DashboardRadar(items=items)
 
 @router.get("/sentimiento", response_model=DashboardSentimiento)
 def dashboard_sentimiento(

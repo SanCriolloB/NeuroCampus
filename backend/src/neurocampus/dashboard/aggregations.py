@@ -31,6 +31,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import ast
+import re
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 
@@ -618,3 +622,153 @@ def sentimiento_serie_por_periodo(filters: DashboardFilters) -> List[Dict[str, A
             )
 
     return points
+
+
+# ---------------------------------------------------------------------------
+# Wordcloud (histórico labeled)
+# ---------------------------------------------------------------------------
+
+_TOKEN_RE = re.compile(r"^[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]+$")
+
+# Stopwords mínimas (no exhaustivas). El objetivo es evitar ruido en wordcloud.
+_STOPWORDS = {
+    "de","la","el","y","a","en","que","los","las","un","una","por","para","con","del","al","se",
+    "es","no","si","muy","mas","más","pero","como","lo","le","les","su","sus","mi","mis","tu","tus",
+}
+
+
+def _iter_wordcloud_tokens(value: Any) -> Iterable[str]:
+    """Extrae tokens desde una celda de texto/lemmas.
+
+    Soporta valores:
+    - list/tuple/set de tokens
+    - string con tokens separados por espacios/','/';'
+    - string con representación de lista (ej: "['a','b']")
+    """
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return
+    if isinstance(value, (list, tuple, set)):
+        for t in value:
+            if t is None:
+                continue
+            yield str(t)
+        return
+    if not isinstance(value, str):
+        return
+
+    s = value.strip()
+    if not s:
+        return
+
+    # Intentar parsear listas serializadas como string.
+    if s.startswith("[") and s.endswith("]"):
+        try:
+            parsed = ast.literal_eval(s)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, (list, tuple, set)):
+            for t in parsed:
+                if t is None:
+                    continue
+                yield str(t)
+            return
+
+    # Fallback: split por separadores comunes.
+    for t in re.split(r"[\s,;]+", s):
+        if t:
+            yield t
+
+
+def _pick_wordcloud_source_column(df: pd.DataFrame) -> Optional[str]:
+    """Elige la mejor columna fuente disponible para wordcloud.
+
+    Nota
+    ----
+    En el histórico labeled, ``sugerencias_lemmatizadas`` puede existir pero estar
+    completamente vacía (todo ``None``) para ciertos periodos. Si la elegimos solo
+    por existencia, el wordcloud queda vacío aunque haya texto en ``texto_lemmas``
+    u otras columnas.
+
+    Esta función elige la primera columna que realmente tenga contenido
+    tokenizable para el DataFrame ya filtrado.
+    """
+    candidates = (
+        "sugerencias_lemmatizadas",
+        "texto_lemmas",
+        "texto_clean",
+        "texto_raw_concat",
+        "comentario",
+        "observaciones",
+    )
+
+    for c in candidates:
+        if c not in df.columns:
+            continue
+
+        nonnull = df[c].dropna()
+        if nonnull.empty:
+            continue
+
+        # Caso especial: sugerencias_lemmatizadas suele ser lista (o string de lista).
+        # Validamos que existan tokens reales antes de escogerla.
+        if c == "sugerencias_lemmatizadas":
+            for raw in nonnull.head(200).tolist():
+                for tok in _iter_wordcloud_tokens(raw):
+                    if str(tok).strip():
+                        return c
+            continue
+
+        # Columnas string: basta con que exista al menos un string no vacío.
+        try:
+            if nonnull.astype(str).str.strip().ne("").any():
+                return c
+        except Exception:
+            for raw in nonnull.head(200).tolist():
+                if isinstance(raw, str) and raw.strip():
+                    return c
+
+    return None
+
+
+def wordcloud_terms(filters: DashboardFilters, limit: int = 80) -> List[Dict[str, Any]]:
+    """Construye wordcloud (top términos) desde histórico labeled.
+
+    Parameters
+    ----------
+    filters:
+        Filtros estándar del dashboard.
+    limit:
+        Cantidad máxima de tokens a retornar (ordenados por frecuencia desc).
+
+    Returns
+    -------
+    list[dict]
+        Lista de items: ``{"text": <token>, "value": <freq>}``.
+    """
+    df = load_labeled()
+    df = apply_filters(df, filters)
+
+    if df is None or df.empty:
+        return []
+
+    src = _pick_wordcloud_source_column(df)
+    if not src:
+        return []
+
+    counter: Counter[str] = Counter()
+    for raw in df[src].dropna().tolist():
+        for tok in _iter_wordcloud_tokens(raw):
+            t = tok.strip().lower()
+            if len(t) < 3:
+                continue
+            if t in _STOPWORDS:
+                continue
+            if not _TOKEN_RE.match(t):
+                continue
+            counter[t] += 1
+
+    if not counter:
+        return []
+
+    items = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[: max(1, int(limit))]
+    return [{"text": k, "value": int(v)} for k, v in items]

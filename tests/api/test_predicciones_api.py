@@ -341,3 +341,88 @@ def test_predicciones_predict_feature_pack_inference_ok(client, artifacts_dir: P
     assert body["predictions"][0]["label"] == "neu"
     assert "proba" in body["predictions"][0]
 
+
+def test_predicciones_predict_feature_pack_inference_persist_ok(client, artifacts_dir: Path, monkeypatch):
+    """P2.4-C: persistencia opt-in de predictions.parquet."""
+
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_test_pickle_infer_persist"
+    dataset_id = "ds_infer_persist"
+    family = "sentiment_desempeno"
+
+    _write_pickled_run_bundle(base, run_id=run_id, dataset_id=dataset_id)
+
+    # Crear feature_pack mínimo
+    feat_dir = base / "features" / dataset_id
+    feat_dir.mkdir(parents=True, exist_ok=True)
+
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "teacher_id": [1, 2, 3],
+            "materia_id": [10, 20, 30],
+            **{f"calif_{i+1}": [1, 2, 3] for i in range(10)},
+        }
+    )
+    df.to_parquet(feat_dir / "train_matrix.parquet", index=False)
+    (feat_dir / "meta.json").write_text(json.dumps({"dataset_id": dataset_id}, indent=2), encoding="utf-8")
+
+    r = client.post(
+        "/predicciones/predict",
+        json={
+            "run_id": run_id,
+            "do_inference": True,
+            "input_uri": "feature_pack",
+            "persist": True,
+            "family": family,
+            "limit": 1,
+            "offset": 0,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body.get("predictions") is not None
+    assert len(body["predictions"]) == 1
+
+    uri = body.get("predictions_uri")
+    assert uri, body
+
+    # Verificar en disco que se escribió el parquet
+    from neurocampus.utils.paths import abs_artifact_path
+
+    parquet_path = abs_artifact_path(uri)
+    assert parquet_path.exists(), f"No existe: {parquet_path} (uri={uri})"
+
+    out_df = pd.read_parquet(parquet_path)
+    assert len(out_df) == 1
+    assert "label" in out_df.columns
+
+    # schema.json opcional (pero recomendado) debe existir
+    schema_path = parquet_path.parent / "schema.json"
+    assert schema_path.exists(), f"No existe schema.json: {schema_path}"
+
+
+
+def test_predicciones_predict_persist_requires_inference_422(client, artifacts_dir: Path, monkeypatch):
+    """Si persist=true pero do_inference=false, debe ser 422."""
+
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_test_pickle_persist_requires_infer"
+    dataset_id = "ds_persist_requires_infer"
+
+    _write_pickled_run_bundle(base, run_id=run_id, dataset_id=dataset_id)
+
+    r = client.post(
+        "/predicciones/predict",
+        json={
+            "run_id": run_id,
+            "persist": True,
+        },
+    )
+    assert r.status_code == 422, r.text

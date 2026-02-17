@@ -1,7 +1,7 @@
 # NeuroCampus
 
 MVP para analizar evaluaciones estudiantiles con **FastAPI (backend)**, **RBM Student** y **NLP (BETO)**.  
-Incluye pipeline de preprocesamiento, entrenamiento y endpoints de predicción con regla costo-sensible.
+Incluye pipeline de preprocesamiento, entrenamiento y endpoints de predicción (**P2.2: resolve/validate del bundle; inferencia real prevista en P2.4+**).
 
 ---
 
@@ -123,23 +123,29 @@ El job crea una carpeta `artifacts/jobs/<JOB_ID>` con:
 - `vectorizer.json`, `rbm.pt`, `head.pt`
 - `job_meta.json`, `metrics.json`
 
-### D) Promover “campeón”
+### D) Promover “champion” (vía API)
+
+En el backend actual, el “champion” se guarda como:
+
+- `artifacts/champions/<family>/<dataset_id>/champion.json`
+
+Para promover un run existente a champion usa:
 
 ```bash
-JOB="artifacts/jobs/<JOB_ID>"              # ← pon aquí el último job
-DEST="artifacts/champions/with_text/current"
-
-rm -rf "$DEST" && mkdir -p "$DEST"
-cp -r "$JOB"/* "$DEST"/
-
-# (opcional) descriptor
-cat > "$DEST/CHAMPION.json" <<'JSON'
-{ "family":"with_text", "selected_at":"(UTC)", "reason":"best macro-F1", "notes":"text+num,minmax,100ep" }
-JSON
-
-# (opcional) variable de entorno para runtime
-echo 'CHAMPION_WITH_TEXT=artifacts/champions/with_text/current' >> .env
+curl -s -X POST "http://127.0.0.1:8000/modelos/champion/promote" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataset_id": "<dataset_id>",
+    "family": "<family>",
+    "model_name": "<model_name>",
+    "run_id": "<run_id>"
+  }'
 ```
+
+> Nota: `model_name` puede ser el nombre del modelo (p.ej. `rbm_general`) y `run_id` es el generado por el entrenamiento.
+
+Opcional (si necesitas cambiar la ruta base de artifacts):
+- `NC_ARTIFACTS_DIR=/ruta/a/artifacts`
 
 ---
 
@@ -152,27 +158,36 @@ uvicorn neurocampus.app.main:app --reload --app-dir backend/src
 # Docs en: http://127.0.0.1:8000/docs
 ```
 
-### Predicción online (con regla costo-sensible)
+### Predicciones (P2.2: resolve/validate del bundle)
 
-El endpoint espera **`input`** con `calificaciones` y `comentario`.  
-El servidor devuelve `proba: [p_neg,p_neu,p_pos]` y `label` ajustada por reglas:
+En **P2.2** el endpoint `/predicciones/predict` **NO ejecuta inferencia real**; solo:
+- resuelve `run_id` (directo o por champion),
+- valida que exista el bundle mínimo del predictor,
+- y retorna metadata.
 
-- si `p_pos ≥ 0.55` ⇒ **pos**
-- si no y `p_neg ≥ 0.35` o `p_neg - p_neu ≥ 0.05` ⇒ **neg**
-- en otro caso ⇒ **neu**
-
-**Ejemplo (Git Bash, heredoc):**
+**Health:**
 ```bash
-curl -s -X POST "http://127.0.0.1:8000/prediccion/online"   -H "Content-Type: application/json; charset=utf-8"   --data-binary @- <<'JSON'
-{"input":{
-  "calificaciones":{"pregunta_1":4.5,"pregunta_2":4.0,"pregunta_3":3.8,"pregunta_4":4.2,"pregunta_5":4.6,
-                    "pregunta_6":4.3,"pregunta_7":4.1,"pregunta_8":4.4,"pregunta_9":4.0,"pregunta_10":4.5},
-  "comentario":"La metodología fue clara y el profesor resolvió dudas con paciencia."
-}}
-JSON
+curl -s "http://127.0.0.1:8000/predicciones/health"
 ```
 
-> Si quieres aceptar también el formato “plano” sin `input`, puedes agregar un endpoint alterno `/prediccion/online_v2` que envuelva el body.
+**Resolver por run_id:**
+```bash
+curl -s -X POST "http://127.0.0.1:8000/predicciones/predict" \
+  -H "Content-Type: application/json" \
+  -d '{ "run_id": "<run_id>" }'
+```
+
+**Resolver por champion:**
+```bash
+curl -s -X POST "http://127.0.0.1:8000/predicciones/predict" \
+  -H "Content-Type: application/json" \
+  -d '{ "use_champion": true, "dataset_id": "<dataset_id>", "family": "<family>" }'
+```
+
+Códigos esperados:
+- `200`: bundle resuelto y válido.
+- `404`: champion no existe o el run/bundle no existe (faltan `predictor.json`/`model.bin`, etc.).
+- `422`: predictor no listo (placeholder) o champion inválido (por ejemplo `champion.json` sin `source_run_id`).
 
 ---
 

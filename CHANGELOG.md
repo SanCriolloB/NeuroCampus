@@ -5,6 +5,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- **Predicciones (P2.2)**: endpoints `/predicciones/health` y `/predicciones/predict` (modo *resolve/validate* del predictor bundle; sin inferencia real).
+
+### Changed
+- **Rutas de predicción**: se reemplazan endpoints legacy `/prediccion/*` por `/predicciones/*` (P2.2).
+- **Champions**: nueva convención `artifacts/champions/<family>/<dataset_id>/champion.json` con `source_run_id` (reemplaza `CHAMPION_WITH_TEXT` y `artifacts/champions/with_text/current/`).
+
+### Fixed
+- **/predicciones/predict**: cuando el bundle del run no existe/incompleto, responde `404` (en lugar de `500`).
+- **Tests**: `NC_ARTIFACTS_DIR` se fuerza a un directorio temporal en `tests/conftest.py` para ejecuciones deterministas.
 
 ## [0.7.0] - 2025-10-14 — Día 7 (Release Closing)
 ### Added
@@ -15,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--type (general|restringida)`, `--use-text-probs`, `--scale-mode (minmax|standard|scale_0_5)`.
   - Hiperparámetros: `--n-hidden`, `--epochs`, `--cd-k`, `--epochs-rbm`, `--batch-size`, `--lr-rbm`, `--lr-head`, `--seed`.
   - Persistencia en `artifacts/jobs/<JOB_ID>`: `vectorizer.json`, `rbm.pt`, `head.pt`, `job_meta.json`, `metrics.json`.
-- **Promoción de campeón**: convención `artifacts/champions/with_text/current/` (binarios + `CHAMPION.json`).
-- **Endpoint de predicción**: reglas costo-sensibles en *facade* (prioriza `pos` si `p_pos≥0.55`, `neg` si `p_neg≥0.35` o `p_neg−p_neu≥0.05`, si no `neu`).
+- **Promoción de champion (legacy 0.7.0)**: convención `artifacts/champions/with_text/current/` (binarios + `CHAMPION.json`). (Reemplazado en P2.2 por `artifacts/champions/<family>/<dataset_id>/champion.json`.)
+- **Endpoint de predicción (legacy 0.7.0)**: reglas costo-sensibles en *facade* (prioriza `pos` si `p_pos≥0.55`, `neg` si `p_neg≥0.35` o `p_neg−p_neu≥0.05`, si no `neu`). (En P2.2, `/predicciones/predict` opera en modo *resolve/validate*; inferencia real prevista para P2.4+.)
 - **Reporte agregado**: `cmd_score_docente` para estimar `prob_bueno_pct` por (`codigo materia`, `grupo`). Intervalo Jeffreys y score combinado (sentimiento + calificaciones).
 - **Documentación**: `README.md`, `Preprocesamiento.md`, `Entrenamiento.md`, `Inferencia_API.md`, `Reporte_Docente.md`.
 - **Dummies versionables**: guía para `examples/reports/` y artefactos ignorados en `artifacts/`.
@@ -58,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2025-10-11 — API base
 ### Added
-- Backend FastAPI con routers (`/prediccion/online`, `/prediccion/batch`).
+- Backend FastAPI con routers legacy (`/prediccion/online`, `/prediccion/batch`). (Reemplazados en P2.2 por `/predicciones/health` y `/predicciones/predict`.)
 
 ## [0.1.0] - 2025-10-07 — Bootstrap
 ### Added

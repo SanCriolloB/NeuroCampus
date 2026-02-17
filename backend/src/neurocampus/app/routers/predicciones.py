@@ -44,9 +44,54 @@ from neurocampus.services.predictions_service import (
 from neurocampus.utils.paths import artifacts_dir, rel_artifact_path
 from neurocampus.predictions.bundle import bundle_paths
 from neurocampus.data.features_prepare import load_feature_pack
+from neurocampus.utils.model_context import fill_context
 
 
 router = APIRouter(prefix="/predicciones", tags=["Predicciones"])
+
+
+def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
+    """Aplica `ctx` al dict predictor.json para evitar null/unknown en campos críticos.
+
+    Importante: esto NO reescribe predictor.json en disco; solo ajusta el response.
+    """
+    out = dict(predictor or {})
+
+    # Campos top-level del manifest
+    if ctx.get("dataset_id") is not None:
+        out["dataset_id"] = str(ctx["dataset_id"])
+    if ctx.get("model_name") is not None:
+        out["model_name"] = str(ctx["model_name"])
+    if ctx.get("task_type") is not None:
+        out["task_type"] = str(ctx["task_type"])
+    if ctx.get("input_level") is not None:
+        out["input_level"] = str(ctx["input_level"])
+
+    # target_col debe evitar null cuando sea razonable
+    if ctx.get("target_col") is not None:
+        out["target_col"] = str(ctx["target_col"])
+    if out.get("target_col") is None:
+        out["target_col"] = "target"
+
+    # Campos extra (family y otros)
+    extra = out.get("extra") if isinstance(out.get("extra"), dict) else {}
+    extra = dict(extra)
+    if ctx.get("family") is not None:
+        extra["family"] = str(ctx["family"])
+    if ctx.get("data_source") is not None:
+        extra["data_source"] = str(ctx["data_source"])
+    else:
+        extra["data_source"] = str(extra.get("data_source") or "feature_pack")
+
+    for k in ("data_plan", "split_mode", "val_ratio", "target_mode"):
+        v = ctx.get(k)
+        if v is not None:
+            extra[k] = v
+
+    if extra:
+        out["extra"] = extra
+
+    return out
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -92,13 +137,26 @@ def model_info(
             except json.JSONDecodeError:
                 logger.warning("metrics.json inválido en %s; se omite en model-info", metrics_path)
 
+
+        # Backfill de contexto (P2.1): evitar null/unknown en campos críticos
+        ctx = fill_context(
+            family=family or None,
+            dataset_id=dataset_id or (loaded.predictor.get("dataset_id") if isinstance(loaded.predictor, dict) else None),
+            model_name=(loaded.predictor.get("model_name") if isinstance(loaded.predictor, dict) else None),
+            metrics=metrics,
+            predictor_manifest=loaded.predictor if isinstance(loaded.predictor, dict) else None,
+        )
+        predictor_out = _apply_ctx_to_manifest(
+            loaded.predictor if isinstance(loaded.predictor, dict) else {},
+            ctx,
+        )
         run_dir_logical = f"artifacts/runs/{loaded.run_id}"
 
         return ModelInfoResponse(
             resolved_run_id=loaded.run_id,
             resolved_from=resolved_from,
             run_dir=run_dir_logical,
-            predictor=loaded.predictor,
+            predictor=predictor_out,
             preprocess=loaded.preprocess,
             metrics=metrics,
             note="P2.2: model-info (resolución/validación del bundle; sin inferencia).",
@@ -143,6 +201,27 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
             loaded = load_predictor_by_run_id(req.run_id)
             resolved_from = "run_id"
 
+
+        metrics = None
+        metrics_path = loaded.run_dir / "metrics.json"
+        if metrics_path.exists():
+            try:
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                logger.warning("metrics.json inválido en %s; se omite en predict", metrics_path)
+
+        # Backfill de contexto (P2.1): evitar null/unknown en campos críticos
+        ctx = fill_context(
+            family=req.family or None,
+            dataset_id=req.dataset_id or (loaded.predictor.get("dataset_id") if isinstance(loaded.predictor, dict) else None),
+            model_name=(loaded.predictor.get("model_name") if isinstance(loaded.predictor, dict) else None),
+            metrics=metrics,
+            predictor_manifest=loaded.predictor if isinstance(loaded.predictor, dict) else None,
+        )
+        predictor_out = _apply_ctx_to_manifest(
+            loaded.predictor if isinstance(loaded.predictor, dict) else {},
+            ctx,
+        )
         # ------------------------------------------------------------
         # P2.4: inferencia opt-in
         #
@@ -163,14 +242,14 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
         note = "P2.2: resolución/validación OK. Inferencia deshabilitada (do_inference=false)."
 
         if do_inference:
-            dataset_id = str(loaded.predictor.get("dataset_id") or req.dataset_id or "")
+            dataset_id = str(ctx.get("dataset_id") or req.dataset_id or loaded.predictor.get("dataset_id") or "")
             if not dataset_id:
                 raise HTTPException(
                     status_code=422,
                     detail="No se pudo resolver dataset_id para inferir desde feature_pack",
                 )
 
-            input_level = str(req.input_level or loaded.predictor.get("input_level") or "row")
+            input_level = str(req.input_level or ctx.get("input_level") or loaded.predictor.get("input_level") or "row")
 
             try:
                 predictions, out_schema, warnings = predict_from_feature_pack(
@@ -192,10 +271,12 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
 
             model_info = {
                 "dataset_id": dataset_id,
-                "family": req.family,
-                "model_name": loaded.predictor.get("model_name"),
-                "task_type": loaded.predictor.get("task_type"),
+                "family": ctx.get("family") or req.family,
+                "model_name": ctx.get("model_name") or loaded.predictor.get("model_name"),
+                "task_type": ctx.get("task_type") or loaded.predictor.get("task_type"),
                 "input_level": input_level,
+                "target_col": ctx.get("target_col") or loaded.predictor.get("target_col"),
+                "data_source": ctx.get("data_source"),
             }
             note = "P2.4: inferencia ejecutada desde feature_pack."
 
@@ -235,7 +316,7 @@ def predict(req: PredictRequest) -> PredictResolvedResponse:
             resolved_run_id=loaded.run_id,
             resolved_from=resolved_from,
             run_dir=run_dir_logical,
-            predictor=loaded.predictor,
+            predictor=predictor_out,
             preprocess=loaded.preprocess,
             predictions=predictions,
             predictions_uri=predictions_uri,

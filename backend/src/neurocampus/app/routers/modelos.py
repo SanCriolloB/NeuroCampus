@@ -2375,7 +2375,7 @@ def get_runs(
         )
 
         # Backfill top-level fields del resumen
-        for key in ("family", "dataset_id", "model_name", "task_type", "input_level", "target_col", "data_plan"):
+        for key in ("family", "dataset_id", "model_name", "task_type", "input_level", "target_col", "data_plan", "data_source"):
             if _missing(r.get(key)) and (ctx.get(key) is not None):
                 r[key] = ctx.get(key)
 
@@ -2437,7 +2437,7 @@ def get_run_details(run_id: str) -> RunDetails:
             return True
         return False
 
-    for key in ("family", "dataset_id", "task_type", "input_level", "target_col", "data_plan"):
+    for key in ("family", "dataset_id", "task_type", "input_level", "target_col", "data_plan", "data_source"):
         if _missing(details.get(key)) and (ctx.get(key) is not None):
             details[key] = ctx.get(key)
 
@@ -2628,7 +2628,7 @@ def get_champion(
     )
 
     # Rellenar solo si falta (no sobrescribir valores válidos)
-    for key in ("family", "dataset_id", "model_name", "task_type", "input_level", "target_col", "data_plan"):
+    for key in ("family", "dataset_id", "model_name", "task_type", "input_level", "target_col", "data_plan", "data_source"):
         if _missing(champ.get(key)) and (ctx.get(key) is not None):
             champ[key] = ctx.get(key)
 

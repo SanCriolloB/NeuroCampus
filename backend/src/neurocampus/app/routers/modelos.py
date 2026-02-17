@@ -67,6 +67,7 @@ from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
 from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
+from ...utils.model_context import fill_context
 
 
 from ...observability.bus_eventos import BUS
@@ -247,19 +248,32 @@ def _try_write_predictor_bundle(
         model_name = str(getattr(req_norm, "modelo", "") or metrics.get("model_name") or metrics.get("model") or "")
         family = str(getattr(req_norm, "family", "") or metrics.get("family") or "")
 
-        task_type = str(metrics.get("task_type") or metrics.get("params", {}).get("task_type") or "unknown")
-        input_level = str(metrics.get("input_level") or metrics.get("params", {}).get("input_level") or "row")
-        target_col = metrics.get("target_col") or metrics.get("params", {}).get("target_col")
+        # Completar contexto (regla única: metrics.params.req -> metrics.* -> predictor.json -> fallback por family)
+        ctx = fill_context(
+            family=family or None,
+            dataset_id=dataset_id or None,
+            model_name=model_name or None,
+            metrics=metrics,
+            predictor_manifest=None,
+        )
+        dataset_id = str((ctx.get("dataset_id") or dataset_id) or "")
+        model_name = str((ctx.get("model_name") or model_name) or "")
+        family = str((ctx.get("family") or family) or "")
 
         manifest = build_predictor_manifest(
             run_id=str(metrics.get("run_id") or ""),
             dataset_id=dataset_id,
             model_name=model_name,
-            task_type=task_type,
-            input_level=input_level,
-            target_col=str(target_col) if target_col else None,
+            task_type=str(ctx.get("task_type") or "classification"),
+            input_level=str(ctx.get("input_level") or "row"),
+            target_col=str(ctx.get("target_col")) if ctx.get("target_col") else None,
             extra={
                 "family": family,
+                "data_source": ctx.get("data_source"),
+                "data_plan": ctx.get("data_plan"),
+                "split_mode": ctx.get("split_mode"),
+                "val_ratio": ctx.get("val_ratio"),
+                "target_mode": ctx.get("target_mode"),
                 "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
             },
         )

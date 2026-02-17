@@ -532,6 +532,7 @@ class SweepEntrenarRequest(BaseModel):
 
     # incremental (score_docente)
     data_plan: Optional[DataPlan] = None
+    data_source: Optional[str] = None
     window_k: Optional[int] = None
     replay_size: Optional[int] = None
     replay_strategy: ReplayStrategy = "uniform"
@@ -639,6 +640,7 @@ class RunSummary(BaseModel):
     input_level: Optional[InputLevel] = None
     target_col: Optional[str] = None
     data_plan: Optional[DataPlan] = None
+    data_source: Optional[str] = None
     created_at: str
     metrics: Dict[str, Any] = Field(default_factory=dict)
 
@@ -656,6 +658,7 @@ class RunDetails(BaseModel):
     input_level: Optional[InputLevel] = None
     target_col: Optional[str] = None
     data_plan: Optional[DataPlan] = None
+    data_source: Optional[str] = None
     metrics: Dict[str, Any]
     config: Optional[Dict[str, Any]] = None
     artifact_path: Optional[str] = None

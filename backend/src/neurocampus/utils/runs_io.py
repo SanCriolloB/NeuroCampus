@@ -464,11 +464,32 @@ def list_runs(
             if _slug(rm) != model_norm:
                 continue
 
+        run_id_val = _norm_str(metrics.get("run_id")) or rd.name
+        parts = str(run_id_val).split("__")
+        
+        model_name_val = _norm_str(metrics.get("model_name")) or _norm_str(metrics.get("model"))
+        if not model_name_val and len(parts) >= 2 and parts[1]:
+            model_name_val = str(parts[1])
+        model_name_val = model_name_val or str(rd.name)
+        
+        created_at_val = _norm_str(metrics.get("created_at"))
+        if not created_at_val and len(parts) >= 3 and parts[2]:
+            try:
+                dt_ = dt.datetime.strptime(str(parts[2]), "%Y%m%dT%H%M%SZ")
+                created_at_val = dt_.replace(tzinfo=dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            except Exception:
+                created_at_val = None
+        if not created_at_val:
+            try:
+                created_at_val = dt.datetime.fromtimestamp(rd.stat().st_mtime, tz=dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            except Exception:
+                created_at_val = now_utc_iso()
+        
         summary: Dict[str, Any] = {
-            "run_id": metrics.get("run_id") or rd.name,
+            "run_id": run_id_val,
             "dataset_id": ds,
-            "model_name": metrics.get("model_name"),
-            "created_at": metrics.get("created_at"),
+            "model_name": model_name_val,
+            "created_at": created_at_val,
             "artifact_path": str(rd),
             "family": ctx.get("family"),
             "task_type": ctx.get("task_type"),

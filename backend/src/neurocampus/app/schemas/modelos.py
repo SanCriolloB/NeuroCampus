@@ -679,6 +679,8 @@ class ChampionInfo(BaseModel):
     input_level: Optional[InputLevel] = None
     target_col: Optional[str] = None
     data_plan: Optional[DataPlan] = None
+    data_source: Optional[DataSource] = None
+
 
     # ✅ Nuevo: run fuente del champion (debe venir de champion.json o fallback a metrics.run_id)
     source_run_id: Optional[str] = None

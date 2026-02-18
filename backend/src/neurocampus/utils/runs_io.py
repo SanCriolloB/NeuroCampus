@@ -254,7 +254,13 @@ def _infer_dataset_id(run_dir: Path, metrics: Dict[str, Any]) -> Optional[str]:
             v3 = _infer_dataset_id_from_path(str(p2))
             if v3:
                 return v3
-
+    # Fallback: parsear dataset_id desde el nombre del run_dir/run_id:
+    # <dataset_id>__<model_name>__<timestamp>__<job>
+    rid = _norm_str(metrics.get("run_id")) or run_dir.name
+    parts = str(rid).split("__")
+    if len(parts) >= 1 and parts[0]:
+        return str(parts[0])
+    
     return None
 
 
@@ -318,13 +324,39 @@ def build_run_id(dataset_id: str, model_name: str, job_id: str) -> str:
     job8 = _slug(job_id)[:8]
     return f"{_slug(dataset_id)}__{_slug(model_name)}__{ts}__{job8}"
 
+def _find_metrics_path(run_dir: Path) -> Optional[Path]:
+    """Encuentra el metrics.json soportando layouts legacy.
+
+    Layout nuevo:
+      artifacts/runs/<run_id>/metrics.json
+
+    Layout legacy:
+      artifacts/runs/<run_id>/model/metrics.json
+    """
+    candidates = [
+        run_dir / "metrics.json",
+        run_dir / "model" / "metrics.json",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                return p
+        except Exception:
+            continue
+    return None
+
 
 def load_run_metrics(run_id: str) -> Dict[str, Any]:
-    p = (RUNS_DIR / str(run_id) / "metrics.json").resolve()
-    if not p.exists():
+    rd = (RUNS_DIR / str(run_id)).resolve()
+    if not rd.exists():
         return {}
+
+    mp = _find_metrics_path(rd)
+    if not mp:
+        return {}
+
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(mp.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -440,8 +472,8 @@ def list_runs(
 
     out: List[Dict[str, Any]] = []
     for rd in run_dirs:
-        mp = rd / "metrics.json"
-        if not mp.exists():
+        mp = _find_metrics_path(rd)
+        if not mp:
             continue
 
         metrics = _try_read_json(mp) or {}
@@ -455,9 +487,10 @@ def list_runs(
         ctx = _extract_ctx(metrics)
 
         if fam_norm:
-            rf = ctx.get("family") or metrics.get("family")
+            rf = ctx.get("family") or metrics.get("family") or "sentiment_desempeno"
             if _slug(rf) != fam_norm:
                 continue
+
 
         if model_norm:
             rm = metrics.get("model_name") or metrics.get("model")
@@ -466,6 +499,8 @@ def list_runs(
 
         run_id_val = _norm_str(metrics.get("run_id")) or rd.name
         parts = str(run_id_val).split("__")
+        if not ds and len(parts) >= 1 and parts[0]:
+            ds = str(parts[0])
         
         model_name_val = _norm_str(metrics.get("model_name")) or _norm_str(metrics.get("model"))
         if not model_name_val and len(parts) >= 2 and parts[1]:
@@ -496,6 +531,7 @@ def list_runs(
             "input_level": ctx.get("input_level"),
             "target_col": ctx.get("target_col"),
             "data_plan": ctx.get("data_plan"),
+            "data_source": ctx.get("data_source") or "feature_pack",
             "metrics": {},
         }
 
@@ -537,11 +573,13 @@ def load_run_details(run_id: str) -> Optional[Dict[str, Any]]:
     if not rd.exists():
         return None
 
-    mp = rd / "metrics.json"
-    if not mp.exists():
+    mp = _find_metrics_path(rd)
+    if not mp:
         return None
 
     metrics = _try_read_json(mp) or {}
+    if not metrics:
+        metrics = {"run_id": rd.name}
     cfg = _load_yaml_if_exists(rd / "config.snapshot.yaml") or _load_yaml_if_exists(rd / "config.yaml")
     ds = _norm_str(metrics.get("dataset_id")) or _infer_dataset_id(rd, metrics)
 

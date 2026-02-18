@@ -101,6 +101,57 @@ def _write_placeholder_run_bundle(base: Path, *, run_id: str) -> Path:
     return run_dir
 
 
+
+def _write_legacy_run_bundle_with_unknowns(
+    base: Path,
+    *,
+    run_id: str,
+    dataset_id: str,
+    family: str,
+    model_name: str = "rbm_general",
+) -> Path:
+    """Crea un run_dir "legacy" con predictor.json incompleto/unknown.
+
+    Se acompaña con metrics.json que incluye params.req con el contexto correcto.
+    Esto valida el backfill P2.1 en /predicciones/model-info y /predicciones/predict.
+    """
+    run_dir = base / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    bp = bundle_paths(run_dir)
+
+    legacy_manifest = {
+        "run_id": run_id,
+        "dataset_id": dataset_id,
+        "model_name": model_name,
+        "task_type": "unknown",
+        "input_level": None,
+        "target_col": None,
+        "extra": {"family": family},
+    }
+    write_json(bp.predictor_json, legacy_manifest)
+    write_json(bp.preprocess_json, {"schema_version": 1, "notes": "legacy test"})
+    bp.model_bin.write_bytes(b"REAL_MODEL_BYTES_v1")
+
+    metrics = {
+        "run_id": run_id,
+        "dataset_id": dataset_id,
+        "model_name": model_name,
+        "family": family,
+        "params": {
+            "req": {
+                "dataset_id": dataset_id,
+                "family": family,
+                "model_name": model_name,
+                "task_type": "classification",
+                "input_level": "row",
+                "target_col": "y_sentimiento",
+                "data_source": "feature_pack",
+            }
+        },
+    }
+    write_json(run_dir / "metrics.json", metrics)
+    return run_dir
+
 def _write_champion(base: Path, *, family: str, dataset_id: str, run_id: str) -> Path:
     champ = base / "champions" / family / dataset_id / "champion.json"
     champ.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +295,42 @@ def test_predicciones_model_info_by_run_id_ok(client, artifacts_dir: Path, monke
     assert "preprocess" in payload
 
 
+
+def test_predicciones_backfill_context_from_metrics_req(client, artifacts_dir: Path, monkeypatch):
+    """Si predictor.json trae unknown/null pero metrics.params.req trae el contexto, la API debe backfillear."""
+
+    monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
+    base = artifacts_dir
+
+    run_id = "run_legacy_unknown_ctx"
+    dataset_id = "ds_legacy_ctx"
+    family = "sentiment_desempeno"
+
+    _write_legacy_run_bundle_with_unknowns(base, run_id=run_id, dataset_id=dataset_id, family=family)
+
+    # model-info
+    r1 = client.get("/predicciones/model-info", params={"run_id": run_id})
+    assert r1.status_code == 200, r1.text
+    payload = r1.json()
+    pred = payload["predictor"]
+
+    assert pred.get("task_type") == "classification"
+    assert pred.get("input_level") == "row"
+    assert pred.get("target_col") == "y_sentimiento"
+    assert pred.get("extra", {}).get("family") == family
+    assert pred.get("extra", {}).get("data_source") == "feature_pack"
+
+    # predict (resolve/validate)
+    r2 = client.post("/predicciones/predict", json={"run_id": run_id})
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    pred2 = body["predictor"]
+
+    assert pred2.get("task_type") == "classification"
+    assert pred2.get("input_level") == "row"
+    assert pred2.get("target_col") == "y_sentimiento"
+    assert pred2.get("extra", {}).get("family") == family
+    assert pred2.get("extra", {}).get("data_source") == "feature_pack"
 def test_predicciones_model_info_by_champion_ok(client, artifacts_dir: Path, monkeypatch):
     monkeypatch.setenv("NC_ARTIFACTS_DIR", str(artifacts_dir))
     base = artifacts_dir

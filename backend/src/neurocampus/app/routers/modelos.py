@@ -67,6 +67,7 @@ from ...models.strategies.modelo_rbm_general import RBMGeneral
 from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
 from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
+from ...utils.model_context import fill_context
 
 
 from ...observability.bus_eventos import BUS
@@ -247,19 +248,32 @@ def _try_write_predictor_bundle(
         model_name = str(getattr(req_norm, "modelo", "") or metrics.get("model_name") or metrics.get("model") or "")
         family = str(getattr(req_norm, "family", "") or metrics.get("family") or "")
 
-        task_type = str(metrics.get("task_type") or metrics.get("params", {}).get("task_type") or "unknown")
-        input_level = str(metrics.get("input_level") or metrics.get("params", {}).get("input_level") or "row")
-        target_col = metrics.get("target_col") or metrics.get("params", {}).get("target_col")
+        # Completar contexto (regla única: metrics.params.req -> metrics.* -> predictor.json -> fallback por family)
+        ctx = fill_context(
+            family=family or None,
+            dataset_id=dataset_id or None,
+            model_name=model_name or None,
+            metrics=metrics,
+            predictor_manifest=None,
+        )
+        dataset_id = str((ctx.get("dataset_id") or dataset_id) or "")
+        model_name = str((ctx.get("model_name") or model_name) or "")
+        family = str((ctx.get("family") or family) or "")
 
         manifest = build_predictor_manifest(
             run_id=str(metrics.get("run_id") or ""),
             dataset_id=dataset_id,
             model_name=model_name,
-            task_type=task_type,
-            input_level=input_level,
-            target_col=str(target_col) if target_col else None,
+            task_type=str(ctx.get("task_type") or "classification"),
+            input_level=str(ctx.get("input_level") or "row"),
+            target_col=str(ctx.get("target_col")) if ctx.get("target_col") else None,
             extra={
                 "family": family,
+                "data_source": ctx.get("data_source"),
+                "data_plan": ctx.get("data_plan"),
+                "split_mode": ctx.get("split_mode"),
+                "val_ratio": ctx.get("val_ratio"),
+                "target_mode": ctx.get("target_mode"),
                 "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
             },
         )
@@ -2300,7 +2314,78 @@ def get_runs(
                 filtered.append(r)
         runs = filtered
 
-    return [RunSummary(**r) for r in runs]
+
+    # Backfill consistente (P2.1): completar contexto desde metrics.json + predictor.json
+    def _missing(v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, str) and v.strip().lower() in {"", "none", "null", "unknown", "n/a"}:
+            return True
+        return False
+
+    hydrated: List[RunSummary] = []
+    for r in (runs or []):
+        if not isinstance(r, dict):
+            continue
+
+        run_id = str(r.get("run_id") or "")
+        run_dir = None
+        try:
+            if r.get("artifact_path"):
+                run_dir = Path(str(r.get("artifact_path"))).expanduser().resolve()
+            elif run_id:
+                run_dir = (ARTIFACTS_DIR / "runs" / run_id).resolve()
+        except Exception:
+            run_dir = None
+
+        # Cargar metrics.json completo si falta contexto
+        full_metrics: Dict[str, Any] = {}
+        try:
+            if run_dir:
+                mp = run_dir / "metrics.json"
+                if mp.exists():
+                    full_metrics = json.loads(mp.read_text(encoding="utf-8"))
+        except Exception:
+            full_metrics = {}
+
+        # predictor.json (si existe) como fuente de fallback
+        predictor_manifest = None
+        try:
+            if run_dir:
+                pj = run_dir / "predictor.json"
+                if pj.exists():
+                    predictor_manifest = json.loads(pj.read_text(encoding="utf-8"))
+        except Exception:
+            predictor_manifest = None
+
+        req = (full_metrics.get("params") or {}).get("req") if isinstance(full_metrics.get("params"), dict) else {}
+        if not isinstance(req, dict):
+            req = {}
+
+        hint_model = r.get("model_name") or full_metrics.get("model_name") or full_metrics.get("model") or req.get("model_name") or req.get("modelo")
+        hint_family = r.get("family") or family or full_metrics.get("family") or req.get("family")
+        hint_ds = r.get("dataset_id") or ds or full_metrics.get("dataset_id") or req.get("dataset_id")
+
+        ctx = fill_context(
+            family=hint_family,
+            dataset_id=hint_ds,
+            model_name=hint_model,
+            metrics=full_metrics or {},
+            predictor_manifest=predictor_manifest,
+        )
+
+        # Backfill top-level fields del resumen
+        for key in ("family", "dataset_id", "model_name", "task_type", "input_level", "target_col", "data_plan", "data_source"):
+            if _missing(r.get(key)) and (ctx.get(key) is not None):
+                r[key] = ctx.get(key)
+
+        # Mantener subset de métricas como estaba, pero si no existe `metrics`, crear vacío
+        if not isinstance(r.get("metrics"), dict):
+            r["metrics"] = {}
+
+        hydrated.append(RunSummary(**r))
+
+    return hydrated
 
 
 
@@ -2314,6 +2399,54 @@ def get_run_details(run_id: str) -> RunDetails:
     details = load_run_details(run_id)
     if not details:
         raise HTTPException(status_code=404, detail=f"Run {run_id} no encontrado")
+
+    # Backfill consistente (P2.1): completar contexto desde metrics.json + predictor.json
+    metrics = details.get("metrics") or {}
+    if not isinstance(metrics, dict):
+        metrics = {}
+
+    predictor_manifest = None
+    try:
+        rd = Path(str(details.get("artifact_path") or "")).expanduser().resolve()
+        pj = rd / "predictor.json"
+        if pj.exists():
+            predictor_manifest = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        predictor_manifest = None
+
+    req = (metrics.get("params") or {}).get("req") if isinstance(metrics.get("params"), dict) else {}
+    if not isinstance(req, dict):
+        req = {}
+
+    hint_family = details.get("family") or metrics.get("family") or req.get("family")
+    hint_ds = details.get("dataset_id") or metrics.get("dataset_id") or req.get("dataset_id")
+    hint_model = metrics.get("model_name") or metrics.get("model") or req.get("model_name") or req.get("modelo")
+
+    ctx = fill_context(
+        family=hint_family,
+        dataset_id=hint_ds,
+        model_name=hint_model,
+        metrics=metrics,
+        predictor_manifest=predictor_manifest,
+    )
+
+    def _missing(v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, str) and v.strip().lower() in {"", "none", "null", "unknown", "n/a"}:
+            return True
+        return False
+
+    for key in ("family", "dataset_id", "task_type", "input_level", "target_col", "data_plan", "data_source"):
+        if _missing(details.get(key)) and (ctx.get(key) is not None):
+            details[key] = ctx.get(key)
+
+    # Enriquecer métricas (sin persistir a disco)
+    for key in ("family", "task_type", "input_level", "target_col", "data_plan", "data_source"):
+        if _missing(metrics.get(key)) and (ctx.get(key) is not None):
+            metrics[key] = ctx.get(key)
+    details["metrics"] = metrics
+
     return RunDetails(**details)
 
 @router.get("/sweeps/{sweep_id}", response_model=SweepSummary)
@@ -2460,6 +2593,51 @@ def get_champion(
             champ["path"] = _relpath(model_dir)
         else:
             champ["path"] = _relpath(ds_dir)
+
+    # ------------------------------------------------------------
+    # 2.b) Backfill consistente de contexto (P2.1)
+    # ------------------------------------------------------------
+    # Regla única: metrics.params.req -> metrics.* -> predictor.json -> fallback por family
+    def _missing(v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, str) and v.strip().lower() in {"", "none", "null", "unknown", "n/a"}:
+            return True
+        return False
+
+    metrics = champ.get("metrics") or {}
+    if not isinstance(metrics, dict):
+        metrics = {}
+
+    # Best-effort: leer predictor.json desde la carpeta del champion (si existe)
+    predictor_manifest = None
+    try:
+        champ_dir = Path(str(champ.get("path") or "")).expanduser().resolve()
+        pj = champ_dir / "predictor.json"
+        if pj.exists():
+            predictor_manifest = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        predictor_manifest = None
+
+    ctx = fill_context(
+        family=champ.get("family") or family,
+        dataset_id=str(ds),
+        model_name=champ.get("model_name") or model_name,
+        metrics=metrics,
+        predictor_manifest=predictor_manifest,
+    )
+
+    # Rellenar solo si falta (no sobrescribir valores válidos)
+    for key in ("family", "dataset_id", "model_name", "task_type", "input_level", "target_col", "data_plan", "data_source"):
+        if _missing(champ.get(key)) and (ctx.get(key) is not None):
+            champ[key] = ctx.get(key)
+
+    # También backfill en el bloque `metrics` cuando aplica (útil para consumers legacy)
+    for key in ("family", "task_type", "input_level", "target_col", "data_plan", "data_source"):
+        if _missing(metrics.get(key)) and (ctx.get(key) is not None):
+            metrics[key] = ctx.get(key)
+    champ["metrics"] = metrics
+
 
 
     # 3) Validar explícitamente aquí para evitar response-validation 500 opaco

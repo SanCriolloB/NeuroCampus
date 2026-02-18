@@ -181,3 +181,44 @@ def test_entrenar_estado_and_promote_contract(client, artifacts_dir: Path, prepa
 
     champ_ds_dir = artifacts_dir / "champions" / "sentiment_desempeno" / dataset_id
     assert (champ_ds_dir / "champion.json").exists()
+
+    # --- P2.1: el API debe devolver contexto completo (sin null/unknown) ---
+    # Champion
+    r_ch = client.get(
+        "/modelos/champion",
+        params={"dataset_id": dataset_id, "family": "sentiment_desempeno", "model_name": "rbm_general"},
+    )
+    assert r_ch.status_code == 200, r_ch.text
+    ch = r_ch.json()
+    assert ch.get("dataset_id") == dataset_id
+    assert str(ch.get("family") or "").lower() == "sentiment_desempeno"
+    assert ch.get("model_name") in ("rbm_general", "rbm_restringida")
+    assert ch.get("task_type") in ("classification", "regression")
+    assert ch.get("input_level") in ("row", "pair")
+    assert ch.get("target_col") not in (None, "unknown", "null", "")
+
+    # Runs (listado)
+    r_runs = client.get(
+        "/modelos/runs",
+        params={"dataset_id": dataset_id, "family": "sentiment_desempeno"},
+    )
+    assert r_runs.status_code == 200, r_runs.text
+    runs = r_runs.json()
+    assert isinstance(runs, list)
+    row = next((x for x in runs if x.get("run_id") == run_id), None)
+    assert row is not None, f"run_id {run_id} no encontrado en /modelos/runs"
+    assert str(row.get("family") or "").lower() == "sentiment_desempeno"
+    assert row.get("task_type") in ("classification", "regression")
+    assert row.get("input_level") in ("row", "pair")
+    assert row.get("target_col") not in (None, "unknown", "null", "")
+
+    # Run details
+    r_det = client.get(f"/modelos/runs/{run_id}")
+    assert r_det.status_code == 200, r_det.text
+    det = r_det.json()
+    assert det.get("run_id") == run_id
+    assert det.get("dataset_id") == dataset_id
+    assert str(det.get("family") or "").lower() == "sentiment_desempeno"
+    assert det.get("task_type") in ("classification", "regression")
+    assert det.get("input_level") in ("row", "pair")
+    assert det.get("target_col") not in (None, "unknown", "null", "")

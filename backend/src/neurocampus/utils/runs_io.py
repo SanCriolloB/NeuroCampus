@@ -33,6 +33,8 @@ import shutil
 
 import yaml
 
+from neurocampus.utils.model_context import fill_context
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -346,6 +348,66 @@ def _find_metrics_path(run_dir: Path) -> Optional[Path]:
     return None
 
 
+def _find_predictor_path(run_dir: Path) -> Optional[Path]:
+    """Encuentra predictor.json soportando layouts legacy.
+
+    Layout nuevo:
+      artifacts/runs/<run_id>/predictor.json
+
+    Layout legacy:
+      artifacts/runs/<run_id>/model/predictor.json
+    """
+    candidates = [
+        run_dir / "predictor.json",
+        run_dir / "model" / "predictor.json",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def _load_predictor_manifest(run_dir: Path) -> Optional[Dict[str, Any]]:
+    p = _find_predictor_path(run_dir)
+    if not p:
+        return None
+    return _try_read_json(p)
+
+
+def _build_champion_source_map(champions_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """Mapa source_run_id -> payload de champion (family/dataset/model + metrics).
+
+    Se usa para hidratar contexto cuando un run no trae metrics.json/predictor.json.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    if not champions_dir.exists():
+        return out
+
+    try:
+        for p in champions_dir.glob("**/champion.json"):
+            champ = _try_read_json(p)
+            if not isinstance(champ, dict) or not champ:
+                continue
+            src = champ.get("source_run_id") or champ.get("run_id")
+            if not src:
+                continue
+            metrics = champ.get("metrics") if isinstance(champ.get("metrics"), dict) else {}
+            out[str(src)] = {
+                "family": champ.get("family"),
+                "dataset_id": champ.get("dataset_id"),
+                "model_name": champ.get("model_name"),
+                "metrics": metrics,
+                "path": str(p),
+            }
+    except Exception:
+        return out
+
+    return out
+
+
 def load_run_metrics(run_id: str) -> Dict[str, Any]:
     rd = (RUNS_DIR / str(run_id)).resolve()
     if not rd.exists():
@@ -464,6 +526,9 @@ def list_runs(
     fam_norm = _slug(family) if family else None
     model_norm = _slug(model_name) if model_name else None
 
+    champions_dir = (Path(base_dir) / "artifacts" / "champions").resolve() if base_dir is not None else CHAMPIONS_DIR
+    champ_map = _build_champion_source_map(champions_dir)
+
     run_dirs = sorted(
         [p for p in runs_dir.iterdir() if p.is_dir()],
         key=lambda p: p.stat().st_mtime,
@@ -472,41 +537,69 @@ def list_runs(
 
     out: List[Dict[str, Any]] = []
     for rd in run_dirs:
+        # Cargar métricas (soporta layout legacy). Si no existen, intentar hidratar desde predictor/champion.
         mp = _find_metrics_path(rd)
-        if not mp:
-            continue
+        metrics = _try_read_json(mp) or {} if mp else {}
 
-        metrics = _try_read_json(mp) or {}
+        run_id_val = _norm_str(metrics.get("run_id")) or rd.name
+
+        # Fallback: hidratar métricas desde champion si coincide source_run_id
         if not metrics:
-            continue
+            champ = champ_map.get(str(run_id_val))
+            if champ and isinstance(champ.get("metrics"), dict) and champ["metrics"]:
+                metrics = champ["metrics"]
 
-        ds = _norm_str(metrics.get("dataset_id")) or _infer_dataset_id(rd, metrics)
+        predictor = _load_predictor_manifest(rd) or {}
+
+        # Resolver dataset_id/model_name best-effort para filtros y contexto
+        ds = (
+            _norm_str(metrics.get("dataset_id"))
+            or _norm_str(predictor.get("dataset_id"))
+            or _infer_dataset_id(rd, metrics if metrics else {"run_id": run_id_val})
+        )
         if ds_filter and ds != ds_filter:
             continue
 
-        ctx = _extract_ctx(metrics)
+        # Candidatos para contexto (precedencia final la aplica fill_context)
+        predictor_family = None
+        if isinstance(predictor.get("extra"), dict):
+            predictor_family = predictor["extra"].get("family")
+        predictor_family = predictor_family or predictor.get("family")
 
-        if fam_norm:
-            rf = ctx.get("family") or metrics.get("family") or "sentiment_desempeno"
-            if _slug(rf) != fam_norm:
-                continue
+        champ = champ_map.get(str(run_id_val)) or {}
+        family_guess = (
+            _norm_str(_extract_ctx(metrics).get("family")) if metrics else None
+        ) or _norm_str(predictor_family) or _norm_str(champ.get("family")) or _norm_str(family) or "sentiment_desempeno"
 
+        model_guess = (
+            _norm_str(metrics.get("model_name"))
+            or _norm_str(metrics.get("model"))
+            or _norm_str(predictor.get("model_name"))
+            or _norm_str(champ.get("model_name"))
+        )
+        if not model_guess:
+            parts = str(run_id_val).split("__")
+            if len(parts) >= 2 and parts[1]:
+                model_guess = str(parts[1])
+        model_guess = model_guess or str(rd.name)
 
-        if model_norm:
-            rm = metrics.get("model_name") or metrics.get("model")
-            if _slug(rm) != model_norm:
-                continue
+        # Contexto unificado (P2.1): evita null/unknown con precedencia definida
+        ctx = fill_context(
+            family=family_guess,
+            dataset_id=ds,
+            model_name=model_guess,
+            metrics=metrics if metrics else None,
+            predictor_manifest=predictor if predictor else None,
+        )
 
-        run_id_val = _norm_str(metrics.get("run_id")) or rd.name
+        # Filtro family/model basado en contexto ya normalizado
+        if fam_norm and _slug(ctx.get("family")) != fam_norm:
+            continue
+        if model_norm and _slug(ctx.get("model_name")) != model_norm:
+            continue
+
         parts = str(run_id_val).split("__")
-        if not ds and len(parts) >= 1 and parts[0]:
-            ds = str(parts[0])
-        
-        model_name_val = _norm_str(metrics.get("model_name")) or _norm_str(metrics.get("model"))
-        if not model_name_val and len(parts) >= 2 and parts[1]:
-            model_name_val = str(parts[1])
-        model_name_val = model_name_val or str(rd.name)
-        
+
         created_at_val = _norm_str(metrics.get("created_at"))
         if not created_at_val and len(parts) >= 3 and parts[2]:
             try:
@@ -519,11 +612,12 @@ def list_runs(
                 created_at_val = dt.datetime.fromtimestamp(rd.stat().st_mtime, tz=dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
             except Exception:
                 created_at_val = now_utc_iso()
-        
+
+
         summary: Dict[str, Any] = {
             "run_id": run_id_val,
-            "dataset_id": ds,
-            "model_name": model_name_val,
+            "dataset_id": str(ctx.get("dataset_id") or ds or ""),
+            "model_name": str(ctx.get("model_name") or model_guess),
             "created_at": created_at_val,
             "artifact_path": str(rd),
             "family": ctx.get("family"),
@@ -574,12 +668,19 @@ def load_run_details(run_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     mp = _find_metrics_path(rd)
-    if not mp:
-        return None
+    metrics = _try_read_json(mp) or {} if mp else {}
 
-    metrics = _try_read_json(mp) or {}
+    # Fallback: hidratar desde champion/predictor si no existen métricas en el run
+    if not metrics:
+        champ_map = _build_champion_source_map(CHAMPIONS_DIR)
+        champ = champ_map.get(str(run_id)) or champ_map.get(rd.name)
+        if champ and isinstance(champ.get("metrics"), dict) and champ["metrics"]:
+            metrics = champ["metrics"]
+
+    predictor = _load_predictor_manifest(rd) or {}
     if not metrics:
         metrics = {"run_id": rd.name}
+
     cfg = _load_yaml_if_exists(rd / "config.snapshot.yaml") or _load_yaml_if_exists(rd / "config.yaml")
     ds = _norm_str(metrics.get("dataset_id")) or _infer_dataset_id(rd, metrics)
 

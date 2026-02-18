@@ -548,7 +548,7 @@ def _run_batch_job(job_id: str, dataset_id: str) -> None:
         st["progress"] = 0.85
 
         pred_run_id, out_dir = create_pred_run_dir(dataset_id)
-        out_parquet = out_dir / "predicciones.parquet"
+        out_parquet = out_dir / "predictions.parquet"
         pd.DataFrame(records).to_parquet(out_parquet, index=False)
 
         import datetime as dt

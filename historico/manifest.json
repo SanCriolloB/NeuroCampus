@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-15T23:46:20.152306+00:00",
+  "periodos_disponibles": [
+    "2024-1",
+    "2024-2",
+    "2025-1",
+    "evaluaciones_2025"
+  ],
+  "modes": {
+    "acumulado": {
+      "updated_at": "2026-02-15T23:46:16.797531+00:00",
+      "paths": {
+        "parquet": "historico/unificado.parquet"
+      },
+      "row_counts": {
+        "rows": 357
+      },
+      "datasets": [
+        "2024-1",
+        "2024-2",
+        "2025-1"
+      ]
+    },
+    "acumulado_labeled": {
+      "updated_at": "2026-02-15T23:46:20.152306+00:00",
+      "paths": {
+        "parquet": "historico/unificado_labeled.parquet"
+      },
+      "row_counts": {
+        "rows": 534
+      },
+      "datasets": [
+        "evaluaciones_2025"
+      ]
+    }
+  }
+}

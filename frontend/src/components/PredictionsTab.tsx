@@ -1,4 +1,19 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import {
+  listDatasets,
+  listTeachers,
+  listMaterias,
+  predictIndividual,
+  runBatch,
+  getBatchJob,
+  getOutputsPreview,
+  getArtifactDownloadUrl,
+  type DatasetInfo,
+  type TeacherInfo,
+  type MateriaInfo,
+  type IndividualPredictionResponse,
+  type BatchJobStatus,
+} from '../services/predicciones';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
@@ -10,186 +25,171 @@ import { TrendingUp, AlertTriangle, CheckCircle, Search, Filter } from 'lucide-r
 import { motion } from 'motion/react';
 
 // Teacher and subject data - simulating database
-const teachersDatabase = [
-  { id: 'garcia', name: 'Dr. María García', code: 'T001', baseScore: 92, department: 'Matemáticas' },
-  { id: 'martinez', name: 'Prof. Juan Martínez', code: 'T002', baseScore: 88, department: 'Física' },
-  { id: 'lopez', name: 'Dr. Ana López', code: 'T003', baseScore: 85, department: 'Ingeniería' },
-  { id: 'rodriguez', name: 'Prof. Carlos Rodríguez', code: 'T004', baseScore: 82, department: 'Química' },
-  { id: 'fernandez', name: 'Dr. Laura Fernández', code: 'T005', baseScore: 78, department: 'Matemáticas' },
-  { id: 'santos', name: 'Dra. Patricia Santos', code: 'T006', baseScore: 90, department: 'Física' },
-  { id: 'torres', name: 'Prof. Miguel Torres', code: 'T007', baseScore: 84, department: 'Química' },
-  { id: 'ramirez', name: 'Dr. Roberto Ramírez', code: 'T008', baseScore: 87, department: 'Ingeniería' },
-];
-
-const subjectsDatabase = [
-  { id: 'calculus', name: 'Cálculo I', code: 'MAT101', basePerformance: 80, department: 'Matemáticas' },
-  { id: 'physics', name: 'Física II', code: 'FIS201', basePerformance: 75, department: 'Física' },
-  { id: 'programming', name: 'Programación Avanzada', code: 'ING301', basePerformance: 85, department: 'Ingeniería' },
-  { id: 'organic_chem', name: 'Química Orgánica', code: 'QUI201', basePerformance: 72, department: 'Química' },
-  { id: 'inorganic_chem', name: 'Química Inorgánica', code: 'QUI101', basePerformance: 74, department: 'Química' },
-  { id: 'mathematics', name: 'Matemáticas Discretas', code: 'MAT201', basePerformance: 78, department: 'Matemáticas' },
-  { id: 'statistics', name: 'Estadística Aplicada', code: 'MAT301', basePerformance: 82, department: 'Matemáticas' },
-];
-
-const periodsData = ['2023-1', '2023-2', '2024-1', '2024-2', '2025-1'];
-
-// Datasets available (from Data tab)
-const datasetsAvailable = [
-  { id: 'ds1', name: 'Evaluaciones 2024-2', period: '2024-2', rows: 1250, date: '2024-11-15' },
-  { id: 'ds2', name: 'Evaluaciones 2024-1', period: '2024-1', rows: 1180, date: '2024-06-20' },
-  { id: 'ds3', name: 'Evaluaciones 2023-2', period: '2023-2', rows: 1100, date: '2023-12-10' },
-  { id: 'ds4', name: 'Dataset Completo 2023-2024', period: 'Multi', rows: 4500, date: '2024-12-01' },
-];
-
-// Mock batch results with heatmap data
-const generateBatchResults = () => {
-  const results: any[] = [];
-  teachersDatabase.slice(0, 5).forEach(teacher => {
-    subjectsDatabase.slice(0, 4).forEach(subject => {
-      const probHigh = 0.6 + Math.random() * 0.35;
-      const probLow = 1 - probHigh;
-      let risk = 'low';
-      if (probHigh < 0.7) risk = 'high';
-      else if (probHigh < 0.8) risk = 'medium';
-      
-      results.push({
-        teacher: teacher.name,
-        subject: subject.name,
-        probHigh,
-        probLow,
-        risk,
-      });
-    });
-  });
-  return results;
-};
 
 export function PredictionsTab() {
+  // --- Modo ---
   const [predictionMode, setPredictionMode] = useState<'individual' | 'batch'>('individual');
-  
-  // Individual prediction state
-  const [selectedTeacher, setSelectedTeacher] = useState('garcia');
-  const [selectedSubject, setSelectedSubject] = useState('calculus');
+
+  // --- Estado de datos remotos ---
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  const [teachers, setTeachers] = useState<TeacherInfo[]>([]);
+  const [materias, setMaterias] = useState<MateriaInfo[]>([]);
+
+  // --- Selección individual ---
+  const [selectedDataset, setSelectedDataset] = useState<string>('');
+  const [selectedTeacher, setSelectedTeacher] = useState<string>('');
+  const [selectedMateria, setSelectedMateria] = useState<string>('');
   const [teacherSearch, setTeacherSearch] = useState('');
   const [subjectSearch, setSubjectSearch] = useState('');
+
+  // --- Resultado individual ---
+  const [predResult, setPredResult] = useState<IndividualPredictionResponse | null>(null);
   const [showResults, setShowResults] = useState(false);
-  
-  // Batch prediction state
-  const [selectedDataset, setSelectedDataset] = useState('ds1');
-  const [selectedModel, setSelectedModel] = useState('dbm');
+  const [isLoadingPred, setIsLoadingPred] = useState(false);
+  const [predError, setPredError] = useState<string | null>(null);
+
+  // --- Batch ---
   const [showBatchResults, setShowBatchResults] = useState(false);
+  const [batchStatus, setBatchStatus] = useState<BatchJobStatus | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchRows, setBatchRows] = useState<any[]>([]);
+  const [predictionsUri, setPredictionsUri] = useState<string | null>(null);
   const [riskFilter, setRiskFilter] = useState('all');
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);  const gaugePercent = predResult ? Math.round((predResult.score_total_pred / 50) * 100) : 0;
+  const confidenceDisplay = predResult ? `${Math.round(predResult.confidence * 100)}%` : '—';
+  const radarData = predResult?.radar ?? [];
+  const comparisonData = predResult?.comparison ?? [];
+  const historicalData = predResult?.timeline ?? [];
+  const predRisk = predResult?.risk ?? 'low';
+  const batchTotal = batchStatus?.n_pairs ?? batchRows.length;
+  const batchLow = batchRows.filter((r) => r.risk === 'low').length;
+  const batchMedium = batchRows.filter((r) => r.risk === 'medium').length;
+  const batchHigh = batchRows.filter((r) => r.risk === 'high').length;
+
+  // Cargar datasets al montar
+  useEffect(() => {
+    listDatasets()
+      .then((ds) => {
+        setDatasets(ds);
+        if (ds.length > 0) setSelectedDataset(ds[ds.length - 1].dataset_id);
+      })
+      .catch(() => setDatasets([]));
+  }, []);
+
+  // Cargar teachers y materias al cambiar dataset
+  useEffect(() => {
+    if (!selectedDataset) return;
+    listTeachers(selectedDataset).then(setTeachers).catch(() => setTeachers([]));
+    listMaterias(selectedDataset).then(setMaterias).catch(() => setMaterias([]));
+    setSelectedTeacher('');
+    setSelectedMateria('');
+    setPredResult(null);
+    setShowResults(false);
+  }, [selectedDataset]);
+
+  // Limpiar polling al desmontar
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
+
 
   // Filter teachers by search
   const filteredTeachers = useMemo(() => {
-    if (!teacherSearch) return teachersDatabase;
+    if (!teacherSearch) return teachers;
     const search = teacherSearch.toLowerCase();
-    return teachersDatabase.filter(t => 
-      t.name.toLowerCase().includes(search) || 
-      t.code.toLowerCase().includes(search)
-    );
-  }, [teacherSearch]);
+    return teachers.filter((t) => t.teacher_key.toLowerCase().includes(search));
+  }, [teacherSearch, teachers]);
 
   // Filter subjects by search and selected teacher
   const filteredSubjects = useMemo(() => {
-    let subjects = subjectsDatabase;
-    
-    // Filter by teacher's department
-    if (selectedTeacher) {
-      const teacher = teachersDatabase.find(t => t.id === selectedTeacher);
-      if (teacher) {
-        // Show subjects from same department or related ones
-        subjects = subjects.filter(s => 
-          s.department === teacher.department || 
-          teacher.department === 'Matemáticas' // Math teachers can teach many subjects
-        );
-      }
-    }
-    
-    if (!subjectSearch) return subjects;
+    if (!subjectSearch) return materias;
     const search = subjectSearch.toLowerCase();
-    return subjects.filter(s => 
-      s.name.toLowerCase().includes(search) || 
-      s.code.toLowerCase().includes(search)
-    );
-  }, [subjectSearch, selectedTeacher]);
+    return materias.filter((m) => m.materia_key.toLowerCase().includes(search));
+  }, [subjectSearch, materias]);
 
-  // Generate prediction data based on selected teacher and subject
-  const predictionData = useMemo(() => {
-    const teacher = teachersDatabase.find(t => t.id === selectedTeacher)!;
-    const subject = subjectsDatabase.find(s => s.id === selectedSubject)!;
-    
-    const baseProb = Math.round((teacher.baseScore + subject.basePerformance) / 2);
-    const variation = Math.random() * 10 - 5;
-    const highProb = Math.max(55, Math.min(95, Math.round(baseProb + variation)));
-    const lowProb = 100 - highProb;
-    
-    let risk = 'low';
-    if (highProb < 70) risk = 'high';
-    else if (highProb < 80) risk = 'medium';
-    
-    // Radar data - 10 indicators: Promedio Actual del Docente vs Predicción
-    const radarData = [
-      { indicator: 'Planificación', actual: 3.5 + (teacher.baseScore / 100) * 1.5, prediccion: 3.7 + (teacher.baseScore / 100) * 1.4 },
-      { indicator: 'Metodología', actual: 3.8 + (teacher.baseScore / 100) * 1.5, prediccion: 4.0 + (teacher.baseScore / 100) * 1.3 },
-      { indicator: 'Claridad', actual: 3.2 + (teacher.baseScore / 100) * 1.5, prediccion: 3.4 + (teacher.baseScore / 100) * 1.4 },
-      { indicator: 'Evaluación', actual: 3.4 + (teacher.baseScore / 100) * 1.5, prediccion: 3.6 + (teacher.baseScore / 100) * 1.4 },
-      { indicator: 'Materiales', actual: 3.6 + (teacher.baseScore / 100) * 1.5, prediccion: 3.8 + (teacher.baseScore / 100) * 1.4 },
-      { indicator: 'Interacción', actual: 4.0 + (teacher.baseScore / 100) * 1.5, prediccion: 4.2 + (teacher.baseScore / 100) * 1.3 },
-      { indicator: 'Retroalimentación', actual: 3.5 + (teacher.baseScore / 100) * 1.5, prediccion: 3.7 + (teacher.baseScore / 100) * 1.4 },
-      { indicator: 'Innovación', actual: 3.3 + (teacher.baseScore / 100) * 1.5, prediccion: 3.5 + (teacher.baseScore / 100) * 1.4 },
-      { indicator: 'Puntualidad', actual: 3.7 + (teacher.baseScore / 100) * 1.5, prediccion: 3.8 + (teacher.baseScore / 100) * 1.4 },
-      { indicator: 'Disponibilidad', actual: 3.9 + (teacher.baseScore / 100) * 1.5, prediccion: 4.0 + (teacher.baseScore / 100) * 1.3 },
-    ];
-    
-    // Comparison data - by dimension
-    const comparisonData = [
-      { dimension: 'Planificación', docente: 4.2, cohorte: 3.8 },
-      { dimension: 'Metodología', docente: 4.5, cohorte: 4.0 },
-      { dimension: 'Evaluación', docente: 4.0, cohorte: 3.7 },
-      { dimension: 'Interacción', docente: 4.7, cohorte: 4.2 },
-      { dimension: 'Materiales', docente: 4.3, cohorte: 4.1 },
-    ].map(d => ({
-      ...d,
-      docente: Math.min(5, d.docente * (teacher.baseScore / 90)),
-      cohorte: d.cohorte,
-    }));
-    
-    // Historical data - using last 5 periods
-    const historicalData = periodsData.map((per, idx) => ({
-      semester: per,
-      real: idx < periodsData.length - 1 ? Math.round(baseProb - (periodsData.length - idx - 1) * 2 + Math.random() * 3) : undefined,
-      predicted: Math.round(baseProb - (periodsData.length - idx - 1) * 2 + Math.random() * 3),
-    }));
-    
-    return {
-      highProb,
-      lowProb,
-      confidenceInterval: [Math.max(0, highProb - 8), Math.min(100, highProb + 7)],
-      risk,
-      radarData,
-      comparisonData,
-      historicalData,
-    };
-  }, [selectedTeacher, selectedSubject]);
-
-  const batchResults = useMemo(() => generateBatchResults(), []);
 
   const filteredBatchResults = useMemo(() => {
-    if (riskFilter === 'all') return batchResults;
-    return batchResults.filter(r => r.risk === riskFilter);
-  }, [batchResults, riskFilter]);
+    if (riskFilter === 'all') return batchRows;
+    return batchRows.filter((r) => r.risk === riskFilter);
+  }, [batchRows, riskFilter]);
 
-  const handleGeneratePrediction = () => {
-    setShowResults(true);
-    setTimeout(() => {
-      document.getElementById('prediction-results')?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
-  };
+  const handleGeneratePrediction = useCallback(async () => {
+    if (!selectedDataset || !selectedTeacher || !selectedMateria) return;
+    setIsLoadingPred(true);
+    setPredError(null);
 
-  const handleGenerateBatch = () => {
-    setShowBatchResults(true);
-  };
+    try {
+      const result = await predictIndividual({
+        dataset_id: selectedDataset,
+        teacher_key: selectedTeacher,
+        materia_key: selectedMateria,
+      });
+      setPredResult(result);
+      setShowResults(true);
+      setTimeout(() => {
+        document.getElementById('prediction-results')?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail ?? e?.message ?? 'Error al generar predicción';
+      setPredError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    } finally {
+      setIsLoadingPred(false);
+    }
+  }, [selectedDataset, selectedTeacher, selectedMateria]);
+
+
+  const handleGenerateBatch = useCallback(async () => {
+    if (!selectedDataset) return;
+
+    setBatchError(null);
+    setShowBatchResults(false);
+    setBatchRows([]);
+    setPredictionsUri(null);
+
+    try {
+      const job = await runBatch(selectedDataset);
+      setBatchStatus(job);
+
+      // Polling cada 2s
+      pollingRef.current = setInterval(async () => {
+        try {
+          const status = await getBatchJob(job.job_id);
+          setBatchStatus(status);
+
+          if (status.status === 'completed') {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+
+            if (status.predictions_uri) {
+              setPredictionsUri(status.predictions_uri);
+
+              const preview = await getOutputsPreview({
+                predictions_uri: status.predictions_uri,
+                limit: 500,
+                offset: 0,
+              });
+
+              setBatchRows(preview.rows ?? []);
+            }
+
+            setShowBatchResults(true);
+          } else if (status.status === 'failed') {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            setBatchError(status.error ?? 'Error en el procesamiento del lote.');
+          }
+        } catch {
+          // error transitorio: mantener polling
+        }
+      }, 2000);
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail ?? e?.message ?? 'Error al lanzar el batch';
+      setBatchError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    }
+  }, [selectedDataset]);
+
 
   const getRiskColor = (risk: string) => {
     switch (risk) {
@@ -211,13 +211,17 @@ export function PredictionsTab() {
 
   // Get heatmap data for batch results
   const heatmapData = useMemo(() => {
-    const matrix: any = {};
-    batchResults.forEach(r => {
-      if (!matrix[r.teacher]) matrix[r.teacher] = {};
-      matrix[r.teacher][r.subject] = r.probHigh;
+    const matrix: Record<string, Record<string, number>> = {};
+    batchRows.forEach((r) => {
+      const t = String(r.teacher_key ?? '');
+      const s = String(r.materia_key ?? '');
+      const percent = r.score_total_pred != null ? Math.round((Number(r.score_total_pred) / 50) * 100) : null;
+
+      if (!matrix[t]) matrix[t] = {};
+      if (percent != null) matrix[t][s] = percent;
     });
     return matrix;
-  }, [batchResults]);
+  }, [batchRows]);
 
   return (
     <div className="p-8 space-y-6">
@@ -251,6 +255,26 @@ export function PredictionsTab() {
               <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                 <h3 className="text-white mb-4">Seleccionar Docente y Asignatura</h3>
                 <div className="space-y-4">
+                  {/* Dataset */}
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-2">Dataset</label>
+                    <Select value={selectedDataset} onValueChange={setSelectedDataset}>
+                      <SelectTrigger className="bg-[#0f1419] border-gray-700">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-[#1a1f2e] border-gray-700">
+                        {datasets.map((ds) => (
+                          <SelectItem key={ds.dataset_id} value={ds.dataset_id}>
+                            {ds.dataset_id} — {ds.n_pairs} pares {ds.has_champion ? '✓' : '⚠'}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Seleccione un dataset previamente cargado en la pestaña Datos
+                    </p>
+                  </div>
+
                   {/* Teacher Selection with Search */}
                   <div>
                     <label className="block text-sm text-gray-400 mb-2">Docente</label>
@@ -268,9 +292,9 @@ export function PredictionsTab() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent className="bg-[#1a1f2e] border-gray-700 max-h-[300px]">
-                        {filteredTeachers.map((teacher) => (
-                          <SelectItem key={teacher.id} value={teacher.id}>
-                            {teacher.name} ({teacher.code})
+                        {filteredTeachers.map((t) => (
+                          <SelectItem key={t.teacher_key} value={t.teacher_key}>
+                            {t.teacher_key}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -289,14 +313,14 @@ export function PredictionsTab() {
                         className="bg-[#0f1419] border-gray-700 pl-10"
                       />
                     </div>
-                    <Select value={selectedSubject} onValueChange={setSelectedSubject}>
+                    <Select value={selectedMateria} onValueChange={setSelectedMateria}>
                       <SelectTrigger className="bg-[#0f1419] border-gray-700">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent className="bg-[#1a1f2e] border-gray-700 max-h-[300px]">
-                        {filteredSubjects.map((subject) => (
-                          <SelectItem key={subject.id} value={subject.id}>
-                            {subject.name} ({subject.code})
+                        {filteredSubjects.map((m) => (
+                          <SelectItem key={m.materia_key} value={m.materia_key}>
+                            {m.materia_key}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -309,32 +333,51 @@ export function PredictionsTab() {
                 <h3 className="text-white mb-4">Información Seleccionada</h3>
                 <div className="space-y-3">
                   <div>
+                    <p className="text-sm text-gray-400">Dataset</p>
+                    <p className="text-white">{selectedDataset || '—'}</p>
+                  </div>
+                  <div>
                     <p className="text-sm text-gray-400">Docente</p>
-                    <p className="text-white">{teachersDatabase.find(t => t.id === selectedTeacher)?.name}</p>
-                    <p className="text-xs text-gray-500">{teachersDatabase.find(t => t.id === selectedTeacher)?.code}</p>
+                    <p className="text-white">{selectedTeacher || '—'}</p>
+                    <p className="text-xs text-gray-500">
+                      Encuestas:{' '}
+                      {teachers.find((t) => t.teacher_key === selectedTeacher)?.n_encuestas ?? '—'}
+                    </p>
                   </div>
                   <div>
                     <p className="text-sm text-gray-400">Asignatura</p>
-                    <p className="text-white">{subjectsDatabase.find(s => s.id === selectedSubject)?.name}</p>
-                    <p className="text-xs text-gray-500">{subjectsDatabase.find(s => s.id === selectedSubject)?.code}</p>
+                    <p className="text-white">{selectedMateria || '—'}</p>
+                    <p className="text-xs text-gray-500">
+                      Encuestas:{' '}
+                      {materias.find((m) => m.materia_key === selectedMateria)?.n_encuestas ?? '—'}
+                    </p>
                   </div>
                   <div className="pt-2 border-t border-gray-700">
-                    <p className="text-sm text-gray-400">Puntuación Histórica</p>
-                    <p className="text-cyan-400 text-2xl">{teachersDatabase.find(t => t.id === selectedTeacher)?.baseScore}</p>
+                    <p className="text-sm text-gray-400">Score histórico (par)</p>
+                    <p className="text-cyan-400 text-2xl">
+                      {showResults && predResult ? predResult.historical.mean_score : '—'}
+                    </p>
                   </div>
                 </div>
               </Card>
 
               <Button
                 onClick={handleGeneratePrediction}
+                disabled={isLoadingPred || !selectedTeacher || !selectedMateria}
                 className="w-full bg-blue-600 hover:bg-blue-700"
               >
                 <TrendingUp className="w-4 h-4 mr-2" />
-                Generar Predicción
+                {isLoadingPred ? 'Generando...' : 'Generar Predicción'}
               </Button>
             </motion.div>
 
             {/* Right Column - Results */}
+            {predError && (
+              <div className="col-span-3 p-4 rounded border border-red-500 bg-red-500/10 text-red-400">
+                {predError}
+              </div>
+            )}
+
             <div className="col-span-2 space-y-6" id="prediction-results">
               {showResults ? (
                 <>
@@ -350,15 +393,13 @@ export function PredictionsTab() {
                         <div>
                           <p className="text-gray-300 mb-2">Probabilidad de Alto Rendimiento</p>
                           <div className="flex items-end gap-2">
-                            <span className="text-5xl text-white">{predictionData.highProb}%</span>
-                            <span className="text-gray-400 mb-2">
-                              IC 95%: [{predictionData.confidenceInterval[0]}-{predictionData.confidenceInterval[1]}%]
-                            </span>
+                            <span className="text-5xl text-white">{gaugePercent}%</span>
+                            <span className="text-gray-400 mb-2">Confianza: {confidenceDisplay}</span>
                           </div>
                         </div>
                         <div className="flex items-center justify-center">
-                          <Badge className={`${getRiskColor(predictionData.risk)} px-6 py-3 text-lg`}>
-                            {predictionData.risk === 'low' ? 'BAJO' : predictionData.risk === 'medium' ? 'MODERADO' : 'ALTO'} RIESGO
+                          <Badge className={`${getRiskColor(predRisk)} px-6 py-3 text-lg`}>
+                            {predRisk === 'low' ? 'BAJO' : predRisk === 'medium' ? 'MODERADO' : 'ALTO'} RIESGO
                           </Badge>
                         </div>
                       </div>
@@ -369,12 +410,12 @@ export function PredictionsTab() {
                           <motion.div
                             className="h-full bg-gradient-to-r from-blue-500 to-cyan-400"
                             initial={{ width: 0 }}
-                            animate={{ width: `${predictionData.highProb}%` }}
+                            animate={{ width: `${gaugePercent}%` }}
                             transition={{ duration: 1, ease: "easeOut" }}
                           />
                           <div
                             className="absolute top-0 h-full w-1 bg-white"
-                            style={{ left: `${predictionData.highProb}%` }}
+                            style={{ left: `${gaugePercent}%` }}
                           />
                         </div>
                         <div className="flex justify-between mt-2 text-sm text-gray-400">
@@ -385,9 +426,9 @@ export function PredictionsTab() {
                       </div>
 
                       <p className="text-gray-300 mt-4 text-center">
-                        {predictionData.risk === 'low' 
+                        {predRisk === 'low' 
                           ? 'Excelente rendimiento esperado. Continuar con estrategias actuales.'
-                          : predictionData.risk === 'medium'
+                          : predRisk === 'medium'
                           ? 'Riesgo moderado. Considerar estrategias de apoyo adicionales.'
                           : 'Alto riesgo de bajo rendimiento. Se recomienda intervención inmediata.'}
                       </p>
@@ -403,7 +444,7 @@ export function PredictionsTab() {
                     <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                       <h3 className="text-white mb-4">Perfil de Indicadores (Radar)</h3>
                       <ResponsiveContainer width="100%" height={400}>
-                        <RadarChart data={predictionData.radarData}>
+                        <RadarChart data={radarData}>
                           <PolarGrid stroke="#374151" />
                           <PolarAngleAxis dataKey="indicator" stroke="#9CA3AF" tick={{ fontSize: 11 }} />
                           <PolarRadiusAxis angle={90} domain={[0, 5]} stroke="#9CA3AF" />
@@ -427,7 +468,7 @@ export function PredictionsTab() {
                     <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                       <h3 className="text-white mb-4">Análisis Comparativo por Dimensión</h3>
                       <ResponsiveContainer width="100%" height={300}>
-                        <BarChart data={predictionData.comparisonData}>
+                        <BarChart data={comparisonData}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                           <XAxis dataKey="dimension" stroke="#9CA3AF" />
                           <YAxis domain={[0, 5]} stroke="#9CA3AF" />
@@ -452,10 +493,10 @@ export function PredictionsTab() {
                     <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                       <h3 className="text-white mb-4">Proyección Temporal</h3>
                       <ResponsiveContainer width="100%" height={300}>
-                        <LineChart data={predictionData.historicalData}>
+                        <LineChart data={historicalData}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                           <XAxis dataKey="semester" stroke="#9CA3AF" />
-                          <YAxis domain={[60, 100]} stroke="#9CA3AF" />
+                          <YAxis domain={[0, 50]} stroke="#9CA3AF" />
                           <Tooltip
                             contentStyle={{ backgroundColor: '#1a1f2e', border: '1px solid #374151' }}
                             labelStyle={{ color: '#fff' }}
@@ -491,7 +532,7 @@ export function PredictionsTab() {
         <TabsContent value="batch" className="mt-6 space-y-6">
           {/* Dataset and Model Selection */}
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-            <h3 className="text-white mb-4">Seleccionar Dataset y Modelo</h3>
+            <h3 className="text-white mb-4">Seleccionar Dataset</h3>
             <div className="grid grid-cols-3 gap-6">
               <div className="col-span-2">
                 <label className="block text-sm text-gray-400 mb-2">Dataset</label>
@@ -500,11 +541,11 @@ export function PredictionsTab() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    {datasetsAvailable.map(ds => (
-                      <SelectItem key={ds.id} value={ds.id}>
-                        {ds.name} - {ds.rows} registros ({ds.date})
-                      </SelectItem>
-                    ))}
+                    {datasets.map((ds) => (
+                    <SelectItem key={ds.dataset_id} value={ds.dataset_id}>
+                      {ds.dataset_id} — {ds.n_pairs} pares {ds.has_champion ? '✓' : '⚠'}
+                    </SelectItem>
+                  ))}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-gray-500 mt-1">
@@ -512,17 +553,8 @@ export function PredictionsTab() {
                 </p>
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-2">Modelo</label>
-                <Select value={selectedModel} onValueChange={setSelectedModel}>
-                  <SelectTrigger className="bg-[#0f1419] border-gray-700">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    <SelectItem value="dbm">DBM (Champion)</SelectItem>
-                    <SelectItem value="rbm">RBM</SelectItem>
-                    <SelectItem value="bm">BM Clásica</SelectItem>
-                  </SelectContent>
-                </Select>
+                <p className="text-sm text-gray-400">Champion automático</p>
+                <p className="text-white text-sm">{batchStatus?.champion_run_id ?? '—'}</p>
               </div>
             </div>
             <Button 
@@ -533,6 +565,26 @@ export function PredictionsTab() {
               Generar Predicciones del Lote
             </Button>
           </Card>
+
+          {batchStatus && batchStatus.status === 'running' && (
+            <div className="w-full mt-4">
+              <div className="flex justify-between text-sm text-gray-400 mb-1">
+                <span>Procesando lote…</span>
+                <span>{Math.round((batchStatus.progress ?? 0) * 100)}%</span>
+              </div>
+              <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 transition-all duration-300"
+                  style={{ width: `${Math.round((batchStatus.progress ?? 0) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {batchError && (
+            <div className="p-4 rounded border border-red-500 bg-red-500/10 text-red-400">
+              {batchError}
+            </div>
+          )}
 
           {showBatchResults && (
             <>
@@ -545,33 +597,33 @@ export function PredictionsTab() {
               >
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                   <p className="text-gray-400 text-sm mb-2">Registros Procesados</p>
-                  <p className="text-white text-3xl">{batchResults.length}</p>
+                  <p className="text-white text-3xl">{batchTotal}</p>
                 </Card>
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                   <p className="text-gray-400 text-sm mb-2">Alto Rendimiento</p>
                   <p className="text-green-400 text-3xl">
-                    {batchResults.filter(r => r.risk === 'low').length}
+                    {batchLow}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {((batchResults.filter(r => r.risk === 'low').length / batchResults.length) * 100).toFixed(0)}%
+                    {(batchTotal ? ((batchLow / batchTotal) * 100).toFixed(0) : '0')}%
                   </p>
                 </Card>
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                   <p className="text-gray-400 text-sm mb-2">Riesgo Medio</p>
                   <p className="text-yellow-400 text-3xl">
-                    {batchResults.filter(r => r.risk === 'medium').length}
+                    {batchMedium}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {((batchResults.filter(r => r.risk === 'medium').length / batchResults.length) * 100).toFixed(0)}%
+                    {(batchTotal ? ((batchMedium / batchTotal) * 100).toFixed(0) : '0')}%
                   </p>
                 </Card>
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                   <p className="text-gray-400 text-sm mb-2">En Riesgo</p>
                   <p className="text-red-400 text-3xl">
-                    {batchResults.filter(r => r.risk === 'high').length}
+                    {batchHigh}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {((batchResults.filter(r => r.risk === 'high').length / batchResults.length) * 100).toFixed(0)}%
+                    {(batchTotal ? ((batchHigh / batchTotal) * 100).toFixed(0) : '0')}%
                   </p>
                 </Card>
               </motion.div>
@@ -583,17 +635,19 @@ export function PredictionsTab() {
                 transition={{ duration: 0.5, delay: 0.1 }}
               >
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                  <h3 className="text-white mb-4">Distribución de Riesgo por Asignatura</h3>
+                  <h3 className="text-white mb-4">Distribución de Riesgo por Materia</h3>
                   <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={subjectsDatabase.slice(0, 4).map(s => {
-                      const subjectResults = batchResults.filter(r => r.subject === s.name);
-                      return {
-                        subject: s.name,
-                        bajo: subjectResults.filter(r => r.risk === 'low').length,
-                        medio: subjectResults.filter(r => r.risk === 'medium').length,
-                        alto: subjectResults.filter(r => r.risk === 'high').length,
-                      };
-                    })}>
+                    <BarChart
+                      data={materias.slice(0, 8).map((m) => {
+                        const subjectResults = batchRows.filter((r) => r.materia_key === m.materia_key);
+                        return {
+                          subject: m.materia_key,
+                          bajo: subjectResults.filter((r) => r.risk === 'low').length,
+                          medio: subjectResults.filter((r) => r.risk === 'medium').length,
+                          alto: subjectResults.filter((r) => r.risk === 'high').length,
+                        };
+                      })}
+                    >
                       <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                       <XAxis dataKey="subject" stroke="#9CA3AF" />
                       <YAxis stroke="#9CA3AF" />
@@ -617,14 +671,14 @@ export function PredictionsTab() {
                 transition={{ duration: 0.5, delay: 0.2 }}
               >
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                  <h3 className="text-white mb-4">Mapa de Calor: Probabilidad de Alto Rendimiento</h3>
+                  <h3 className="text-white mb-4">Mapa de Calor: Score (% del máximo)</h3>
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead>
                         <tr className="border-b border-gray-800">
                           <th className="text-left text-gray-400 text-sm py-3 px-4">Docente</th>
-                          {subjectsDatabase.slice(0, 4).map(s => (
-                            <th key={s.id} className="text-center text-gray-400 text-sm py-3 px-2">{s.code}</th>
+                          {materias.slice(0, 4).map((s) => (
+                            <th key={s.materia_key} className="text-center text-gray-400 text-sm py-3 px-2">{s.materia_key}</th>
                           ))}
                         </tr>
                       </thead>
@@ -632,17 +686,17 @@ export function PredictionsTab() {
                         {Object.entries(heatmapData).map(([teacher, subjects]: [string, any]) => (
                           <tr key={teacher} className="border-b border-gray-800/50">
                             <td className="text-gray-300 text-sm py-3 px-4">{teacher.split(' ').slice(0, 2).join(' ')}</td>
-                            {subjectsDatabase.slice(0, 4).map(s => {
-                              const prob = subjects[s.name];
-                              const bgColor = prob ? 
-                                prob > 0.8 ? 'bg-green-500/80' :
-                                prob > 0.7 ? 'bg-green-500/50' :
-                                prob > 0.6 ? 'bg-yellow-500/50' :
+                            {materias.slice(0, 4).map((s) => {
+                              const prob = subjects[s.materia_key];
+                              const bgColor = prob != null ?
+                                prob > 80 ? 'bg-green-500/80' :
+                                prob > 70 ? 'bg-green-500/50' :
+                                prob > 60 ? 'bg-yellow-500/50' :
                                 'bg-red-500/50' : 'bg-gray-700';
                               return (
-                                <td key={s.id} className="text-center py-3 px-2">
+                                <td key={s.materia_key} className="text-center py-3 px-2">
                                   <div className={`${bgColor} rounded px-2 py-1 text-white text-sm`}>
-                                    {prob ? `${(prob * 100).toFixed(0)}%` : '-'}
+                                    {prob != null ? `${prob}%` : '-'}
                                   </div>
                                 </td>
                               );
@@ -664,7 +718,7 @@ export function PredictionsTab() {
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                   <div className="flex justify-between items-center mb-4">
                     <h3 className="text-white">Tabla de Predicciones</h3>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <Badge 
                         className={`cursor-pointer ${riskFilter === 'all' ? 'bg-blue-600' : 'bg-gray-700'}`}
                         onClick={() => setRiskFilter('all')}
@@ -689,6 +743,11 @@ export function PredictionsTab() {
                       >
                         Alto
                       </Badge>
+                      {predictionsUri && (
+                        <a href={getArtifactDownloadUrl(predictionsUri)} download>
+                          <Button className="bg-blue-600 hover:bg-blue-700">Descargar Predicciones</Button>
+                        </a>
+                      )}
                     </div>
                   </div>
                   <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
@@ -696,9 +755,9 @@ export function PredictionsTab() {
                       <thead className="sticky top-0 bg-[#1a1f2e]">
                         <tr className="border-b border-gray-800">
                           <th className="text-left text-gray-400 text-sm py-3 px-4">Docente</th>
-                          <th className="text-left text-gray-400 text-sm py-3 px-4">Asignatura</th>
-                          <th className="text-left text-gray-400 text-sm py-3 px-4">Prob. Alto</th>
-                          <th className="text-left text-gray-400 text-sm py-3 px-4">Prob. Bajo</th>
+                          <th className="text-left text-gray-400 text-sm py-3 px-4">Materia</th>
+                          <th className="text-left text-gray-400 text-sm py-3 px-4">Score (0–50)</th>
+                          <th className="text-left text-gray-400 text-sm py-3 px-4">Confianza</th>
                           <th className="text-left text-gray-400 text-sm py-3 px-4">Nivel de Riesgo</th>
                         </tr>
                       </thead>
@@ -707,10 +766,14 @@ export function PredictionsTab() {
                           const RiskIcon = getRiskIcon(result.risk);
                           return (
                             <tr key={index} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                              <td className="text-gray-300 text-sm py-3 px-4">{result.teacher}</td>
-                              <td className="text-gray-300 text-sm py-3 px-4">{result.subject}</td>
-                              <td className="text-gray-300 text-sm py-3 px-4">{(result.probHigh * 100).toFixed(0)}%</td>
-                              <td className="text-gray-300 text-sm py-3 px-4">{(result.probLow * 100).toFixed(0)}%</td>
+                              <td className="text-gray-300 text-sm py-3 px-4">{result.teacher_key ?? '—'}</td>
+                              <td className="text-gray-300 text-sm py-3 px-4">{result.materia_key ?? '—'}</td>
+                              <td className="text-gray-300 text-sm py-3 px-4">
+                                {result.score_total_pred != null ? Number(result.score_total_pred).toFixed(2) : '—'}
+                              </td>
+                              <td className="text-gray-300 text-sm py-3 px-4">
+                                {result.confidence != null ? `${Math.round(Number(result.confidence) * 100)}%` : '—'}
+                              </td>
                               <td className="text-gray-300 text-sm py-3 px-4">
                                 <Badge className={getRiskColor(result.risk)}>
                                   <RiskIcon className="w-3 h-3 mr-1" />

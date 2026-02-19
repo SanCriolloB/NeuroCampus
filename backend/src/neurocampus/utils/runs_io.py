@@ -765,27 +765,35 @@ def _ensure_champions_ds_dir(dataset_id: str, family: Optional[str] = None) -> P
 
 
 def _copy_run_artifacts_to_dir(run_dir: Path, target_dir: Path) -> None:
-    """Copia artifacts relevantes del run al directorio del champion."""
+    """Copia artifacts relevantes del run al directorio del champion.
+
+    Nota: los pesos reales viven en `run_dir/model/` (P2.x). Aquí copiamos:
+    - metadata root del run (metrics/history/config/job_meta/predictor/preprocess/model.bin)
+    - pesos de `run_dir/model/` (RBM: rbm.pt/head.pt/meta.json; DBM: dbm_state.npz/meta.json; + extras)
+    """
     ensure_dir(target_dir)
 
-    for fname in ("metrics.json", "history.json", "config.snapshot.yaml", "job_meta.json"):
-        src = run_dir / fname
-        if src.exists():
-            shutil.copy2(src, target_dir / fname)
-
-    # pesos / extras comunes
+    # 1) Root metadata del run
     for fname in (
-        "rbm.pt",
-        "head.pt",
-        "model.pt",
-        "weights.pt",
-        "vectorizer.json",
-        "encoder.json",
-        "meta.json",
+        "metrics.json",
+        "history.json",
+        "config.snapshot.yaml",
+        "job_meta.json",
+        "predictor.json",
+        "preprocess.json",
+        "model.bin",
     ):
         src = run_dir / fname
         if src.exists():
             shutil.copy2(src, target_dir / fname)
+
+    # 2) Pesos y archivos dentro de run_dir/model/
+    model_src = run_dir / "model"
+    if model_src.is_dir():
+        for p in model_src.iterdir():
+            if p.is_file():
+                shutil.copy2(p, target_dir / p.name)
+
 
 
 def _ensure_source_run_id(champ: Dict[str, Any]) -> Dict[str, Any]:

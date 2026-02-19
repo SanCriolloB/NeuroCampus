@@ -75,3 +75,14 @@ tmp_*.json
 
 # Local logging config (si no se versiona)
 logging.yaml
+# --- local smoke tests / verify outputs ---
+verify_outputs/
+10_*.json
+11_*.json
+12_*.json
+13_*.json
+*_train_*_req.json
+*_train_*_start.json
+*_state_*.json
+*_sweep*.json
+*_sweep*_resp.json

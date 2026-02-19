@@ -135,6 +135,23 @@ def _pick_first_from_dicts(key: str, *dicts: Mapping[str, Any]) -> Optional[str]
                 return s
     return None
 
+def _norm_float(v: Any) -> Optional[float]:
+    """Normaliza un valor a float o None (sin explotar)."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+
+    s = _norm_str(v)
+    if not s:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
 
 def fill_context(
     *,
@@ -217,7 +234,7 @@ def fill_context(
     # Opcionales: se resuelven con misma precedencia, pero pueden quedar None
     data_plan_out = _pick_first_from_dicts("data_plan", req, m, pred, pred_extra)
     split_mode_out = _pick_first_from_dicts("split_mode", req, m, pred, pred_extra)
-    val_ratio_out = _pick_first_from_dicts("val_ratio", req, m, pred, pred_extra)
+    val_ratio_out = _norm_float(_pick_first_from_dicts("val_ratio", req, m, pred, pred_extra))
     target_mode_out = _pick_first_from_dicts("target_mode", req, m, pred, pred_extra)
 
     return {

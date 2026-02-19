@@ -226,7 +226,16 @@ def _try_write_predictor_bundle(
         run_path = _Path(run_dir).expanduser().resolve()
         bp = bundle_paths(run_path)
 
-        metrics = metrics or {}
+        # Preferir el metrics.json persistido (incluye params.req).
+        # Esto evita que predictor.json quede con extra=null aunque el request sí lo tenía.
+        metrics_payload = metrics or {}
+        try:
+            mp = run_path / "metrics.json"
+            if mp.exists():
+                metrics_payload = json.loads(mp.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("No se pudo leer metrics.json para contexto; se usa metrics in-memory")
+
 
         # ------------------------------------------------------------
         # 1) Persistencia real del modelo (si la estrategia soporta save())
@@ -234,15 +243,16 @@ def _try_write_predictor_bundle(
         try:
             save_fn = getattr(strategy, "save", None)
             if callable(save_fn):
-                model_dir = run_path / "model"
-                model_dir.mkdir(parents=True, exist_ok=True)
+                # Llamada robusta (posibles diferencias de firma entre estrategias)
+                _call_with_accepted_kwargs(save_fn, out_dir=str(model_dir))
 
-                # Soportar firmas tipo save(path: str)
-                save_fn(str(model_dir))
-
-                # Marcador NO-placeholder: el loader debe considerarlo “ready”.
-                # (el contenido exacto da igual, mientras no sea el placeholder P2.1)
-                bp.model_bin.write_bytes(b"DIR:model\n")
+                # Validación mínima: si quedó vacío, lo tratamos como fallo de export
+                present = [p.name for p in Path(model_dir).iterdir() if p.is_file()]
+                if not present:
+                    raise RuntimeError(
+                        f"Export de modelo dejó model/ vacío en {model_dir}. "
+                        "Revisa strategy.save() y logs del backend."
+                    )
         except Exception:
             logger.exception("No se pudo persistir modelo en run_dir=%s (best-effort)", str(run_path))
 
@@ -258,7 +268,7 @@ def _try_write_predictor_bundle(
             family=family or None,
             dataset_id=dataset_id or None,
             model_name=model_name or None,
-            metrics=metrics,
+            metrics=metrics_payload,
             predictor_manifest=None,
         )
         dataset_id = str((ctx.get("dataset_id") or dataset_id) or "")
@@ -273,13 +283,17 @@ def _try_write_predictor_bundle(
             input_level=str(ctx.get("input_level") or "row"),
             target_col=str(ctx.get("target_col")) if ctx.get("target_col") else None,
             extra={
-                "family": family,
-                "data_source": ctx.get("data_source"),
-                "data_plan": ctx.get("data_plan"),
-                "split_mode": ctx.get("split_mode"),
-                "val_ratio": ctx.get("val_ratio"),
-                "target_mode": ctx.get("target_mode"),
-                "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
+                k: v
+                for k, v in {
+                    "family": family,
+                    "data_source": ctx.get("data_source"),
+                    "data_plan": ctx.get("data_plan"),
+                    "split_mode": ctx.get("split_mode"),
+                    "val_ratio": ctx.get("val_ratio"),
+                    "target_mode": ctx.get("target_mode"),
+                    "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
+                }.items()
+                if v is not None
             },
         )
         write_json(bp.predictor_json, manifest)
@@ -1594,6 +1608,26 @@ def _evaluate_post_training_metrics(estrategia, df: "pd.DataFrame", hparams: dic
         "confusion_matrix": cm_va,
     }
 
+def _require_exported_model(run_dir: str | Path, model_name: str) -> None:
+    run_dir = Path(run_dir)
+    model_dir = run_dir / "model"
+    present = {p.name for p in model_dir.iterdir() if p.is_file()} if model_dir.exists() else set()
+
+    mn = (model_name or "").lower().strip()
+
+    if mn.startswith("rbm"):
+        if "meta.json" not in present or not ({"rbm.pt", "head.pt"} & present):
+            raise RuntimeError(
+                f"Run {run_dir.name}: export RBM incompleto en {model_dir}. "
+                f"Se esperaba meta.json + rbm.pt/head.pt. Presentes: {sorted(present)}"
+            )
+
+    if mn.startswith("dbm"):
+        if not {"meta.json", "dbm_state.npz"} <= present:
+            raise RuntimeError(
+                f"Run {run_dir.name}: export DBM incompleto en {model_dir}. "
+                f"Se esperaba meta.json + dbm_state.npz. Presentes: {sorted(present)}"
+            )
 
 # ---------------------------------------------------------------------------
 # Entrenamiento (persistencia vía runs_io)
@@ -1756,6 +1790,21 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
 
         # (best-effort): persistir predictor bundle + modelo serializado para inferencia.
         # Importante: NO debe romper P0 si falla; solo deja bundle en placeholder.
+        # Cargar el metrics.json completo (incluye params.req) para evitar nulls en predictor.json
+        metrics_payload: dict[str, Any] = {}
+        try:
+            metrics_payload = json.loads((Path(run_dir) / "metrics.json").read_text(encoding="utf-8"))
+        except Exception:
+            # Fallback defensivo si por alguna razón no se puede leer el archivo recién escrito
+            metrics_payload = {
+                "run_id": str(run_id),
+                "job_id": str(job_id),
+                "dataset_id": str(req_norm.dataset_id),
+                "model_name": str(req_norm.modelo),
+                "params": params,
+                **(final_metrics or {}),
+            }
+
         _try_write_predictor_bundle(
             run_dir=run_dir,
             req_norm=req_norm,
@@ -1763,6 +1812,7 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             strategy=strategy,
         )
 
+        _require_exported_model(run_dir, str(req_norm.modelo))
 
         # 7) Champion (si aplica) - usar metrics.json como contrato (incluye params.req)
         champion_promoted = None

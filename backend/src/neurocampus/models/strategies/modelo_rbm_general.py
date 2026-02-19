@@ -473,6 +473,11 @@ class RBMGeneral:
                 )
             else:
                 # Sin labels ni probas: devolvemos y=None y NO filtramos a vacío
+                self._periodos_last_xy_ = (
+                    df["periodo"].astype("string").to_numpy()
+                    if "periodo" in df.columns
+                    else None
+                )
                 return X, None, feat_cols
 
         # Filtro por aceptación:
@@ -504,6 +509,12 @@ class RBMGeneral:
             X = df[feat_cols].to_numpy(dtype=np.float32)
 
         y_np = None if len(y_norm) == 0 else np.array([_LABEL_MAP[s] for s in y_norm.tolist()], dtype=np.int64)
+        # Guardar periodo alineado con X/y (después de TODOS los filtros)
+        self._periodos_last_xy_ = (
+            df["periodo"].astype("string").to_numpy()
+            if "periodo" in df.columns
+            else None
+        )
         return X, y_np, feat_cols
 
     # --------------------------
@@ -597,13 +608,25 @@ class RBMGeneral:
 
     def _split_train_val_indices(
         self,
-        df: pd.DataFrame,
+        df: Optional[pd.DataFrame] = None,
         *,
+        n: Optional[int] = None,
         split_mode: str,
         val_ratio: float,
         seed: int,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        n = int(len(df))
+        """
+        Devuelve (train_idx, val_idx). Retrocompatible:
+        - Preferir df=... (permite split temporal por 'periodo')
+        - Si df es None, permite n=... y hace split aleatorio (no temporal)
+        """
+        if df is not None:
+            n = int(len(df))
+        elif n is not None:
+            n = int(n)
+        else:
+            raise TypeError("Se requiere df o n para _split_train_val_indices")
+
         if n < 2:
             return np.arange(n, dtype=np.int64), np.array([], dtype=np.int64)
 
@@ -613,11 +636,13 @@ class RBMGeneral:
         idx = np.arange(n, dtype=np.int64)
         sm = str(split_mode or "").lower()
 
-        if sm == "temporal" and ("periodo" in df.columns):
+        # Temporal solo si df existe y trae 'periodo'
+        if df is not None and sm == "temporal" and ("periodo" in df.columns):
             order = np.argsort(df["periodo"].apply(self._period_key).to_numpy())
             idx = idx[order]
             return idx[: n - n_val], idx[n - n_val :]
 
+        # Fallback aleatorio
         rng = np.random.default_rng(int(seed))
         rng.shuffle(idx)
         return idx[: n - n_val], idx[n - n_val :]
@@ -822,13 +847,39 @@ class RBMGeneral:
 
             self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
 
-            # split train/val para métricas de clasificación
+            # split train/val para métricas de clasificación (ALINEADO con X_np filtrado)
             split_mode = str(hparams.get("split_mode", "random")).lower()
             val_ratio = float(hparams.get("val_ratio", 0.2))
-            if y_np is not None and len(y_np) > 4:
-                tr_idx, va_idx = self._split_train_val_indices(
-                    n=len(y_np), split_mode=split_mode, val_ratio=val_ratio,
-                )
+
+            n_rows = int(X_t.shape[0])  # <- tamaño real de X (ya filtrado por _prepare_xy)
+            periodos = getattr(self, "_periodos_last_xy_", None)
+
+            if y_np is not None and len(y_np) > 4 and n_rows == int(len(y_np)):
+                # Si pidieron temporal y tenemos periodos alineados, hacemos split temporal.
+                if split_mode == "temporal" and periodos is not None and len(periodos) == n_rows:
+                    df_split = pd.DataFrame({"periodo": periodos})
+                    tr_idx, va_idx = self._split_train_val_indices(
+                        df=df_split,
+                        split_mode="temporal",
+                        val_ratio=val_ratio,
+                        seed=self.seed,
+                    )
+                else:
+                    # Para no inventar temporal sin 'periodo', hacemos random si split_mode=temporal sin periodos.
+                    sm = "random" if split_mode == "temporal" else split_mode
+                    tr_idx, va_idx = self._split_train_val_indices(
+                        n=n_rows,
+                        split_mode=sm,
+                        val_ratio=val_ratio,
+                        seed=self.seed,
+                    )
+
+                # Guardas defensivas para evitar out-of-bounds silencioso
+                if (tr_idx.max(initial=-1) >= n_rows) or (va_idx.max(initial=-1) >= n_rows):
+                    raise RuntimeError(
+                        f"Split fuera de rango: n_rows={n_rows}, tr_max={tr_idx.max(initial=-1)}, va_max={va_idx.max(initial=-1)}"
+                    )
+
                 self.X_tr = X_t[tr_idx]
                 self.y_tr = torch.from_numpy(y_np[tr_idx]).to(self.device)
                 self.X_va = X_t[va_idx]

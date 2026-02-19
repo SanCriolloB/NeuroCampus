@@ -243,15 +243,16 @@ def _try_write_predictor_bundle(
         try:
             save_fn = getattr(strategy, "save", None)
             if callable(save_fn):
-                model_dir = run_path / "model"
-                model_dir.mkdir(parents=True, exist_ok=True)
+                # Llamada robusta (posibles diferencias de firma entre estrategias)
+                _call_with_accepted_kwargs(save_fn, out_dir=str(model_dir))
 
-                # Soportar firmas tipo save(path: str)
-                save_fn(str(model_dir))
-
-                # Marcador NO-placeholder: el loader debe considerarlo “ready”.
-                # (el contenido exacto da igual, mientras no sea el placeholder P2.1)
-                bp.model_bin.write_bytes(b"DIR:model\n")
+                # Validación mínima: si quedó vacío, lo tratamos como fallo de export
+                present = [p.name for p in Path(model_dir).iterdir() if p.is_file()]
+                if not present:
+                    raise RuntimeError(
+                        f"Export de modelo dejó model/ vacío en {model_dir}. "
+                        "Revisa strategy.save() y logs del backend."
+                    )
         except Exception:
             logger.exception("No se pudo persistir modelo en run_dir=%s (best-effort)", str(run_path))
 
@@ -1607,6 +1608,26 @@ def _evaluate_post_training_metrics(estrategia, df: "pd.DataFrame", hparams: dic
         "confusion_matrix": cm_va,
     }
 
+def _require_exported_model(run_dir: str | Path, model_name: str) -> None:
+    run_dir = Path(run_dir)
+    model_dir = run_dir / "model"
+    present = {p.name for p in model_dir.iterdir() if p.is_file()} if model_dir.exists() else set()
+
+    mn = (model_name or "").lower().strip()
+
+    if mn.startswith("rbm"):
+        if "meta.json" not in present or not ({"rbm.pt", "head.pt"} & present):
+            raise RuntimeError(
+                f"Run {run_dir.name}: export RBM incompleto en {model_dir}. "
+                f"Se esperaba meta.json + rbm.pt/head.pt. Presentes: {sorted(present)}"
+            )
+
+    if mn.startswith("dbm"):
+        if not {"meta.json", "dbm_state.npz"} <= present:
+            raise RuntimeError(
+                f"Run {run_dir.name}: export DBM incompleto en {model_dir}. "
+                f"Se esperaba meta.json + dbm_state.npz. Presentes: {sorted(present)}"
+            )
 
 # ---------------------------------------------------------------------------
 # Entrenamiento (persistencia vía runs_io)
@@ -1787,10 +1808,11 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         _try_write_predictor_bundle(
             run_dir=run_dir,
             req_norm=req_norm,
-            metrics=metrics_payload,
+            metrics=final_metrics,
             strategy=strategy,
         )
 
+        _require_exported_model(run_dir, str(req_norm.modelo))
 
         # 7) Champion (si aplica) - usar metrics.json como contrato (incluye params.req)
         champion_promoted = None

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
+from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
 
 
 # ============================
@@ -821,9 +822,27 @@ class RBMGeneral:
 
             self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
 
-            # limpiar slots de regresión
-            self.X_tr = self.y_tr = self.tid_tr = self.mid_tr = None
-            self.X_va = self.y_va = self.tid_va = self.mid_va = None
+            # split train/val para métricas de clasificación
+            split_mode = str(hparams.get("split_mode", "random")).lower()
+            val_ratio = float(hparams.get("val_ratio", 0.2))
+            if y_np is not None and len(y_np) > 4:
+                tr_idx, va_idx = self._split_train_val_indices(
+                    n=len(y_np), split_mode=split_mode, val_ratio=val_ratio,
+                )
+                self.X_tr = X_t[tr_idx]
+                self.y_tr = torch.from_numpy(y_np[tr_idx]).to(self.device)
+                self.X_va = X_t[va_idx]
+                self.y_va = torch.from_numpy(y_np[va_idx]).to(self.device)
+                self.X = self.X_tr   # entrenamiento solo en train split
+                self.y = self.y_tr
+            else:
+                self.X_tr = X_t
+                self.y_tr = self.y
+                self.X_va = self.y_va = None
+
+            # limpiar slots de regresión (ids/pesos — no aplican a clasificación)
+            self.tid_tr = self.mid_tr = None
+            self.tid_va = self.mid_va = None
             self.w_tr = self.w_va = None
 
         self._epoch = 0
@@ -990,6 +1009,42 @@ class RBMGeneral:
 
             metrics["loss"] = metrics["recon_error"] + metrics["reg_loss"]
         else:
+            # --- Evaluación clasificación: accuracy/f1_macro en train y val ---
+            self.rbm.eval()
+            self.head.eval()
+            n_classes = 3 if not hasattr(self.head, "out_features") else int(getattr(self.head[-1] if hasattr(self.head, "__getitem__") else self.head, "out_features", 3))
+            labels_list = list(getattr(self, "labels", list(range(n_classes))))
+
+            def _cls_eval(Xb, yb):
+                with torch.no_grad():
+                    H = self.rbm.hidden_probs(Xb)
+                    logits = self.head(H)
+                    preds = int(logits.shape[-1]) and logits.argmax(dim=-1)
+                y_true_np = yb.detach().cpu().numpy().astype(int)
+                y_pred_np = preds.detach().cpu().numpy().astype(int)
+                return y_true_np, y_pred_np
+
+            y_tr_true, y_tr_pred = _cls_eval(self.X_tr, self.y_tr) if (self.X_tr is not None and self.y_tr is not None) else (None, None)
+            y_va_true, y_va_pred = _cls_eval(self.X_va, self.y_va) if (self.X_va is not None and self.y_va is not None) else (None, None)
+
+            if y_tr_true is not None:
+                metrics.update({
+                    "task_type": "classification",
+                    "labels": labels_list,
+                    "n_classes": n_classes,
+                    "n_train": int(len(y_tr_true)),
+                    "accuracy": float(_accuracy(y_tr_true, y_tr_pred)),
+                    "f1_macro": float(_f1_macro(y_tr_true, y_tr_pred, n_classes)),
+                })
+            if y_va_true is not None:
+                metrics.update({
+                    "n_val": int(len(y_va_true)),
+                    "val_accuracy": float(_accuracy(y_va_true, y_va_pred)),
+                    "val_f1_macro": float(_f1_macro(y_va_true, y_va_pred, n_classes)),
+                    "confusion_matrix": _confusion_matrix(y_va_true, y_va_pred, n_classes),
+                })
+            self.rbm.train()
+            self.head.train()
             metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
 
         return metrics

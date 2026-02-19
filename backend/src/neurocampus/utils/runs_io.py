@@ -699,6 +699,14 @@ def load_run_details(run_id: str) -> Optional[Dict[str, Any]]:
 
 def _champion_score(metrics: Dict[str, Any]) -> Tuple[int, float]:
     """Retorna (tier, score). Mayor es mejor."""
+    # Si el run tiene contrato estandarizado (P2 Parte 4): usarlo directamente.
+    pm = metrics.get("primary_metric")
+    pm_mode = str(metrics.get("primary_metric_mode") or "min").lower()
+    pm_value = metrics.get("primary_metric_value")
+    if isinstance(pm, str) and pm and isinstance(pm_value, (int, float)):
+        score_val = float(pm_value) if pm_mode == "max" else -float(pm_value)
+        return (100, score_val)  # tier 100: contrato estandarizado, siempre gana a heurísticas
+
     task_type = str(metrics.get("task_type") or "").lower().strip()
 
     is_regression = (

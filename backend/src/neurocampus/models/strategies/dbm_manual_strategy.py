@@ -1,13 +1,19 @@
 # backend/src/neurocampus/models/strategies/dbm_manual_strategy.py
 from __future__ import annotations
 
+import json
+import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple
 
 import numpy as np
+from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
 import pandas as pd
 
 from neurocampus.models.dbm_manual import DBMManual
+
+logger = logging.getLogger(__name__)
 
 
 class DBMManualStrategy:
@@ -97,6 +103,9 @@ class DBMManualPlantillaStrategy:
         self.eval_rows: int = 2048
         self._rng = np.random.default_rng(42)
 
+        # Trazabilidad warm start (se llena en setup / _try_warm_start)
+        self._warm_start_info_: Dict[str, Any] = {"warm_start": "skipped"}
+
     def reset(self) -> None:
         self.model = None
         self.X = None
@@ -114,7 +123,92 @@ class DBMManualPlantillaStrategy:
         self.X_va = None
         self.y_tr = None
         self.y_va = None
+        self._warm_start_info_ = {"warm_start": "skipped"}
 
+
+    # ------------------------------------------------------------------
+    # Persistencia y warm start
+    # ------------------------------------------------------------------
+
+    def _try_warm_start(self, warm_start_path: str) -> Dict[str, Any]:
+        """
+        Intenta cargar pesos desde un directorio previo y copiarlos al modelo actual.
+
+        Debe llamarse DESPUÉS de que self.model ya fue instanciado en setup().
+
+        Retorna un dict de trazabilidad:
+          - {"warm_start": "ok"}        si los pesos se cargaron correctamente.
+          - {"warm_start": "skipped"}   si warm_start_path está vacío.
+          - {"warm_start": "error"}     si ocurrió un error (incompatibilidad / missing files).
+        """
+        info: Dict[str, Any] = {
+            "warm_start": "skipped",
+            "warm_start_dir": str(warm_start_path),
+        }
+        if not warm_start_path:
+            return info
+
+        try:
+            prev = DBMManual.load(str(warm_start_path))
+            if self.model is None:
+                info["warm_start"] = "error"
+                info["error"] = "self.model es None; setup() debe llamarse antes"
+                return info
+
+            self.model.copy_weights_from(prev)
+            info["warm_start"] = "ok"
+            info["n_visible"] = self.model.n_visible
+            info["n_hidden1"] = self.model.n_hidden1
+            info["n_hidden2"] = self.model.n_hidden2
+            logger.info(
+                "DBMManualPlantillaStrategy: warm start OK desde %s", warm_start_path
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            # Dimensiones incompatibles o archivos faltantes → marcar error
+            info["warm_start"] = "error"
+            info["error"] = str(exc)
+            logger.warning(
+                "DBMManualPlantillaStrategy: warm start falló (%s) — %s",
+                type(exc).__name__,
+                exc,
+            )
+            raise  # Re-raise para que _run_training lo capture si fue explícito
+        except Exception as exc:
+            info["warm_start"] = "error"
+            info["error"] = str(exc)
+            logger.exception(
+                "DBMManualPlantillaStrategy: warm start error inesperado desde %s", warm_start_path
+            )
+            raise
+
+        return info
+
+    def save(self, out_dir: str) -> None:
+        """
+        Persiste el estado del DBM en out_dir/.
+
+        Escribe:
+        - dbm_state.npz  — pesos W/bv/bh de las dos RBMs.
+        - meta.json      — dimensiones, feat_cols_, task/target y hparams.
+
+        Llamado automáticamente por _try_write_predictor_bundle al final del run.
+        """
+        if self.model is None:
+            raise RuntimeError(
+                "DBMManualPlantillaStrategy.save: modelo no entrenado (self.model es None)"
+            )
+
+        extra: Dict[str, Any] = {
+            "feat_cols_": list(self.feat_cols_),
+            "task_type": self.task_type_,
+            "target_col": self.target_col_,
+            "target_scale": float(self.target_scale_),
+        }
+        if self._warm_start_info_:
+            extra["warm_start_info"] = self._warm_start_info_
+
+        self.model.save(out_dir, extra_meta=extra)
+        logger.info("DBMManualPlantillaStrategy: modelo guardado en %s", out_dir)
 
     def _load_df(self, data_ref: str) -> pd.DataFrame:
         if not data_ref:
@@ -224,6 +318,34 @@ class DBMManualPlantillaStrategy:
 
             # Entrena DBM solo con train (evita leakage temporal)
             self.X = self.X_tr
+        elif self.task_type_ == "classification":
+            # Clasificación: buscar columna de labels ("label", "sentimiento", "clase")
+            label_col = hparams.get("label_col") or next(
+                (c for c in ("label", "sentimiento", "clase", "target") if c in df.columns), None
+            )
+            if label_col and label_col in df.columns:
+                from ..utils.metrics import confusion_matrix as _cm_init
+                # Construir etiquetas y codificación
+                self.labels_ = sorted(df[label_col].dropna().unique().tolist())
+                lbl2idx = {l: i for i, l in enumerate(self.labels_)}
+                y_cls = np.array([lbl2idx.get(v, -1) for v in df[label_col]], dtype=np.int64)
+                mask = y_cls >= 0
+                df = df[mask].reset_index(drop=True)
+                y_cls = y_cls[mask]
+                X_all = self._numeric_matrix(df, exclude_cols=[label_col])
+                tr_idx, va_idx = self._split_train_val_indices(
+                    df=df, split_mode=self.split_mode_, val_ratio=self.val_ratio_, seed=self.seed_
+                )
+                self.X = X_all[tr_idx]
+                self.X_tr = X_all[tr_idx]
+                self.X_va = X_all[va_idx]
+                self.y_tr = y_cls[tr_idx]
+                self.y_va = y_cls[va_idx]
+            else:
+                X_all = self._numeric_matrix(df, exclude_cols=None)
+                self.X = X_all
+                self.X_tr = self.X_va = self.y_tr = self.y_va = None
+                self.labels_ = []
         else:
             X_all = self._numeric_matrix(df, exclude_cols=None)
             self.X = X_all
@@ -267,6 +389,24 @@ class DBMManualPlantillaStrategy:
             use_pcd=use_pcd,
         )
 
+        # ---- Warm start (si se proveyó warm_start_path) ----
+        warm_dir = str(hparams.get("warm_start_path") or "").strip()
+        self._warm_start_info_ = {"warm_start": "skipped", "warm_start_dir": warm_dir}
+        if warm_dir:
+            ws_mode = str(hparams.get("warm_start_from") or "run_id").lower()
+            try:
+                self._warm_start_info_ = self._try_warm_start(warm_dir)
+            except Exception as exc:
+                # Si el warm start fue explícito (run_id), re-raise para fallar el job.
+                # Si fue "champion" (podría no existir), dejamos skipped+error.
+                self._warm_start_info_ = {
+                    "warm_start": "error",
+                    "warm_start_dir": warm_dir,
+                    "error": str(exc),
+                }
+                if ws_mode == "run_id":
+                    raise
+
 
     def train_step(self, epoch: int, hparams: Dict[str, Any], y: Any = None) -> Dict[str, Any]:
         if self.model is None or self.X is None:
@@ -304,6 +444,10 @@ class DBMManualPlantillaStrategy:
             "recon_error_layer1": mse1,
             "recon_error_layer2": mse2,
         }
+
+        # Incluir trazabilidad de warm start en la primera época
+        if epoch == 1 and hasattr(self, "_warm_start_info_"):
+            out["warm_start"] = dict(self._warm_start_info_)
 
         # ---- Regression eval: ridge head sobre embeddings latentes (solo si hay split/y) ----
         if self.task_type_ == "regression" and self.X_tr is not None and self.X_va is not None and self.y_tr is not None and self.y_va is not None:
@@ -372,6 +516,51 @@ class DBMManualPlantillaStrategy:
                 "pred_min": float(np.min(p_va_u)) if p_va_u.size else None,
                 "pred_max": float(np.max(p_va_u)) if p_va_u.size else None,
             })
+
+        # ---- Clasificación eval: softmax lineal + accuracy/f1_macro ----
+        if self.task_type_ == "classification" and self.X_tr is not None and self.y_tr is not None:
+            labels_list = list(getattr(self, "labels_", []))
+            n_classes = max(int(np.max(self.y_tr)) + 1 if len(self.y_tr) > 0 else 2, len(labels_list))
+
+            def _latent_np(Xa: np.ndarray) -> np.ndarray:
+                H1a = self.model.rbm_v_h1.transform(Xa)
+                return np.asarray(self.model.rbm_h1_h2.transform(H1a), dtype=np.float32)
+
+            Ztr = _latent_np(self.X_tr)
+            A_tr = np.concatenate([np.ones((Ztr.shape[0], 1), dtype=np.float32), Ztr], axis=1)
+            l2c = float(getattr(self, "ridge_l2_", 1e-3))
+
+            # One-vs-rest: una columna de pesos por clase
+            W = np.zeros((A_tr.shape[1], n_classes), dtype=np.float32)
+            I = np.eye(A_tr.shape[1], dtype=np.float32); I[0,0] = 0.0
+            ATA = (A_tr.T @ A_tr) + l2c * I
+            for c in range(n_classes):
+                yc = (self.y_tr == c).astype(np.float32).reshape(-1, 1)
+                W[:, c] = np.linalg.solve(ATA, A_tr.T @ yc).reshape(-1)
+
+            logits_tr = A_tr @ W
+            preds_tr = logits_tr.argmax(axis=1).astype(int)
+            y_tr_int = self.y_tr.astype(int) if isinstance(self.y_tr, np.ndarray) else np.asarray(self.y_tr, int)
+            out.update({
+                "task_type": "classification",
+                "labels": labels_list,
+                "n_classes": n_classes,
+                "n_train": int(len(y_tr_int)),
+                "accuracy": float(_accuracy(y_tr_int, preds_tr)),
+                "f1_macro": float(_f1_macro(y_tr_int, preds_tr, n_classes)),
+            })
+            if self.X_va is not None and self.y_va is not None:
+                Zva = _latent_np(self.X_va)
+                A_va = np.concatenate([np.ones((Zva.shape[0], 1), dtype=np.float32), Zva], axis=1)
+                logits_va = A_va @ W
+                preds_va = logits_va.argmax(axis=1).astype(int)
+                y_va_int = self.y_va.astype(int) if isinstance(self.y_va, np.ndarray) else np.asarray(self.y_va, int)
+                out.update({
+                    "n_val": int(len(y_va_int)),
+                    "val_accuracy": float(_accuracy(y_va_int, preds_va)),
+                    "val_f1_macro": float(_f1_macro(y_va_int, preds_va, n_classes)),
+                    "confusion_matrix": _confusion_matrix(y_va_int, preds_va, n_classes),
+                })
 
         return out
 

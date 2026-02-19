@@ -5,6 +5,15 @@ export type AppFiltersState = {
   activeDatasetId: string | null;
   activePeriodo: string | null;
 
+  /**
+   * Rango de periodos para consultas históricas.
+   *
+   * Se mantiene opcional para compatibilidad con pantallas que solo necesitan
+   * `activePeriodo`.
+   */
+  periodoFrom: string | null;
+  periodoTo: string | null;
+
   // Filtros opcionales (se activan cuando dashboard lo requiera)
   programa: string | null;
   asignatura: string | null;
@@ -16,6 +25,8 @@ const STORAGE_KEY = "NC_APP_FILTERS_V1";
 const defaultState: AppFiltersState = {
   activeDatasetId: null,
   activePeriodo: null,
+  periodoFrom: null,
+  periodoTo: null,
   programa: null,
   asignatura: null,
   docente: null,

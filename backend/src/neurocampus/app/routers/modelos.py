@@ -69,6 +69,7 @@ from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
 from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
 from ...utils.model_context import fill_context
 from ...utils.warm_start import resolve_warm_start_path
+from ...models.utils.metrics_contract import standardize_run_metrics
 
 
 from ...observability.bus_eventos import BUS
@@ -1730,6 +1731,14 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         )
         # Asegurar run_id en métricas para que predictor.json quede consistente.
         final_metrics.setdefault("run_id", str(run_id))
+
+        # Estandarizar métricas según contrato por family (P2 Parte 4)
+        _task_type_hint = str(final_metrics.get("task_type") or "").lower() or str(getattr(req_norm, "task_type", "") or "")
+        final_metrics = standardize_run_metrics(
+            final_metrics,
+            family=str(req_norm.family or ""),
+            task_type=_task_type_hint,
+        )
 
         run_dir = save_run(
             run_id=str(run_id),

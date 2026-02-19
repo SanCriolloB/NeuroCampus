@@ -21,6 +21,7 @@ import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
+from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
 
 __all__ = ["RBMRestringida", "ModeloRBMRestringida"]
 
@@ -1064,6 +1065,41 @@ class RBMRestringida:
             "cls_loss": float(np.mean(cls_losses)) if cls_losses else 0.0,
             "time_epoch_ms": 0.0
         }
+
+        # --- Evaluación clasificación: accuracy/f1_macro train y val ---
+        if self.X is not None and self.y is not None:
+            n_classes = 3 if (self.head is None) else int(getattr(self.head, "out_features", 3))
+            labels_list = list(getattr(self, "labels_", list(range(n_classes))))
+            self.rbm.eval()
+            self.head.eval()
+            with torch.no_grad():
+                H_tr = self.rbm.hidden_probs(self.X)
+                preds_tr = self.head(H_tr).argmax(dim=-1).cpu().numpy().astype(int)
+            y_tr_np = self.y.cpu().numpy().astype(int)
+            metrics.update({
+                "labels": labels_list,
+                "n_classes": n_classes,
+                "n_train": int(len(y_tr_np)),
+                "accuracy": float(_accuracy(y_tr_np, preds_tr)),
+                "f1_macro": float(_f1_macro(y_tr_np, preds_tr, n_classes)),
+            })
+            # val split si existe
+            X_va = getattr(self, "X_va", None)
+            y_va = getattr(self, "y_va", None)
+            if X_va is not None and y_va is not None and X_va.numel() > 0:
+                with torch.no_grad():
+                    H_va = self.rbm.hidden_probs(X_va)
+                    preds_va = self.head(H_va).argmax(dim=-1).cpu().numpy().astype(int)
+                y_va_np = y_va.cpu().numpy().astype(int)
+                metrics.update({
+                    "n_val": int(len(y_va_np)),
+                    "val_accuracy": float(_accuracy(y_va_np, preds_va)),
+                    "val_f1_macro": float(_f1_macro(y_va_np, preds_va, n_classes)),
+                    "confusion_matrix": _confusion_matrix(y_va_np, preds_va, n_classes),
+                })
+            self.rbm.train()
+            self.head.train()
+
         return metrics["recon_error"] + metrics["cls_loss"], metrics
 
 

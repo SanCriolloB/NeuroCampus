@@ -622,6 +622,15 @@ class EstadoResponse(BaseModel):
 
     error: Optional[str] = Field(default=None, description="Mensaje de error si falló.")
 
+    # Trazabilidad warm-start (presente cuando aplica)
+    warm_start_trace: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Trazabilidad del warm-start: warm_started, warm_start_from, "
+            "warm_start_source_run_id, warm_start_path. None si no aplica."
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Runs / Champion

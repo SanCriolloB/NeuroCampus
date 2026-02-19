@@ -68,6 +68,7 @@ from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
 from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
 from ...utils.model_context import fill_context
+from ...utils.warm_start import resolve_warm_start_path
 
 
 from ...observability.bus_eventos import BUS
@@ -1634,6 +1635,23 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         # Asegurar job_id para PlantillaEntrenamiento (usa hparams.job_id como override)
         run_hparams["job_id"] = job_id
 
+        # 1b) Resolver warm_start_path (RBM) si el request lo solicita.
+        #     Debe ocurrir ANTES de crear la estrategia para que hparams
+        #     llegue con warm_start_path ya seteado.
+        _ws_mode = str(getattr(req, "warm_start_from", None) or "none").lower()
+        _ws_path, _ws_trace = resolve_warm_start_path(
+            artifacts_dir=ARTIFACTS_DIR,
+            dataset_id=str(req.dataset_id or ""),
+            family=str(getattr(req, "family", "") or ""),
+            model_name=str(getattr(req, "modelo", "") or ""),
+            warm_start_from=_ws_mode,
+            warm_start_run_id=getattr(req, "warm_start_run_id", None),
+        )
+        if _ws_path is not None:
+            run_hparams["warm_start_path"] = str(_ws_path)
+        else:
+            run_hparams.pop("warm_start_path", None)
+
         # 2) Normalizar request para snapshot/UI (que "params.req" sea consistente)
         inferred_target_col = _infer_target_col(req, run_hparams)
 
@@ -1691,6 +1709,15 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         final_metrics.setdefault("family", str(req_norm.family))
         final_metrics.setdefault("dataset_id", str(req_norm.dataset_id))
         final_metrics.setdefault("model_name", str(req_norm.modelo))
+
+        # Trazabilidad warm-start (siempre presente; False si no se usó)
+        final_metrics["warm_started"] = _ws_trace.get("warm_started", False)
+        if _ws_trace.get("warm_start_from"):
+            final_metrics["warm_start_from"] = _ws_trace["warm_start_from"]
+        if _ws_trace.get("warm_start_source_run_id"):
+            final_metrics["warm_start_source_run_id"] = _ws_trace["warm_start_source_run_id"]
+        if _ws_trace.get("warm_start_path"):
+            final_metrics["warm_start_path"] = _ws_trace["warm_start_path"]
 
         # 6) Guardar run en artifacts (fuente de verdad)
         req_snapshot = req_norm.model_dump()
@@ -1755,6 +1782,7 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 "history": history,
                 "champion_promoted": champion_promoted,
                 "time_total_ms": float(dt_ms),
+                "warm_start_trace": _ws_trace,
             }
         )
         _ESTADOS[job_id] = st
@@ -2208,6 +2236,7 @@ def estado(job_id: str):
         payload.setdefault("sweep_summary_path", st.get("sweep_summary_path"))
         payload.setdefault("sweep_best_overall", st.get("sweep_best_overall"))
         payload.setdefault("sweep_best_by_model", st.get("sweep_best_by_model"))
+        payload.setdefault("warm_start_trace", st.get("warm_start_trace"))
 
         # time_total_ms: preferido si existe, sino derivar de elapsed_s
         if payload.get("time_total_ms") is None and payload.get("elapsed_s") is not None:

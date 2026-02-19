@@ -75,7 +75,8 @@ def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
 
     # Campos extra (family y otros)
     extra = out.get("extra") if isinstance(out.get("extra"), dict) else {}
-    extra = dict(extra)
+    # limpiar nulls heredados del predictor.json para no romper UI
+    extra = {k: v for k, v in dict(extra).items() if v is not None}
     if ctx.get("family") is not None:
         extra["family"] = str(ctx["family"])
     if ctx.get("data_source") is not None:

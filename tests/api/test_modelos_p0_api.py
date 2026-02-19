@@ -917,3 +917,314 @@ def test_dbm_warm_start_validates_dbm_files(artifacts_dir: Path):
         assert False, "Debería haber lanzado HTTPException 422"
     except Exception as exc:
         assert getattr(exc, "status_code", None) == 422, f"Esperaba 422, got: {exc}"
+
+
+# ===========================================================================
+# P2 Parte 5 — Tests del sweep determinístico (POST /modelos/sweep)
+# ===========================================================================
+
+def _make_sweep_request(dataset_id: str, **overrides) -> dict:
+    """Payload base para el sweep."""
+    base = {
+        "dataset_id": dataset_id,
+        "family": "score_docente",
+        "data_source": "pair_matrix",
+        "seed": 42,
+        "epochs": 1,
+        "auto_prepare": False,
+        "models": ["rbm_general", "rbm_restringida", "dbm_manual"],
+        "base_hparams": {"n_hidden": 4, "n_hidden1": 3, "n_hidden2": 2},
+        "auto_promote_champion": False,
+        "warm_start_from": "none",
+    }
+    base.update(overrides)
+    return base
+
+
+def _make_sweep_mocks(monkeypatch, fake_metrics_by_model: dict):
+    """
+    Monkeypatches para que el sweep no necesite datos reales.
+
+    fake_metrics_by_model: {model_name: {primary_metric_value: X, ...}}
+    """
+    import time as _time
+    from neurocampus.app.routers import modelos as m
+    from neurocampus.models.utils.metrics_contract import standardize_run_metrics
+
+    call_count = {"n": 0}
+
+    def fake_create_strategy(*, model_name, hparams, job_id, dataset_id, family, **kw):
+        from neurocampus.models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
+        s = DBMManualPlantillaStrategy()
+        return s
+
+    class DummyTemplateSweep:
+        def __init__(self, estrategia):
+            self.estrategia = estrategia
+            self._model_name = None  # se rellena en run()
+
+        def run(self, *, data_ref, epochs, hparams, model_name):
+            call_count["n"] += 1
+            raw = fake_metrics_by_model.get(str(model_name), {"loss": 0.5})
+            return {
+                "status": "completed",
+                "model": model_name,
+                "metrics": raw,
+                "history": [{"epoch": 1, "loss": raw.get("loss", 0.5)}],
+            }
+
+    monkeypatch.setattr(m, "_create_strategy", fake_create_strategy)
+    monkeypatch.setattr(m, "PlantillaEntrenamiento", DummyTemplateSweep)
+    monkeypatch.setattr(m, "maybe_update_champion", lambda **kw: {"promoted": True})
+
+    return call_count
+
+
+# ---------------------------------------------------------------------------
+# Test 1: sweep score_docente → 3 candidatos + best por val_rmse
+# ---------------------------------------------------------------------------
+
+def test_sweep_score_docente_3_candidates(
+    client, artifacts_dir, prepared_feature_pack: str, monkeypatch
+):
+    """
+    Sweep score_docente con 3 modelos: verifica estructura de respuesta
+    y que best tiene el menor val_rmse.
+    """
+    dataset_id = prepared_feature_pack
+
+    fake_metrics = {
+        "rbm_general":    {"val_rmse": 6.5,  "val_mae": 4.0, "task_type": "regression"},
+        "rbm_restringida":{"val_rmse": 7.2,  "val_mae": 4.5, "task_type": "regression"},
+        "dbm_manual":     {"val_rmse": 8.0,  "val_mae": 5.0, "task_type": "regression"},
+    }
+
+    _make_sweep_mocks(monkeypatch, fake_metrics)
+
+    r = client.post(
+        "/modelos/sweep",
+        json=_make_sweep_request(dataset_id),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    # Estructura mínima
+    assert data["sweep_id"]
+    assert data["status"] == "completed"
+    assert data["family"] == "score_docente"
+    assert data["primary_metric"] == "val_rmse"
+    assert data["primary_metric_mode"] == "min"
+
+    # 3 candidatos
+    assert len(data["candidates"]) == 3
+    models_found = {c["model_name"] for c in data["candidates"]}
+    assert models_found == {"rbm_general", "rbm_restringida", "dbm_manual"}
+
+    # Best = rbm_general (menor val_rmse = 6.5)
+    assert data["best"] is not None
+    assert data["best"]["model_name"] == "rbm_general"
+
+    # n_completed
+    assert data["n_completed"] == 3
+    assert data["n_failed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 2: sweep sentiment_desempeno → best por val_f1_macro
+# ---------------------------------------------------------------------------
+
+def test_sweep_sentiment_3_candidates_best_by_f1(
+    client, artifacts_dir, prepared_feature_pack: str, monkeypatch
+):
+    """
+    Sweep sentiment_desempeno: best es el que tiene mayor val_f1_macro.
+    """
+    dataset_id = prepared_feature_pack
+
+    fake_metrics = {
+        "rbm_general":    {"val_f1_macro": 0.72, "val_accuracy": 0.75, "task_type": "classification"},
+        "rbm_restringida":{"val_f1_macro": 0.80, "val_accuracy": 0.82, "task_type": "classification"},
+        "dbm_manual":     {"val_f1_macro": 0.65, "val_accuracy": 0.70, "task_type": "classification"},
+    }
+
+    _make_sweep_mocks(monkeypatch, fake_metrics)
+
+    r = client.post(
+        "/modelos/sweep",
+        json=_make_sweep_request(
+            dataset_id,
+            family="sentiment_desempeno",
+            data_source="feature_pack",
+        ),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    assert data["primary_metric"] == "val_f1_macro"
+    assert data["primary_metric_mode"] == "max"
+    assert data["best"]["model_name"] == "rbm_restringida"  # mayor f1 = 0.80
+
+
+# ---------------------------------------------------------------------------
+# Test 3: determinismo — empate en primary_metric_value
+# ---------------------------------------------------------------------------
+
+def test_sweep_deterministic_tiebreaker(
+    client, artifacts_dir, prepared_feature_pack: str, monkeypatch
+):
+    """
+    Cuando 2 modelos tienen el mismo primary_metric_value,
+    el tie-breaker es el orden canónico de _SWEEP_MODEL_ORDER.
+    rbm_general < rbm_restringida < dbm_manual → rbm_general gana el empate.
+    """
+    dataset_id = prepared_feature_pack
+
+    # rbm_general y rbm_restringida empatan en val_rmse
+    fake_metrics = {
+        "rbm_general":    {"val_rmse": 5.0, "task_type": "regression"},
+        "rbm_restringida":{"val_rmse": 5.0, "task_type": "regression"},
+        "dbm_manual":     {"val_rmse": 9.0, "task_type": "regression"},
+    }
+
+    _make_sweep_mocks(monkeypatch, fake_metrics)
+
+    r = client.post(
+        "/modelos/sweep",
+        json=_make_sweep_request(dataset_id),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    # En empate de métrica, rbm_general gana (primero en _SWEEP_MODEL_ORDER)
+    assert data["best"]["model_name"] == "rbm_general"
+
+
+# ---------------------------------------------------------------------------
+# Test 4: auto_promote_champion=True → champion_promoted=True
+# ---------------------------------------------------------------------------
+
+def test_sweep_auto_promote_champion(
+    client, artifacts_dir, prepared_feature_pack: str, monkeypatch
+):
+    """
+    Con auto_promote_champion=True, el sweep promueve el best a champion
+    y devuelve champion_promoted=True + champion_run_id.
+    """
+    dataset_id = prepared_feature_pack
+
+    fake_metrics = {
+        "rbm_general":    {"val_rmse": 5.0, "task_type": "regression"},
+        "rbm_restringida":{"val_rmse": 7.0, "task_type": "regression"},
+        "dbm_manual":     {"val_rmse": 8.0, "task_type": "regression"},
+    }
+
+    _make_sweep_mocks(monkeypatch, fake_metrics)
+
+    r = client.post(
+        "/modelos/sweep",
+        json=_make_sweep_request(dataset_id, auto_promote_champion=True),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    assert data["champion_promoted"] is True
+    assert data["champion_run_id"] is not None
+    assert data["best"]["model_name"] == "rbm_general"
+
+
+# ---------------------------------------------------------------------------
+# Test 5: modelo no permitido → 422
+# ---------------------------------------------------------------------------
+
+def test_sweep_invalid_model_422(client, prepared_feature_pack: str):
+    """Modelo no soportado devuelve 422."""
+    r = client.post(
+        "/modelos/sweep",
+        json=_make_sweep_request(
+            prepared_feature_pack,
+            models=["rbm_general", "modelo_inexistente"],
+        ),
+    )
+    assert r.status_code == 422, r.text
+
+
+# ---------------------------------------------------------------------------
+# Test 6: falta dataset_id → 422
+# ---------------------------------------------------------------------------
+
+def test_sweep_missing_dataset_id_422(client):
+    """dataset_id vacío devuelve 422."""
+    r = client.post(
+        "/modelos/sweep",
+        json={
+            "dataset_id": "",
+            "family": "score_docente",
+            "models": ["rbm_general"],
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+# ---------------------------------------------------------------------------
+# Test 7: subset de modelos → solo esos candidatos
+# ---------------------------------------------------------------------------
+
+def test_sweep_subset_models(
+    client, artifacts_dir, prepared_feature_pack: str, monkeypatch
+):
+    """Sweep con solo 2 modelos devuelve exactamente 2 candidatos."""
+    dataset_id = prepared_feature_pack
+
+    fake_metrics = {
+        "rbm_general":    {"val_rmse": 6.0, "task_type": "regression"},
+        "rbm_restringida":{"val_rmse": 7.0, "task_type": "regression"},
+    }
+
+    _make_sweep_mocks(monkeypatch, fake_metrics)
+
+    r = client.post(
+        "/modelos/sweep",
+        json=_make_sweep_request(
+            dataset_id,
+            models=["rbm_general", "rbm_restringida"],
+        ),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    assert len(data["candidates"]) == 2
+    assert data["best"]["model_name"] == "rbm_general"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: primary_metric en cada candidato del sweep viene del contrato P4
+# ---------------------------------------------------------------------------
+
+def test_sweep_candidates_have_primary_metric_value(
+    client, artifacts_dir, prepared_feature_pack: str, monkeypatch
+):
+    """
+    Cada candidato completado tiene primary_metric_value no None
+    cuando sus métricas incluyen val_rmse.
+    """
+    dataset_id = prepared_feature_pack
+
+    fake_metrics = {
+        "rbm_general":    {"val_rmse": 6.1, "task_type": "regression"},
+        "rbm_restringida":{"val_rmse": 7.3, "task_type": "regression"},
+        "dbm_manual":     {"val_rmse": 8.9, "task_type": "regression"},
+    }
+
+    _make_sweep_mocks(monkeypatch, fake_metrics)
+
+    r = client.post(
+        "/modelos/sweep",
+        json=_make_sweep_request(dataset_id),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    completed = [c for c in data["candidates"] if c["status"] == "completed"]
+    assert len(completed) == 3
+    for c in completed:
+        assert c["primary_metric_value"] is not None, f"Falta primary_metric_value en {c['model_name']}"

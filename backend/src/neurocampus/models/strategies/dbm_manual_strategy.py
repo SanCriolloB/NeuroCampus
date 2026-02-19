@@ -208,7 +208,23 @@ class DBMManualPlantillaStrategy:
             extra["warm_start_info"] = self._warm_start_info_
 
         self.model.save(out_dir, extra_meta=extra)
+
+        # Defensa: si por alguna razón no quedó meta.json, lo escribimos mínimo
+        out_path = Path(out_dir)
+        meta_path = out_path / "meta.json"
+        if not meta_path.exists():
+            meta = {
+                "schema_version": 1,
+                "n_visible": int(getattr(self.model, "n_visible", 0) or 0),
+                "n_hidden1": int(getattr(self.model, "n_hidden1", 0) or 0),
+                "n_hidden2": int(getattr(self.model, "n_hidden2", 0) or 0),
+                "hparams": {},
+                "legacy_repaired": True,
+            }
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
         logger.info("DBMManualPlantillaStrategy: modelo guardado en %s", out_dir)
+
 
     def _load_df(self, data_ref: str) -> pd.DataFrame:
         if not data_ref:

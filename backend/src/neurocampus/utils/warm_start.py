@@ -48,23 +48,30 @@ _RBM_WEIGHT_FILES   = {"rbm.pt", "head.pt"}
 _DBM_REQUIRED_FILES = {"meta.json", "dbm_state.npz"}
 
 
+def _slug(s: str) -> str:
+    return str(s).strip().lower().replace(" ", "_")
+
 def _find_champion_json(
     artifacts_dir: Path,
     dataset_id: str,
     family: Optional[str],
+    model_name: Optional[str] = None,
 ) -> Optional[Path]:
-    """Busca champion.json probando layout con family y sin family."""
     candidates: list[Path] = []
+    ds = _slug(dataset_id)
+    fam = _slug(family) if family else None
+    mn = _slug(model_name) if model_name else None
 
-    if family:
-        slug = family.lower().replace(" ", "_")
-        candidates.append(
-            artifacts_dir / "champions" / slug / dataset_id / "champion.json"
-        )
+    # Nuevo layout (por modelo)
+    if fam and mn:
+        candidates.append(artifacts_dir / "champions" / fam / ds / mn / "champion.json")
+    if mn:
+        candidates.append(artifacts_dir / "champions" / ds / mn / "champion.json")
 
-    candidates.append(
-        artifacts_dir / "champions" / dataset_id / "champion.json"
-    )
+    # Fallbacks legacy
+    if fam:
+        candidates.append(artifacts_dir / "champions" / fam / ds / "champion.json")
+    candidates.append(artifacts_dir / "champions" / ds / "champion.json")
 
     for p in candidates:
         if p.is_file():
@@ -123,18 +130,26 @@ def _repair_dbm_meta_if_missing(model_dir: Path, *, run_id: str) -> bool:
 
 
 def _validate_model_dir(model_dir: Path, run_id: str) -> None:
-    """
-    Valida que model_dir exista y contenga archivos mínimos para warm start.
+    """Valida que un model_dir sea usable para warm-start.
 
-    Soporta tanto RBM (pytorch: rbm.pt/head.pt) como DBM (numpy: dbm_state.npz).
-    Lanza HTTPException(422) si falta algo.
+    - Siempre inicializa `present` (evita UnboundLocalError).
+    - Repara DBM legacy: si existe dbm_state.npz y falta meta.json, intenta crear meta.json.
     """
-    # Debe tener meta.json + al menos pesos de una familia
-    # (DBM legacy) Si hay dbm_state.npz pero falta meta.json, intentamos repararlo.
+    if not model_dir.exists() or not model_dir.is_dir():
+        raise HTTPException(
+            status_code=422,
+            detail=f"El model/ del run '{run_id}' no existe o no es directorio: {model_dir}",
+        )
+
+    # 1) Siempre definir present ANTES de usarlo
+    present = {p.name for p in model_dir.iterdir() if p.is_file()}
+
+    # 2) Reparación DBM legacy (meta.json faltante pero hay dbm_state.npz)
     if "meta.json" not in present and "dbm_state.npz" in present:
         if _repair_dbm_meta_if_missing(model_dir, run_id=run_id):
-            present = {f.name for f in model_dir.iterdir() if f.is_file()}
+            present = {p.name for p in model_dir.iterdir() if p.is_file()}
 
+    # 3) meta.json es obligatorio
     if "meta.json" not in present:
         raise HTTPException(
             status_code=422,
@@ -144,29 +159,21 @@ def _validate_model_dir(model_dir: Path, run_id: str) -> None:
             ),
         )
 
-
-    present = {f.name for f in model_dir.iterdir() if f.is_file()}
-
-    # Detectar familia por archivos presentes
-    is_dbm = "dbm_state.npz" in present
-    is_rbm = bool(_RBM_WEIGHT_FILES & present)
-
-    # Debe tener meta.json + al menos pesos de una familia
-    if "meta.json" not in present:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"El model/ del run '{run_id}' no contiene meta.json. "
-                f"Presentes: {sorted(present)}."
-            ),
+    # 4) Debe haber al menos un set de pesos reconocido
+    has_any_weights = any(
+        f in present
+        for f in (
+            "rbm.pt",          # RBM
+            "head.pt",         # head clasif/reg
+            "dbm_state.npz",   # DBM manual
+            "model.bin",       # compat (si aplica)
         )
-
-    if not is_dbm and not is_rbm:
+    )
+    if not has_any_weights:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"El model/ del run '{run_id}' no contiene pesos reconocibles. "
-                f"Se esperaba dbm_state.npz (DBM) o uno de {sorted(_RBM_WEIGHT_FILES)} (RBM). "
+                f"El model/ del run '{run_id}' no contiene pesos reconocidos. "
                 f"Presentes: {sorted(present)}."
             ),
         )
@@ -257,51 +264,110 @@ def resolve_warm_start_path(
 
     # ---- Modo champion ------------------------------------------------------
     if mode == "champion":
-        champ_path = _find_champion_json(artifacts_dir, dataset_id, family)
+        # Buscamos champion por modelo primero (si existe), con fallback legacy.
+        champ_path = _find_champion_json(
+            artifacts_dir,
+            dataset_id,
+            family,
+            model_name=model_name,
+        )
+
         if champ_path is None:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"No existe champion.json para dataset_id='{dataset_id}' "
-                    f"family='{family}'. Entrena y promueve un modelo primero."
-                ),
+            trace = dict(_empty_trace)
+            trace.update(
+                {
+                    "warm_started": False,
+                    "warm_start_from": "champion",
+                    "warm_start_reason": "no_champion",
+                    "warm_start_error": (
+                        f"No existe champion.json para dataset_id='{dataset_id}', "
+                        f"family='{family}', model='{model_name}'."
+                    ),
+                }
             )
+            logger.info(
+                "warm_start skip [champion]: no champion.json dataset_id=%s family=%s model=%s",
+                dataset_id,
+                family,
+                model_name,
+            )
+            return None, trace
 
         try:
             champ = json.loads(champ_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"No se pudo leer champion.json ({champ_path}): {exc}",
-            ) from exc
-
-        source_run_id = (
-            champ.get("source_run_id")
-            or (champ.get("metrics") or {}).get("run_id")
-        )
-        if not source_run_id:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"El champion.json existe ({champ_path}) pero no contiene "
-                    "source_run_id. Re-promueve el champion para actualizar."
-                ),
+            trace = dict(_empty_trace)
+            trace.update(
+                {
+                    "warm_started": False,
+                    "warm_start_from": "champion",
+                    "warm_start_reason": "champion_read_error",
+                    "warm_start_error": f"No se pudo leer champion.json ({champ_path}): {exc}",
+                }
             )
+            logger.warning("warm_start skip [champion]: champion.json ilegible: %s", champ_path)
+            return None, trace
+
+        source_run_id = champ.get("source_run_id") or (champ.get("metrics") or {}).get("run_id")
+        if not source_run_id:
+            trace = dict(_empty_trace)
+            trace.update(
+                {
+                    "warm_started": False,
+                    "warm_start_from": "champion",
+                    "warm_start_reason": "champion_missing_source_run_id",
+                    "warm_start_error": (
+                        f"champion.json existe ({champ_path}) pero no contiene source_run_id."
+                    ),
+                }
+            )
+            logger.warning("warm_start skip [champion]: champion sin source_run_id: %s", champ_path)
+            return None, trace
 
         source_run_id = str(source_run_id).strip()
         run_dir = (artifacts_dir / "runs" / source_run_id).resolve()
 
         if not run_dir.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"El champion apunta al run '{source_run_id}' pero ese "
-                    "directorio no existe en artifacts/runs/."
-                ),
+            trace = dict(_empty_trace)
+            trace.update(
+                {
+                    "warm_started": False,
+                    "warm_start_from": "champion",
+                    "warm_start_source_run_id": source_run_id,
+                    "warm_start_reason": "champion_run_missing",
+                    "warm_start_error": (
+                        f"El champion apunta al run '{source_run_id}' pero no existe en artifacts/runs/."
+                    ),
+                }
             )
+            logger.warning(
+                "warm_start skip [champion]: run inexistente source_run_id=%s champion=%s",
+                source_run_id,
+                champ_path,
+            )
+            return None, trace
 
         model_dir = run_dir / "model"
-        _validate_model_dir(model_dir, source_run_id)
+        try:
+            _validate_model_dir(model_dir, source_run_id)
+        except HTTPException as exc:
+            trace = dict(_empty_trace)
+            trace.update(
+                {
+                    "warm_started": False,
+                    "warm_start_from": "champion",
+                    "warm_start_source_run_id": source_run_id,
+                    "warm_start_reason": "invalid_champion_model_dir",
+                    "warm_start_error": str(exc.detail),
+                }
+            )
+            logger.warning(
+                "warm_start skip [champion]: model_dir inválido source_run_id=%s model_dir=%s (%s)",
+                source_run_id,
+                model_dir,
+                exc.detail,
+            )
+            return None, trace
 
         trace = {
             "warm_started": True,
@@ -315,6 +381,7 @@ def resolve_warm_start_path(
             champ_path,
         )
         return model_dir, trace
+
 
     raise HTTPException(
         status_code=422,

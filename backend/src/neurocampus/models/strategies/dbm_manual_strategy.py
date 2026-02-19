@@ -198,32 +198,102 @@ class DBMManualPlantillaStrategy:
                 "DBMManualPlantillaStrategy.save: modelo no entrenado (self.model es None)"
             )
 
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
         extra: Dict[str, Any] = {
-            "feat_cols_": list(self.feat_cols_),
-            "task_type": self.task_type_,
-            "target_col": self.target_col_,
-            "target_scale": float(self.target_scale_),
+            "feat_cols_": list(getattr(self, "feat_cols_", []) or []),
+            "task_type": getattr(self, "task_type_", None),
+            "target_col": getattr(self, "target_col_", None),
+            "target_scale": float(getattr(self, "target_scale_", 1.0) or 1.0),
+            "split_mode": getattr(self, "split_mode_", None),
+            "val_ratio": getattr(self, "val_ratio_", None),
+            "seed": getattr(self, "seed_", None),
         }
-        if self._warm_start_info_:
+        if getattr(self, "_warm_start_info_", None):
             extra["warm_start_info"] = self._warm_start_info_
 
-        self.model.save(out_dir, extra_meta=extra)
+        # 1) Intento de guardado “normal” del modelo (robusto a firmas)
+        try:
+            # Si DBMManual.save soporta feat_cols, se lo pasamos
+            self.model.save(str(out_path), extra_meta=extra, feat_cols=extra["feat_cols_"])
+        except TypeError:
+            # Fallback: firma antigua (solo extra_meta)
+            self.model.save(str(out_path), extra_meta=extra)
 
-        # Defensa: si por alguna razón no quedó meta.json, lo escribimos mínimo
-        out_path = Path(out_dir)
+        # 2) Asegurar dbm_state.npz
+        npz_path = out_path / "dbm_state.npz"
+        if not npz_path.exists():
+            # Intentar reconstruir el npz desde atributos típicos del modelo
+            candidates = [
+                "W1", "bv1", "bh1",
+                "W2", "bv2", "bh2",
+                # algunos modelos usan nombres alternativos:
+                "bv", "bh",
+            ]
+            arrays: Dict[str, Any] = {}
+            for k in candidates:
+                v = getattr(self.model, k, None)
+                if v is not None:
+                    try:
+                        arrays[k] = np.asarray(v)
+                    except Exception:
+                        pass
+
+            # Requisito mínimo: W1 y W2 para considerarlo DBM persistible
+            if "W1" in arrays and "W2" in arrays:
+                np.savez_compressed(npz_path, **arrays)
+            else:
+                raise RuntimeError(
+                    "DBMManualPlantillaStrategy.save: self.model.save() no escribió dbm_state.npz "
+                    "y no fue posible reconstruirlo (faltan atributos W1/W2). "
+                    f"Escribe en: {out_path}"
+                )
+
+        # 3) Asegurar meta.json
         meta_path = out_path / "meta.json"
         if not meta_path.exists():
+            # hparams “mejor esfuerzo”
+            hparams = (
+                getattr(self, "hparams_", None)
+                or getattr(self.model, "hparams", None)
+                or {}
+            )
+            if not isinstance(hparams, dict):
+                hparams = {}
+
             meta = {
                 "schema_version": 1,
                 "n_visible": int(getattr(self.model, "n_visible", 0) or 0),
                 "n_hidden1": int(getattr(self.model, "n_hidden1", 0) or 0),
                 "n_hidden2": int(getattr(self.model, "n_hidden2", 0) or 0),
-                "hparams": {},
+                "feat_cols_": extra["feat_cols_"],
+                "task_type": extra.get("task_type"),
+                "target_col": extra.get("target_col"),
+                "target_scale": extra.get("target_scale"),
+                "split_mode": extra.get("split_mode"),
+                "val_ratio": extra.get("val_ratio"),
+                "seed": extra.get("seed"),
+                "hparams": hparams,
                 "legacy_repaired": True,
             }
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            meta_path.write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+
+        # 4) Validación fuerte: si falta algo, el job debe fallar (no dejar runs corruptos)
+        required = {"dbm_state.npz", "meta.json"}
+        present = {p.name for p in out_path.iterdir() if p.is_file()}
+        missing = [f for f in sorted(required) if f not in present]
+        if missing:
+            raise RuntimeError(
+                f"DBMManualPlantillaStrategy.save: export incompleto en {out_path}. "
+                f"Faltan: {missing}. Presentes: {sorted(present)}"
+            )
 
         logger.info("DBMManualPlantillaStrategy: modelo guardado en %s", out_dir)
+
 
 
     def _load_df(self, data_ref: str) -> pd.DataFrame:

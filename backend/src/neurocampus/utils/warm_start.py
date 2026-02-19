@@ -31,6 +31,8 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+import datetime as dt
+import numpy as np
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import HTTPException
@@ -69,6 +71,56 @@ def _find_champion_json(
             return p
     return None
 
+def _repair_dbm_meta_if_missing(model_dir: Path, *, run_id: str) -> bool:
+    """
+    Repara runs legacy DBM que tienen dbm_state.npz pero no meta.json.
+
+    Retorna True si escribió meta.json, False si no hizo nada.
+    """
+    meta_path = model_dir / "meta.json"
+    npz_path = model_dir / "dbm_state.npz"
+
+    if meta_path.exists():
+        return False
+    if not npz_path.exists():
+        return False
+
+    try:
+        with np.load(npz_path) as z:
+            W1 = z.get("W1")
+            W2 = z.get("W2")
+
+        n_visible = int(W1.shape[0]) if W1 is not None and hasattr(W1, "shape") else None
+        n_hidden1 = int(W1.shape[1]) if W1 is not None and hasattr(W1, "shape") else None
+        n_hidden2 = int(W2.shape[1]) if W2 is not None and hasattr(W2, "shape") else None
+
+        meta = {
+            "schema_version": 1,
+            "n_visible": n_visible,
+            "n_hidden1": n_hidden1,
+            "n_hidden2": n_hidden2,
+            "hparams": {
+                "lr": 0.01,
+                "cd_k": 1,
+                "seed": 42,
+                "l2": 0.0,
+                "clip_grad": 1.0,
+                "binarize_input": False,
+                "input_bin_threshold": 0.5,
+                "use_pcd": False,
+            },
+            "legacy_repaired": True,
+            "repaired_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "source_run_id": str(run_id),
+        }
+
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        logger.warning("warm_start: se reparó meta.json faltante (DBM legacy) run_id=%s dir=%s", run_id, model_dir)
+        return True
+    except Exception as exc:
+        logger.warning("warm_start: no se pudo reparar meta.json DBM legacy run_id=%s (%s)", run_id, exc)
+        return False
+
 
 def _validate_model_dir(model_dir: Path, run_id: str) -> None:
     """
@@ -77,14 +129,21 @@ def _validate_model_dir(model_dir: Path, run_id: str) -> None:
     Soporta tanto RBM (pytorch: rbm.pt/head.pt) como DBM (numpy: dbm_state.npz).
     Lanza HTTPException(422) si falta algo.
     """
-    if not model_dir.exists():
+    # Debe tener meta.json + al menos pesos de una familia
+    # (DBM legacy) Si hay dbm_state.npz pero falta meta.json, intentamos repararlo.
+    if "meta.json" not in present and "dbm_state.npz" in present:
+        if _repair_dbm_meta_if_missing(model_dir, run_id=run_id):
+            present = {f.name for f in model_dir.iterdir() if f.is_file()}
+
+    if "meta.json" not in present:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"El run '{run_id}' existe pero no tiene directorio model/ "
-                f"({model_dir}). Asegúrate de que el run haya exportado el modelo."
+                f"El model/ del run '{run_id}' no contiene meta.json. "
+                f"Presentes: {sorted(present)}."
             ),
         )
+
 
     present = {f.name for f in model_dir.iterdir() if f.is_file()}
 

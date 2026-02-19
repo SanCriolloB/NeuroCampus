@@ -588,6 +588,89 @@ class SweepSummary(BaseModel):
     summary_path: Optional[str] = None
     candidates: List[SweepCandidate] = Field(default_factory=list)
 
+# ---------------------------------------------------------------------------
+# Sweep determinístico de 3 modelos (P2 Parte 5)
+# ---------------------------------------------------------------------------
+
+class ModelSweepCandidateResult(BaseModel):
+    """Resultado de un candidato individual en el sweep."""
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    model_name: str
+    run_id: Optional[str] = None
+    status: JobStatus = Field(default="queued")
+    primary_metric_value: Optional[float] = None
+    metrics: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class ModelSweepRequest(BaseModel):
+    """
+    Request para sweep determinístico (3 modelos × family).
+
+    Entrena rbm_general, rbm_restringida y dbm_manual con los mismos datos
+    y elige el mejor por primary_metric (contrato P2 Parte 4).
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    dataset_id: str
+    family: Family = "score_docente"
+    data_source: DataSource = "pair_matrix"
+    seed: int = 42
+    epochs: int = 5
+    auto_prepare: bool = True
+
+    # Selección de modelos (default: los 3)
+    models: List[ModeloName] = Field(
+        default_factory=lambda: ["rbm_general", "rbm_restringida", "dbm_manual"]
+    )
+
+    # Override de hparams por modelo (se mezcla con base)
+    hparams_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    # Hparams base (aplican a todos los modelos si no hay override)
+    base_hparams: Dict[str, Any] = Field(default_factory=dict)
+
+    # Incremental (score_docente)
+    data_plan: Optional[DataPlan] = None
+    window_k: Optional[int] = None
+    replay_size: Optional[int] = None
+    replay_strategy: ReplayStrategy = "uniform"
+
+    # Warm start
+    warm_start_from: Optional[WarmStartFrom] = None
+    warm_start_run_id: Optional[str] = None
+
+    # Comportamiento
+    auto_promote_champion: bool = True
+    max_candidates: int = Field(default=10, ge=1, le=50)
+
+
+class ModelSweepResponse(BaseModel):
+    """Respuesta del sweep determinístico."""
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    sweep_id: str
+    status: JobStatus = "completed"
+    dataset_id: str
+    family: str
+
+    primary_metric: str
+    primary_metric_mode: str  # "max" | "min"
+
+    candidates: List[ModelSweepCandidateResult] = Field(default_factory=list)
+    best: Optional[ModelSweepCandidateResult] = None
+
+    champion_promoted: bool = False
+    champion_run_id: Optional[str] = None
+
+    n_completed: int = 0
+    n_failed: int = 0
+
+    summary_path: Optional[str] = None
+    elapsed_s: Optional[float] = None
+
+
 
 class EstadoResponse(BaseModel):
     """

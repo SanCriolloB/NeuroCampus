@@ -639,3 +639,281 @@ def test_warm_start_none_leaves_no_trace(
     metrics = _json.loads((artifacts_dir / "runs" / new_run_id / "metrics.json").read_text())
     assert metrics.get("warm_started") is False, metrics
     assert "warm_start_path" not in metrics
+
+
+# ============================================================================
+# P2 – Parte 3: Tests de warm start y persistencia DBM
+# ============================================================================
+
+def _make_base_dbm_run(
+    client,
+    artifacts_dir: Path,
+    dataset_id: str,
+    monkeypatch,
+) -> str:
+    """
+    Entrena un run DBM real (DBMManualPlantillaStrategy sin mock de estrategia),
+    verifica que model/ quede con dbm_state.npz + meta.json,
+    y devuelve el run_id.
+    """
+    from neurocampus.app.routers import modelos as m
+
+    # Solo mockear PlantillaEntrenamiento para no depender de pair_matrix real,
+    # pero dejar que la estrategia real se cree para que save() funcione.
+    import numpy as np
+    from neurocampus.models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
+
+    _captured_strategy = {}
+
+    def fake_create_strategy(*, model_name, hparams, job_id, dataset_id, family):
+        s = DBMManualPlantillaStrategy()
+        _captured_strategy["s"] = s
+        return s
+
+    class DummyTemplate:
+        def __init__(self, estrategia):
+            self.estrategia = estrategia
+
+        def run(self, *, data_ref, epochs, hparams, model_name):
+            s = self.estrategia
+            # Inicializar manualmente el modelo DBM con dims mínimas
+            import numpy as _np
+            s.feat_cols_ = [f"f{i}" for i in range(4)]
+            s.task_type_ = "unsupervised"
+            from neurocampus.models.dbm_manual import DBMManual
+            s.model = DBMManual(n_visible=4, n_hidden1=3, n_hidden2=2, seed=7)
+            s.X = _np.random.rand(10, 4).astype("f4")
+            s._warm_start_info_ = {"warm_start": "skipped"}
+            return {
+                "status": "completed",
+                "model": model_name,
+                "metrics": {"loss": 0.3, "recon_error": 0.3},
+                "history": [{"epoch": 1, "loss": 0.3}],
+            }
+
+    monkeypatch.setattr(m, "_create_strategy", fake_create_strategy)
+    monkeypatch.setattr(m, "PlantillaEntrenamiento", DummyTemplate)
+    monkeypatch.setattr(m, "maybe_update_champion", lambda **kwargs: {"promoted": False})
+
+    r = client.post(
+        "/modelos/entrenar",
+        json={
+            "modelo": "dbm_manual",
+            "dataset_id": dataset_id,
+            "family": "sentiment_desempeno",
+            "epochs": 1,
+            "data_source": "feature_pack",
+            "auto_prepare": False,
+            "warm_start_from": "none",
+        },
+    )
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    import time as _t
+    st = None
+    for _ in range(80):
+        s = client.get(f"/modelos/estado/{job_id}")
+        assert s.status_code == 200
+        st = s.json()
+        if st["status"] in ("completed", "failed"):
+            break
+        _t.sleep(0.01)
+
+    assert st is not None
+    assert st["status"] == "completed", st
+    run_id = st["run_id"]
+    assert run_id
+
+    # Verificar que model/ tiene los archivos esperados de DBM
+    model_dir = artifacts_dir / "runs" / run_id / "model"
+    assert model_dir.exists(), f"model/ no creado en {model_dir}"
+    assert (model_dir / "dbm_state.npz").exists(), "dbm_state.npz falta"
+    assert (model_dir / "meta.json").exists(), "meta.json falta"
+
+    return run_id
+
+
+def test_dbm_model_dir_created_after_training(
+    client, artifacts_dir: Path, prepared_feature_pack: str, monkeypatch
+):
+    """
+    Al completar un run DBM, model/ debe contener dbm_state.npz y meta.json.
+    """
+    dataset_id = prepared_feature_pack
+    run_id = _make_base_dbm_run(client, artifacts_dir, dataset_id, monkeypatch)
+    # La verificación ya ocurre dentro de _make_base_dbm_run.
+    # Adicional: verificar contenido de meta.json
+    import json as _json
+    meta = _json.loads(
+        (artifacts_dir / "runs" / run_id / "model" / "meta.json").read_text()
+    )
+    assert meta.get("n_visible") == 4
+    assert meta.get("n_hidden1") == 3
+    assert meta.get("n_hidden2") == 2
+    assert "feat_cols_" in meta
+
+
+def test_dbm_warm_start_run_id_ok_and_trace(
+    client, artifacts_dir: Path, prepared_feature_pack: str, monkeypatch
+):
+    """
+    Warm start DBM por run_id:
+    1. Entrenar run base (DBM) → genera model/dbm_state.npz.
+    2. Entrenar nuevo run con warm_start_from=run_id.
+    3. Verificar trazabilidad en metrics.json.
+    """
+    dataset_id = prepared_feature_pack
+    base_run_id = _make_base_dbm_run(client, artifacts_dir, dataset_id, monkeypatch)
+
+    # Segundo entrenamiento con warm start
+    from neurocampus.app.routers import modelos as m
+    from neurocampus.models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
+
+    _ws_path_received = {}
+
+    def fake_create_strategy(*, model_name, hparams, job_id, dataset_id, family):
+        _ws_path_received["path"] = hparams.get("warm_start_path")
+        s = DBMManualPlantillaStrategy()
+        return s
+
+    class DummyTemplate2:
+        def __init__(self, estrategia):
+            self.estrategia = estrategia
+
+        def run(self, *, data_ref, epochs, hparams, model_name):
+            s = self.estrategia
+            import numpy as _np
+            from neurocampus.models.dbm_manual import DBMManual
+            # Inicializar modelo compatible (mismas dims que el run base)
+            s.feat_cols_ = [f"f{i}" for i in range(4)]
+            s.task_type_ = "unsupervised"
+            s.model = DBMManual(n_visible=4, n_hidden1=3, n_hidden2=2, seed=99)
+            s.X = _np.random.rand(10, 4).astype("f4")
+
+            # Simular que warm start fue ok
+            ws_path = hparams.get("warm_start_path", "")
+            if ws_path:
+                try:
+                    prev = DBMManual.load(ws_path)
+                    s.model.copy_weights_from(prev)
+                    s._warm_start_info_ = {"warm_start": "ok", "warm_start_dir": ws_path}
+                except Exception as exc:
+                    s._warm_start_info_ = {"warm_start": "error", "error": str(exc)}
+            else:
+                s._warm_start_info_ = {"warm_start": "skipped"}
+
+            return {
+                "status": "completed",
+                "model": model_name,
+                "metrics": {
+                    "loss": 0.2,
+                    "recon_error": 0.2,
+                    "warm_start": dict(s._warm_start_info_),
+                },
+                "history": [{"epoch": 1, "loss": 0.2}],
+            }
+
+    monkeypatch.setattr(m, "_create_strategy", fake_create_strategy)
+    monkeypatch.setattr(m, "PlantillaEntrenamiento", DummyTemplate2)
+    monkeypatch.setattr(m, "maybe_update_champion", lambda **kwargs: {"promoted": False})
+
+    r = client.post(
+        "/modelos/entrenar",
+        json={
+            "modelo": "dbm_manual",
+            "dataset_id": dataset_id,
+            "family": "sentiment_desempeno",
+            "epochs": 1,
+            "data_source": "feature_pack",
+            "auto_prepare": False,
+            "warm_start_from": "run_id",
+            "warm_start_run_id": base_run_id,
+        },
+    )
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    import time as _t
+    st = None
+    for _ in range(80):
+        s2 = client.get(f"/modelos/estado/{job_id}")
+        assert s2.status_code == 200
+        st = s2.json()
+        if st["status"] in ("completed", "failed"):
+            break
+        _t.sleep(0.01)
+
+    assert st is not None
+    assert st["status"] == "completed", st
+
+    new_run_id = st["run_id"]
+    assert new_run_id
+    assert new_run_id != base_run_id
+
+    # warm_start_path llegó al strategy
+    assert _ws_path_received.get("path"), (
+        f"warm_start_path no llegó al strategy: {_ws_path_received}"
+    )
+
+    # Trazabilidad en metrics.json
+    import json as _json
+    metrics = _json.loads(
+        (artifacts_dir / "runs" / new_run_id / "metrics.json").read_text()
+    )
+    assert metrics.get("warm_started") is True, metrics
+    assert metrics.get("warm_start_from") == "run_id", metrics
+    assert metrics.get("warm_start_source_run_id") == base_run_id, metrics
+    assert "warm_start_path" in metrics, metrics
+
+    # warm_start_trace en el estado del job
+    trace = st.get("warm_start_trace", {})
+    assert trace.get("warm_started") is True, f"warm_start_trace: {trace}"
+    assert trace.get("warm_start_source_run_id") == base_run_id
+
+
+def test_dbm_warm_start_validates_dbm_files(artifacts_dir: Path):
+    """
+    resolve_warm_start_path acepta model/ con dbm_state.npz (DBM)
+    y rechaza con 422 si falta dbm_state.npz o meta.json.
+    """
+    from neurocampus.utils.warm_start import resolve_warm_start_path
+    import numpy as _np
+
+    # Crear run con model/ válido para DBM
+    valid_run_id = f"run_dbm_valid_{uuid.uuid4().hex[:6]}"
+    valid_model_dir = artifacts_dir / "runs" / valid_run_id / "model"
+    valid_model_dir.mkdir(parents=True, exist_ok=True)
+    (valid_model_dir / "meta.json").write_text('{"n_visible":4}', encoding="utf-8")
+    _np.savez(valid_model_dir / "dbm_state.npz", W1=_np.zeros((4, 3), dtype="f4"))
+
+    path, trace = resolve_warm_start_path(
+        artifacts_dir=artifacts_dir,
+        dataset_id="ds_any",
+        family="sentiment_desempeno",
+        model_name="dbm_manual",
+        warm_start_from="run_id",
+        warm_start_run_id=valid_run_id,
+    )
+    assert path is not None
+    assert trace["warm_started"] is True
+
+    # Crear run con model/ que solo tiene meta.json (sin dbm_state.npz ni pesos RBM)
+    invalid_run_id = f"run_dbm_invalid_{uuid.uuid4().hex[:6]}"
+    invalid_model_dir = artifacts_dir / "runs" / invalid_run_id / "model"
+    invalid_model_dir.mkdir(parents=True, exist_ok=True)
+    (invalid_model_dir / "meta.json").write_text('{"n_visible":4}', encoding="utf-8")
+    # Sin dbm_state.npz → debe fallar con 422
+
+    try:
+        resolve_warm_start_path(
+            artifacts_dir=artifacts_dir,
+            dataset_id="ds_any",
+            family="sentiment_desempeno",
+            model_name="dbm_manual",
+            warm_start_from="run_id",
+            warm_start_run_id=invalid_run_id,
+        )
+        assert False, "Debería haber lanzado HTTPException 422"
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 422, f"Esperaba 422, got: {exc}"

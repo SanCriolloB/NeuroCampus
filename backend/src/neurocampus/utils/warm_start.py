@@ -37,9 +37,13 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-# Archivos mínimos que debe tener el directorio model/ de un run RBM
+# Archivos mínimos por familia de modelo
+# RBM (pytorch): meta.json + al menos uno de rbm.pt / head.pt
 _RBM_REQUIRED_FILES = {"meta.json"}
 _RBM_WEIGHT_FILES   = {"rbm.pt", "head.pt"}
+
+# DBM (numpy): meta.json + dbm_state.npz
+_DBM_REQUIRED_FILES = {"meta.json", "dbm_state.npz"}
 
 
 def _find_champion_json(
@@ -68,8 +72,9 @@ def _find_champion_json(
 
 def _validate_model_dir(model_dir: Path, run_id: str) -> None:
     """
-    Valida que model_dir exista y contenga archivos mínimos para warm start RBM.
+    Valida que model_dir exista y contenga archivos mínimos para warm start.
 
+    Soporta tanto RBM (pytorch: rbm.pt/head.pt) como DBM (numpy: dbm_state.npz).
     Lanza HTTPException(422) si falta algo.
     """
     if not model_dir.exists():
@@ -82,24 +87,27 @@ def _validate_model_dir(model_dir: Path, run_id: str) -> None:
         )
 
     present = {f.name for f in model_dir.iterdir() if f.is_file()}
-    missing_required = _RBM_REQUIRED_FILES - present
-    if missing_required:
+
+    # Detectar familia por archivos presentes
+    is_dbm = "dbm_state.npz" in present
+    is_rbm = bool(_RBM_WEIGHT_FILES & present)
+
+    # Debe tener meta.json + al menos pesos de una familia
+    if "meta.json" not in present:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"El model/ del run '{run_id}' está incompleto. "
-                f"Faltan archivos requeridos: {sorted(missing_required)}. "
+                f"El model/ del run '{run_id}' no contiene meta.json. "
                 f"Presentes: {sorted(present)}."
             ),
         )
 
-    has_weights = bool(_RBM_WEIGHT_FILES & present)
-    if not has_weights:
+    if not is_dbm and not is_rbm:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"El model/ del run '{run_id}' no contiene pesos RBM. "
-                f"Se esperaba al menos uno de {sorted(_RBM_WEIGHT_FILES)}. "
+                f"El model/ del run '{run_id}' no contiene pesos reconocibles. "
+                f"Se esperaba dbm_state.npz (DBM) o uno de {sorted(_RBM_WEIGHT_FILES)} (RBM). "
                 f"Presentes: {sorted(present)}."
             ),
         )

@@ -1,31 +1,47 @@
-"""
-Router de Predicciones (P2.2).
+"""neurocampus.app.routers.predicciones
+=======================================
 
-En P2.2 el endpoint `/predicciones/predict` NO hace inferencia real aún.
-Su objetivo es:
-- resolver run_id (directo o vía champion),
-- cargar y validar el predictor bundle,
-- retornar metadata (predictor.json + preprocess.json).
+Router de predicciones para la pestaña **Predicciones** del frontend.
 
-En P2.3/P2.4 se agregará inferencia y escritura de outputs.
+Flujo completo:
+- Endpoints de listing: datasets, teachers, materias.
+- Predicción individual por par docente–materia.
+- Job de predicción por lote con polling de estado.
+- Endpoints heredados de P2.2/P2.4: predict, model-info, outputs.
+
+Todos los endpoints de este router usan exclusivamente la family
+``score_docente`` (regresión 0–50). El champion se selecciona
+automáticamente por ``dataset_id``.
 """
 
 from __future__ import annotations
 
-import os
 import json
 import logging
-logger = logging.getLogger(__name__)
-from fastapi import APIRouter, HTTPException
+import os
+import re
+import uuid
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
-from typing import Any
 
 from neurocampus.app.schemas.predicciones import (
+    BatchJobResponse,
+    BatchRunRequest,
+    DatasetInfoResponse,
     HealthResponse,
+    IndividualPredictionRequest,
+    IndividualPredictionResponse,
+    MateriaInfoResponse,
+    ModelInfoResponse,
     PredictRequest,
     PredictResolvedResponse,
-    ModelInfoResponse,
     PredictionsPreviewResponse,
+    TeacherInfoResponse,
 )
 from neurocampus.predictions.loader import (
     ChampionNotFoundError,
@@ -36,27 +52,99 @@ from neurocampus.predictions.loader import (
 )
 from neurocampus.services.predictions_service import (
     InferenceNotAvailableError,
+    load_inference_model,
+    predict_dataframe,
     predict_from_feature_pack,
     save_predictions_parquet,
     resolve_predictions_parquet_path,
     load_predictions_preview,
 )
+from neurocampus.utils.model_context import fill_context
 from neurocampus.utils.paths import artifacts_dir, rel_artifact_path
+from neurocampus.utils.score_postprocess import (
+    build_comparison,
+    build_radar,
+    compute_confidence,
+    compute_risk,
+    INDICATOR_NAMES,
+)
+from neurocampus.utils.predictions_run_io import (
+    create_pred_run_dir,
+    write_pred_meta,
+)
 from neurocampus.predictions.bundle import bundle_paths
 from neurocampus.data.features_prepare import load_feature_pack
-from neurocampus.utils.model_context import fill_context
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/predicciones", tags=["Predicciones"])
 
+# ---------------------------------------------------------------------------
+# Estado in-memory para jobs de batch (patrón idéntico a modelos.py)
+# ---------------------------------------------------------------------------
 
-def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
-    """Aplica `ctx` al dict predictor.json para evitar null/unknown en campos críticos.
+#: Diccionario de estado por job_id para el polling de /batch/{job_id}.
+_PRED_ESTADOS: Dict[str, Dict[str, Any]] = {}
 
-    Importante: esto NO reescribe predictor.json en disco; solo ajusta el response.
-    """
-    out = dict(predictor or {})
+# ---------------------------------------------------------------------------
+# Constantes y helpers internos
+# ---------------------------------------------------------------------------
 
+_FAMILY = "score_docente"
+"""Family fija para todos los endpoints de predicción de esta pestaña."""
+
+def _period_key(ds: str) -> tuple:
+    """Ordena dataset_ids tipo 'YYYY-N' cronológicamente."""
+    m = re.match(r"^\s*(\d{4})-(\d{1,2})\s*$", str(ds))
+    if not m:
+        return (0, 0)
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def _list_pair_datasets() -> List[str]:
+    """Lista dataset_ids que tienen pair_matrix.parquet disponible."""
+    base = artifacts_dir() / "features"
+    if not base.exists():
+        return []
+    return sorted(
+        [p.name for p in base.iterdir() if (p / "pair_matrix.parquet").exists()],
+        key=_period_key,
+    )
+
+
+def _champion_exists(dataset_id: str) -> bool:
+    """Verifica si hay un champion score_docente para el dataset."""
+    try:
+        load_predictor_by_champion(dataset_id=dataset_id, family=_FAMILY, use_cache=False)
+        return True
+    except Exception:
+        return False
+
+
+def _get_calif_means(row: pd.Series) -> List[float]:
+    """Extrae mean_calif_1..10 de una fila del pair_matrix."""
+    result: List[float] = []
+    for i in range(1, len(INDICATOR_NAMES) + 1):
+        col = f"mean_calif_{i}"
+        if col in row.index:
+            try:
+                result.append(float(row[col]))
+            except (TypeError, ValueError):
+                result.append(0.0)
+    return result
+
+
+def _get_cohorte_means(df: pd.DataFrame, materia_key: str) -> List[float]:
+    """Promedio por dimensión para todos los pares de una materia."""
+    subset = df[df["materia_key"] == materia_key]
+    result: List[float] = []
+    for i in range(1, len(INDICATOR_NAMES) + 1):
+        col = f"mean_calif_{i}"
+        if col in df.columns and len(subset) > 0:
+            result.append(float(subset[col].mean()))
+        else:
+            result.append(0.0)
+    return result
     # Campos top-level del manifest
     if ctx.get("dataset_id") is not None:
         out["dataset_id"] = str(ctx["dataset_id"])
@@ -92,8 +180,14 @@ def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
     if extra:
         out["extra"] = extra
 
-    return out
 
+def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
+    """Aplica contexto resuelto al manifest del predictor para eliminar nulls."""
+    out = dict(predictor or {})
+    for field in ("task_type", "input_level", "family", "dataset_id", "model_name"):
+        if not out.get(field) and ctx.get(field):
+            out[field] = ctx[field]
+    return out
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
@@ -101,7 +195,417 @@ def health() -> HealthResponse:
     base = artifacts_dir()
     return HealthResponse(status="ok", artifacts_dir=str(base))
 
+# ===========================================================================
+# ENDPOINTS DE LISTING — pestaña Predicciones
+# ===========================================================================
 
+@router.get(
+    "/datasets",
+    response_model=List[DatasetInfoResponse],
+    summary="Lista datasets disponibles para predicción score_docente",
+)
+def list_datasets() -> List[DatasetInfoResponse]:
+    result: List[DatasetInfoResponse] = []
+    for ds in _list_pair_datasets():
+        pair_meta: Dict[str, Any] = {}
+        pm_path = artifacts_dir() / "features" / ds / "pair_meta.json"
+        if pm_path.exists():
+            try:
+                pair_meta = json.loads(pm_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        result.append(
+            DatasetInfoResponse(
+                dataset_id=ds,
+                n_pairs=int(pair_meta.get("n_pairs", 0)),
+                n_docentes=int(pair_meta.get("n_docentes", 0)),
+                n_materias=int(pair_meta.get("n_materias", 0)),
+                has_champion=_champion_exists(ds),
+                created_at=pair_meta.get("created_at"),
+            )
+        )
+    return result
+
+
+@router.get(
+    "/teachers",
+    response_model=List[TeacherInfoResponse],
+    summary="Lista docentes únicos de un dataset",
+)
+def list_teachers(dataset_id: str) -> List[TeacherInfoResponse]:
+    feat_dir = artifacts_dir() / "features" / str(dataset_id)
+    idx_path = feat_dir / "teacher_index.json"
+
+    if not idx_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"teacher_index.json no encontrado para dataset_id={dataset_id}. "
+                "Ejecuta feature-pack/prepare primero."
+            ),
+        )
+
+    index: Dict[str, int] = json.loads(idx_path.read_text(encoding="utf-8"))
+
+    counts: Dict[str, int] = {}
+    pair_path = feat_dir / "pair_matrix.parquet"
+    if pair_path.exists():
+        try:
+            df_pair = pd.read_parquet(pair_path, columns=["teacher_key", "n_docente"])
+            counts = (
+                df_pair.drop_duplicates("teacher_key")
+                .set_index("teacher_key")["n_docente"]
+                .astype(int)
+                .to_dict()
+            )
+        except Exception:
+            pass
+
+    return [
+        TeacherInfoResponse(
+            teacher_key=key,
+            teacher_id=tid,
+            n_encuestas=int(counts.get(key, 0)),
+        )
+        for key, tid in sorted(index.items())
+    ]
+
+
+@router.get(
+    "/materias",
+    response_model=List[MateriaInfoResponse],
+    summary="Lista materias únicas de un dataset",
+)
+def list_materias(dataset_id: str) -> List[MateriaInfoResponse]:
+    feat_dir = artifacts_dir() / "features" / str(dataset_id)
+    idx_path = feat_dir / "materia_index.json"
+
+    if not idx_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"materia_index.json no encontrado para dataset_id={dataset_id}. "
+                "Ejecuta feature-pack/prepare primero."
+            ),
+        )
+
+    index: Dict[str, int] = json.loads(idx_path.read_text(encoding="utf-8"))
+
+    counts: Dict[str, int] = {}
+    pair_path = feat_dir / "pair_matrix.parquet"
+    if pair_path.exists():
+        try:
+            df_pair = pd.read_parquet(pair_path, columns=["materia_key", "n_materia"])
+            counts = (
+                df_pair.drop_duplicates("materia_key")
+                .set_index("materia_key")["n_materia"]
+                .astype(int)
+                .to_dict()
+            )
+        except Exception:
+            pass
+
+    return [
+        MateriaInfoResponse(
+            materia_key=key,
+            materia_id=mid,
+            n_encuestas=int(counts.get(key, 0)),
+        )
+        for key, mid in sorted(index.items())
+    ]
+
+
+# ===========================================================================
+# PREDICCIÓN INDIVIDUAL
+# ===========================================================================
+
+@router.post(
+    "/individual",
+    response_model=IndividualPredictionResponse,
+    summary="Predicción individual de score para un par docente–materia",
+)
+def predict_individual(req: IndividualPredictionRequest) -> IndividualPredictionResponse:
+    ds = str(req.dataset_id).strip()
+    teacher_key = str(req.teacher_key).strip()
+    materia_key = str(req.materia_key).strip()
+
+    pair_path = artifacts_dir() / "features" / ds / "pair_matrix.parquet"
+    if not pair_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"pair_matrix.parquet no existe para dataset_id={ds}. "
+                "Ejecuta feature-pack/prepare primero."
+            ),
+        )
+
+    try:
+        df_pair = pd.read_parquet(pair_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error cargando pair_matrix: {e}") from e
+
+    mask = (df_pair["teacher_key"] == teacher_key) & (df_pair["materia_key"] == materia_key)
+    row_df = df_pair[mask]
+    if len(row_df) == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Par teacher_key='{teacher_key}' / materia_key='{materia_key}' "
+                f"no encontrado en dataset_id={ds}."
+            ),
+        )
+
+    row = row_df.iloc[0]
+
+    try:
+        bundle = load_predictor_by_champion(dataset_id=ds, family=_FAMILY)
+    except ChampionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotReadyError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error cargando champion: {e}") from e
+
+    champion_run_id = str(bundle.run_id)
+    model_name = str(bundle.predictor.get("model_name") or "unknown")
+
+    try:
+        model = load_inference_model(bundle)
+        preds, _ = predict_dataframe(model, row_df.reset_index(drop=True), return_proba=False)
+    except InferenceNotAvailableError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Error en inferencia individual para %s/%s", teacher_key, materia_key)
+        raise HTTPException(status_code=500, detail=f"Error en inferencia: {e}") from e
+
+    score_total_pred = float(np.clip(preds[0]["score_total_pred"], 0.0, 50.0))
+
+    n_par = int(row.get("n_par", 0))
+    n_docente = int(row.get("n_docente", 0))
+    n_materia = int(row.get("n_materia", 0))
+    mean_score = float(row.get("mean_score_total_0_50", 0.0) or 0.0)
+    std_score = float(row.get("std_score_total_0_50", 0.0) or 0.0)
+
+    risk = compute_risk(score_total_pred)
+    confidence = compute_confidence(n_par=n_par, std_score=std_score)
+
+    calif_means_docente = _get_calif_means(row)
+    calif_means_cohorte = _get_cohorte_means(df_pair, materia_key)
+
+    radar = build_radar(
+        calif_means=calif_means_docente,
+        score_total_pred=score_total_pred,
+        mean_score_total=mean_score,
+    )
+    comparison = build_comparison(
+        calif_means_docente=calif_means_docente,
+        calif_means_cohorte=calif_means_cohorte,
+    )
+
+    timeline = _build_timeline(
+        teacher_key=teacher_key,
+        materia_key=materia_key,
+        current_ds=ds,
+        score_total_pred=score_total_pred,
+    )
+
+    from neurocampus.app.schemas.predicciones import (
+        EvidenceInfo,
+        HistoricalStats,
+        TimelinePoint,
+        RadarPoint,
+        ComparisonPoint,
+    )
+
+    return IndividualPredictionResponse(
+        dataset_id=ds,
+        teacher_key=teacher_key,
+        materia_key=materia_key,
+        score_total_pred=round(score_total_pred, 2),
+        risk=risk,
+        confidence=confidence,
+        cold_pair=(n_par == 0),
+        evidence=EvidenceInfo(n_par=n_par, n_docente=n_docente, n_materia=n_materia),
+        historical=HistoricalStats(mean_score=round(mean_score, 2), std_score=round(std_score, 2)),
+        radar=[RadarPoint(**p) for p in radar],
+        comparison=[ComparisonPoint(**p) for p in comparison],
+        timeline=[TimelinePoint(**p) for p in timeline],
+        champion_run_id=champion_run_id,
+        model_name=model_name,
+    )
+
+
+def _build_timeline(
+    *,
+    teacher_key: str,
+    materia_key: str,
+    current_ds: str,
+    score_total_pred: float,
+) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for ds in _list_pair_datasets():
+        pair_path = artifacts_dir() / "features" / ds / "pair_matrix.parquet"
+        if not pair_path.exists():
+            continue
+        try:
+            df = pd.read_parquet(
+                pair_path,
+                columns=["teacher_key", "materia_key", "mean_score_total_0_50", "n_par"],
+            )
+        except Exception:
+            continue
+
+        mask = (df["teacher_key"] == teacher_key) & (df["materia_key"] == materia_key)
+        sub = df[mask]
+        if len(sub) == 0:
+            continue
+
+        point: Dict[str, Any] = {
+            "semester": ds,
+            "real": round(float(sub["mean_score_total_0_50"].iloc[0]), 2),
+        }
+        if ds == current_ds:
+            point["predicted"] = round(float(score_total_pred), 2)
+
+        result.append(point)
+
+    return result
+
+
+# ===========================================================================
+# PREDICCIÓN POR LOTE (batch) — job asíncrono con polling
+# ===========================================================================
+
+@router.post(
+    "/batch/run",
+    response_model=BatchJobResponse,
+    status_code=202,
+    summary="Lanza un job de predicción por lote (todos los pares del dataset)",
+)
+def batch_run(req: BatchRunRequest, bg: BackgroundTasks) -> BatchJobResponse:
+    ds = str(req.dataset_id).strip()
+
+    pair_path = artifacts_dir() / "features" / ds / "pair_matrix.parquet"
+    if not pair_path.exists():
+        raise HTTPException(status_code=404, detail=f"pair_matrix.parquet no existe para dataset_id={ds}.")
+    if not _champion_exists(ds):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No hay champion score_docente para dataset_id={ds}.",
+        )
+
+    job_id = str(uuid.uuid4())
+    _PRED_ESTADOS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "progress": 0.0,
+        "dataset_id": ds,
+        "pred_run_id": None,
+        "n_pairs": None,
+        "predictions_uri": None,
+        "champion_run_id": None,
+        "error": None,
+    }
+
+    bg.add_task(_run_batch_job, job_id, ds)
+
+    return BatchJobResponse(job_id=job_id, status="queued", progress=0.0, dataset_id=ds)
+
+
+@router.get(
+    "/batch/{job_id}",
+    response_model=BatchJobResponse,
+    summary="Estado de un job de predicción por lote",
+)
+def batch_status(job_id: str) -> BatchJobResponse:
+    st = _PRED_ESTADOS.get(job_id)
+    if not isinstance(st, dict):
+        raise HTTPException(status_code=404, detail=f"job_id={job_id} no encontrado.")
+
+    return BatchJobResponse(
+        job_id=job_id,
+        status=str(st.get("status", "unknown")),
+        progress=float(st.get("progress", 0.0)),
+        dataset_id=str(st.get("dataset_id", "")),
+        pred_run_id=st.get("pred_run_id"),
+        n_pairs=st.get("n_pairs"),
+        predictions_uri=st.get("predictions_uri"),
+        champion_run_id=st.get("champion_run_id"),
+        error=st.get("error"),
+    )
+
+
+def _run_batch_job(job_id: str, dataset_id: str) -> None:
+    st = _PRED_ESTADOS[job_id]
+    st["status"] = "running"
+    st["progress"] = 0.05
+
+    try:
+        df_pair = pd.read_parquet(artifacts_dir() / "features" / dataset_id / "pair_matrix.parquet")
+        st["progress"] = 0.15
+
+        bundle = load_predictor_by_champion(dataset_id=dataset_id, family=_FAMILY, use_cache=False)
+        champion_run_id = str(bundle.run_id)
+        model = load_inference_model(bundle)
+        st["champion_run_id"] = champion_run_id
+        st["progress"] = 0.30
+
+        preds_raw, _ = predict_dataframe(model, df_pair.reset_index(drop=True), return_proba=False)
+        st["progress"] = 0.70
+
+        records: List[Dict[str, Any]] = []
+        for i, pred in enumerate(preds_raw):
+            row = df_pair.iloc[i]
+            score = float(np.clip(pred["score_total_pred"], 0.0, 50.0))
+            n_par = int(row.get("n_par", 0))
+            std_score = float(row.get("std_score_total_0_50", 0.0) or 0.0)
+
+            records.append(
+                {
+                    "teacher_key": str(row.get("teacher_key", "")),
+                    "materia_key": str(row.get("materia_key", "")),
+                    "teacher_id": int(row.get("teacher_id", -1)),
+                    "materia_id": int(row.get("materia_id", -1)),
+                    "score_total_pred": round(score, 2),
+                    "risk": compute_risk(score),
+                    "confidence": compute_confidence(n_par=n_par, std_score=std_score),
+                    "n_par": n_par,
+                    "n_docente": int(row.get("n_docente", 0)),
+                    "n_materia": int(row.get("n_materia", 0)),
+                    "cold_pair": n_par == 0,
+                    "mean_score_total_0_50": float(row.get("mean_score_total_0_50", 0.0) or 0.0),
+                    "std_score_total_0_50": round(std_score, 3),
+                }
+            )
+
+        st["progress"] = 0.85
+
+        pred_run_id, out_dir = create_pred_run_dir(dataset_id)
+        out_parquet = out_dir / "predictions.parquet"
+        pd.DataFrame(records).to_parquet(out_parquet, index=False)
+
+        import datetime as dt
+        meta = {
+            "pred_run_id": pred_run_id,
+            "dataset_id": dataset_id,
+            "champion_run_id": champion_run_id,
+            "n_pairs": len(records),
+            "created_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "family": _FAMILY,
+        }
+        write_pred_meta(out_dir, meta)
+
+        st["status"] = "completed"
+        st["progress"] = 1.0
+        st["pred_run_id"] = pred_run_id
+        st["n_pairs"] = len(records)
+        st["predictions_uri"] = rel_artifact_path(out_parquet)
+
+    except Exception as e:
+        logger.exception("Error en batch job %s", job_id)
+        st["status"] = "failed"
+        st["error"] = str(e)
 
 @router.get("/model-info", response_model=ModelInfoResponse)
 def model_info(

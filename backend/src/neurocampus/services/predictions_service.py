@@ -190,6 +190,33 @@ def _get_label_names(model: Any, proba: np.ndarray) -> List[str]:
 
     return [f"c{i}" for i in range(proba.shape[1])]
 
+def _safe_int(df: pd.DataFrame, row_idx: int, col: str) -> Optional[int]:
+    """Convierte de forma segura un valor de una columna a ``int``.
+
+    Returns:
+        int o None si el valor es nulo/no convertible.
+    """
+    try:
+        v = df.iloc[int(row_idx)][col]  # type: ignore[index]
+    except Exception:
+        return None
+
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+
+    if v is None:
+        return None
+
+    try:
+        return int(v)
+    except Exception:
+        try:
+            return int(str(v).strip())
+        except Exception:
+            return None
 
 def predict_dataframe(
     model: Any,
@@ -197,13 +224,75 @@ def predict_dataframe(
     *,
     return_proba: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Ejecuta predicción sobre un DataFrame y normaliza a JSON."""
+    """Ejecuta predicción sobre un DataFrame y normaliza a JSON.
 
+    Soporta dos modos:
+
+    - **Clasificación**: usa ``predict_df``/``predict`` y opcionalmente
+      ``predict_proba_df`` para poblar ``proba``.
+    - **Regresión (score 0–50)**: usa ``predict_score_df`` y retorna
+      ``score_total_pred``.
+
+    Raises:
+        InferenceNotAvailableError: si se requiere regresión y el modelo no
+        implementa ``predict_score_df``.
+    """
     n = int(len(df))
     if n == 0:
         return [], {"prediction_fields": []}
 
-    # Preferir API basada en DataFrame (estrategias RBM)
+    # Detectar tipo de tarea (contrato esperado: model.task_type).
+    task_type = str(getattr(model, "task_type", "classification")).lower()
+    is_regression = task_type == "regression"
+
+    # Fallback: algunos modelos de score no declaran task_type, pero exponen
+    # predict_score_df() y NO exponen predict_proba_df().
+    if (
+        not is_regression
+        and hasattr(model, "predict_score_df")
+        and not hasattr(model, "predict_proba_df")
+    ):
+        is_regression = True
+        task_type = "regression"
+
+    has_teacher = "teacher_id" in df.columns
+    has_materia = "materia_id" in df.columns
+
+    # -------------------------
+    # REGRESIÓN: score 0–50
+    # -------------------------
+    if is_regression:
+        if not hasattr(model, "predict_score_df"):
+            raise InferenceNotAvailableError(
+                "El modelo es de regresión pero no implementa predict_score_df()"
+            )
+
+        scores = np.asarray(model.predict_score_df(df), dtype=float).reshape(-1)
+        scores = np.clip(scores, 0.0, 50.0)
+
+        out: List[Dict[str, Any]] = []
+        for i in range(n):
+            rec: Dict[str, Any] = {
+                "row_index": int(i),
+                "score_total_pred": float(scores[i]),
+            }
+            if has_teacher:
+                rec["teacher_id"] = _safe_int(df, i, "teacher_id")
+            if has_materia:
+                rec["materia_id"] = _safe_int(df, i, "materia_id")
+            out.append(rec)
+
+        schema: Dict[str, Any] = {
+            "prediction_fields": sorted({k for r in out for k in r.keys()}),
+            "task_type": task_type,
+            "score_field": "score_total_pred",
+            "proba_labels": None,
+        }
+        return out, schema
+
+    # -------------------------
+    # CLASIFICACIÓN: label + proba opcional
+    # -------------------------
     proba = None
     if return_proba and hasattr(model, "predict_proba_df"):
         proba = np.asarray(model.predict_proba_df(df), dtype=float)
@@ -213,7 +302,6 @@ def predict_dataframe(
     elif hasattr(model, "predict"):
         labels = list(model.predict(df))
     else:
-        # No debería ocurrir por validación en load.
         labels = [None] * n
 
     out: List[Dict[str, Any]] = []
@@ -222,33 +310,24 @@ def predict_dataframe(
     if proba is not None and proba.ndim == 2 and proba.shape[0] == n:
         label_names = _get_label_names(model, proba)
 
-    # Campos opcionales de trazabilidad (si existen)
-    has_teacher = "teacher_id" in df.columns
-    has_materia = "materia_id" in df.columns
-
-    # Usar índice posicional como row_index estable
     for i in range(n):
         rec: Dict[str, Any] = {"row_index": int(i), "label": str(labels[i])}
 
         if has_teacher:
-            try:
-                rec["teacher_id"] = int(df.iloc[i]["teacher_id"])  # type: ignore[index]
-            except Exception:
-                rec["teacher_id"] = df.iloc[i]["teacher_id"]
-
+            rec["teacher_id"] = _safe_int(df, i, "teacher_id")
         if has_materia:
-            try:
-                rec["materia_id"] = int(df.iloc[i]["materia_id"])  # type: ignore[index]
-            except Exception:
-                rec["materia_id"] = df.iloc[i]["materia_id"]
+            rec["materia_id"] = _safe_int(df, i, "materia_id")
 
         if label_names is not None and proba is not None:
-            rec["proba"] = {label_names[j]: float(proba[i, j]) for j in range(len(label_names))}
+            rec["proba"] = {
+                label_names[j]: float(proba[i, j]) for j in range(len(label_names))
+            }
 
         out.append(rec)
 
     schema: Dict[str, Any] = {
         "prediction_fields": sorted({k for r in out for k in r.keys()}),
+        "task_type": "classification",
         "proba_labels": label_names,
     }
     return out, schema

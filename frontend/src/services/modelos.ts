@@ -352,16 +352,16 @@ export async function getReadiness(filters?: { dataset_id?: string }) {
 }
 
 /**
- * POST /modelos/promote (legacy) o /modelos/champion/promote (actual)
+ * POST /modelos/champion/promote (actual) o /modelos/promote (legacy)
  * - Promueve un run existente a champion de forma manual.
  */
 export async function promoteChampion(req: PromoteChampionReq) {
   try {
-    const { data } = await api.post<ChampionInfo>("/modelos/promote", req as any);
+    const { data } = await api.post<ChampionInfo>("/modelos/champion/promote", req as any);
     return data;
   } catch (err) {
     if (!shouldFallback(err)) throw err;
-    const { data } = await api.post<ChampionInfo>("/modelos/champion/promote", req as any);
+    const { data } = await api.post<ChampionInfo>("/modelos/promote", req as any);
     return data;
   }
 }

@@ -8,6 +8,7 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Input } from '../ui/input';
 import { Search, Zap } from 'lucide-react';
+import { modelosApi } from '@/features/modelos/api';
 import {
   DATASETS, FAMILY_CONFIGS, MOCK_CHAMPIONS, MOCK_RUNS,
   type Family, type ModelResolveSource, type ResolvedModel,
@@ -33,8 +34,60 @@ export function ModelContextHeader({
 
   const fc = FAMILY_CONFIGS[family];
 
-  const handleResolve = () => {
+  /**
+   * Resuelve el "modelo activo" para inferencia.
+   *
+   * Estrategia:
+   * 1) Intentar contra backend (`/modelos`) usando `modelosApi` (adapter).
+   * 2) Si falla (backend incompleto/offline), caer a mocks del prototipo para
+   *    mantener la UI funcional y 1:1 con el diseño esperado.
+   *
+   * Nota:
+   * - `datasetId` en UI usa IDs tipo "ds_2025_1". Para backend, convertimos a
+   *   periodo con `DATASETS[].period` (ej. "2025-1") cuando está disponible.
+   */
+  const handleResolve = async () => {
     setResolveError(null);
+
+    // Mapea dataset UI -> dataset backend (periodo). Si no hay match, usa el id tal cual.
+    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+
+    try {
+      if (resolveSource === 'champion') {
+        const { resolved } = await modelosApi.getChampionUI({
+          datasetId: backendDatasetId,
+          family,
+        });
+
+        // Mantener paridad visual: dataset_id se conserva como el ID UI seleccionado.
+        onResolve({ ...resolved, dataset_id: datasetId, family });
+        return;
+      }
+
+      // resolveSource === 'run_id'
+      const run = await modelosApi.getRunDetailsUI(resolveRunId);
+      if (run.bundle_status === 'incomplete') {
+        setResolveError('422: Bundle incompleto para inferencia.');
+      }
+
+      onResolve({
+        resolved_run_id: run.run_id,
+        source: 'run_id',
+        bundle_status: run.bundle_status,
+        primary_metric: run.primary_metric,
+        primary_metric_value: run.primary_metric_value,
+        model_name: run.model_name,
+        family: run.family,
+        dataset_id: datasetId, // paridad visual (ID UI)
+      });
+      return;
+    } catch (err) {
+      // Fallback: comportamiento 100% prototipo (mocks), para evitar bloquear la UI.
+    }
+
+    // ---------------------------------------------------------------------
+    // Fallback (mocks) — exactamente como el prototipo.
+    // ---------------------------------------------------------------------
     if (resolveSource === 'champion') {
       const key = `${family}__${datasetId}`;
       const champ = MOCK_CHAMPIONS[key];
@@ -146,7 +199,7 @@ export function ModelContextHeader({
             </div>
           )}
           <Button
-            onClick={handleResolve}
+            onClick={() => void handleResolve()}
             size="sm"
             className="bg-cyan-600 hover:bg-cyan-700 h-9 gap-1"
           >

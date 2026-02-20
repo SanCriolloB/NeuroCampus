@@ -154,6 +154,10 @@ class DashboardWordcloudItem(BaseModel):
 
     text: str
     value: int
+    sentiment: str = Field(
+        "neutral",
+        description="Sentimiento dominante del token: positive|neutral|negative.",
+    )   
 
 
 class DashboardWordcloud(BaseModel):

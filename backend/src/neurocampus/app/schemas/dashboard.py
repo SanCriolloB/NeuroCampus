@@ -92,6 +92,14 @@ class DashboardCatalogos(BaseModel):
 class DashboardKPIs(BaseModel):
     """Contrato para ``GET /dashboard/kpis``."""
 
+    predicciones: int = Field(
+        0,
+        description=(
+            \"Cantidad total de predicciones persistidas en artifacts/predictions \"
+            \"para el periodo/rango y filtros aplicados. Si no existen predicciones, retorna 0.\"
+        ),
+    )
+
     evaluaciones: int = Field(0, description="Cantidad de evaluaciones incluidas.")
     docentes: int = Field(0, description="Cantidad de docentes distintos.")
     asignaturas: int = Field(0, description="Cantidad de asignaturas distintas.")

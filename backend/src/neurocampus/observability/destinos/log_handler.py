@@ -3,7 +3,7 @@
 Destino de observabilidad vía logging.
 
 - Se suscribe al bus in-memory para eventos:
-  - training.started | training.epoch_end | training.completed | training.failed
+  - training.started | training.epoch_end | training.completed | training.persisted | training.failed
   - prediction.requested | prediction.completed | prediction.failed
 - Imprime cada evento a un logger específico, agregando correlation_id al LogRecord.
 
@@ -37,6 +37,7 @@ _TRAINING_TOPICS: Tuple[str, ...] = (
     "training.started",
     "training.epoch_end",
     "training.completed",
+    "training.persisted",
     "training.failed",
 )
 

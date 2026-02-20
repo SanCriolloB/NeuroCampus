@@ -23,7 +23,6 @@ import {
   type EntrenarRequestDto,
   type EstadoResponseDto,
   type ModelSweepRequestDto,
-  type ModelSweepResponseDto,
   type ReadinessResponseDto,
   type RunDetailsDto,
   type RunSummaryDto,
@@ -50,12 +49,48 @@ import {
 } from "@/components/models/mockData";
 
 /**
+ * Filtra y normaliza `hparams` hacia el contrato actual del servicio (`number | null`).
+ *
+ * Nota:
+ * - La UI puede producir strings/bools en el futuro; hoy el backend soporta numéricos.
+ * - Los valores no numéricos se omiten (conservador).
+ */
+function toNumericHparams(
+  hparams: Record<string, number | string | boolean | null> | undefined
+): Record<string, number | null> | undefined {
+  if (!hparams) return undefined;
+
+  const out: Record<string, number | null> = {};
+  for (const [k, v] of Object.entries(hparams)) {
+    if (v === null) {
+      out[k] = null;
+      continue;
+    }
+    if (typeof v === "number" && Number.isFinite(v)) {
+      out[k] = v;
+      continue;
+    }
+    // Ignorar strings/bools para no romper contrato del backend.
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Normaliza un valor que en DTO puede ser `null` para ajustarse a un
+ * contrato de servicio que espera `undefined` cuando no aplica.
+ */
+function nullToUndef<T>(value: T | null | undefined): T | undefined {
+  return value === null ? undefined : value;
+}
+
+
+/**
  * Wrapper estable para consumirse desde hooks/UI.
  */
 export const modelosApi = {
   /** Readiness del dataset (si artifacts existen). */
   async readiness(datasetId: string): Promise<ReadinessResponseDto> {
-    return modelosService.readiness(datasetId);
+    return (await modelosService.getReadiness({ dataset_id: datasetId })) as unknown as ReadinessResponseDto;
   },
 
   /**
@@ -112,11 +147,11 @@ export const modelosApi = {
     family?: Family;
     modelName?: ModeloName;
   }): Promise<{ resolved: ResolvedModel; record: ChampionRecord; raw: ChampionInfoDto }> {
-    const raw = await modelosService.getChampion({
+    const raw = (await modelosService.getChampion({
       dataset_id: params.datasetId,
       family: params.family,
       model_name: params.modelName,
-    });
+    })) as unknown as ChampionInfoDto;
 
     return {
       raw,
@@ -132,7 +167,10 @@ export const modelosApi = {
    * - La UI del prototipo simula; aquí solo enviamos request.
    */
   async train(request: EntrenarRequestDto): Promise<{ jobId: string }> {
-    const resp = await modelosService.entrenar(request);
+    const resp = await modelosService.entrenar({
+      ...request,
+      hparams: toNumericHparams(request.hparams),
+    } as any);
     return { jobId: resp.job_id };
   },
 
@@ -140,7 +178,7 @@ export const modelosApi = {
    * Polling del estado del job (train o sweep legacy).
    */
   async getJobStatus(jobId: string): Promise<EstadoResponseDto> {
-    return modelosService.getEstado(jobId);
+    return (await modelosService.estado(jobId)) as unknown as EstadoResponseDto;
   },
 
   /**
@@ -160,16 +198,12 @@ export const modelosApi = {
    */
   async sweep(params: ModelSweepRequestDto): Promise<SweepResult> {
     // Primero intenta endpoint moderno.
-    let resp: ModelSweepResponseDto | null = null;
-
-    try {
-      resp = await modelosService.sweep(params);
-    } catch (err) {
-      // Fallback legacy: endpoint antiguo.
-      // El servicio ya maneja fallback a legacy internamente;
-      // si llegó aquí, asumimos que no hay soporte y re-lanzamos.
-      throw err;
-    }
+    const resp = (await modelosService.sweep({
+      ...params,
+      // El servicio no espera `null`; se usa `undefined` cuando no aplica.
+      warm_start_from: nullToUndef(params.warm_start_from),
+      warm_start_run_id: nullToUndef(params.warm_start_run_id),
+    } as any)) as any;
 
     const family = normalizeFamily(resp.family);
     const candidates = (resp.candidates ?? []).map((c) => {
@@ -215,7 +249,7 @@ export const modelosApi = {
   /**
    * Recupera summary del sweep (si el backend lo expone).
    */
-  async getSweepSummary(sweepId: string): Promise<ModelSweepResponseDto> {
+  async getSweepSummary(sweepId: string): Promise<modelosService.SweepSummaryResp> {
     return modelosService.getSweepSummary(sweepId);
   },
 };

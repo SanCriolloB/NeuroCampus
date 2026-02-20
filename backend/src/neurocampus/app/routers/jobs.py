@@ -646,6 +646,16 @@ class FeaturesPrepareRequest(BaseModel):
     output_dir: Optional[str] = None
     force: bool = False
 
+    # --- Opcional: features de texto (TF-IDF + LSA) ---
+    # Estos parámetros NO afectan a los flujos existentes a menos que se activen
+    # explícitamente. Su objetivo es habilitar la parte P2.6 (texto/embeddings)
+    # end-to-end desde el feature-pack.
+    text_feats_mode: str = 'none'
+    text_col: Optional[str] = None
+    text_n_components: int = 64
+    text_min_df: int = 2
+    text_max_features: int = 20000
+
 
 class FeaturesPrepareJob(BaseModel):
     """Estado de un job de feature-pack."""
@@ -659,6 +669,14 @@ class FeaturesPrepareJob(BaseModel):
     input_uri: Optional[str] = None
     output_dir: Optional[str] = None
     force: bool = False
+
+    # Repetimos la configuración de texto para trazabilidad del job
+    text_feats_mode: str = 'none'
+    text_col: Optional[str] = None
+    text_n_components: int = 64
+    text_min_df: int = 2
+    text_max_features: int = 20000
+
     artifacts: Optional[dict] = None
     error: Optional[str] = None
 
@@ -820,6 +838,11 @@ def _run_features_prepare_job(job_id: str) -> None:
             dataset_id=dataset_id,
             input_uri=input_uri,
             output_dir=out_dir,
+            text_feats_mode=str(job.get('text_feats_mode') or 'none'),
+            text_col=job.get('text_col'),
+            text_n_components=int(job.get('text_n_components') or 64),
+            text_min_df=int(job.get('text_min_df') or 2),
+            text_max_features=int(job.get('text_max_features') or 20000),
         )
 
         job["status"] = "done"
@@ -854,6 +877,11 @@ def launch_features_prepare(req: FeaturesPrepareRequest, background: BackgroundT
         "input_uri": req.input_uri,
         "output_dir": req.output_dir,
         "force": bool(getattr(req, "force", False)),
+        "text_feats_mode": getattr(req, "text_feats_mode", 'none'),
+        "text_col": getattr(req, "text_col", None),
+        "text_n_components": int(getattr(req, "text_n_components", 64)),
+        "text_min_df": int(getattr(req, "text_min_df", 2)),
+        "text_max_features": int(getattr(req, "text_max_features", 20000)),
         "artifacts": None,
         "error": None,
     }

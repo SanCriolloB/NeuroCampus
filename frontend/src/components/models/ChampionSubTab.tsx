@@ -1,7 +1,7 @@
 // ============================================================
 // NeuroCampus — Champion Sub-Tab
 // ============================================================
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -10,8 +10,9 @@ import {
   Award, Eye, ExternalLink, RefreshCw, AlertTriangle,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { modelosApi } from '@/features/modelos/api';
 import {
-  MOCK_CHAMPIONS, MOCK_RUNS, FAMILY_CONFIGS, formatDate,
+  MOCK_CHAMPIONS, MOCK_RUNS, DATASETS, FAMILY_CONFIGS, formatDate,
   type Family, type ChampionRecord, type RunRecord,
 } from './mockData';
 import { BundleStatusBadge, WarmStartBadge, TextFeaturesBadge, CopyButton } from './SharedBadges';
@@ -29,27 +30,120 @@ export function ChampionSubTab({
 }: ChampionSubTabProps) {
   const fc = FAMILY_CONFIGS[family];
   const champKey = `${family}__${datasetId}`;
-  const champion = MOCK_CHAMPIONS[champKey] as ChampionRecord | undefined;
-  const champRun = champion ? MOCK_RUNS.find(r => r.run_id === champion.run_id) : undefined;
+
+  // ---------------------------------------------------------------------------
+  // Backend integration (tolerante): champion + runs con fallback a mocks.
+  // ---------------------------------------------------------------------------
+  const [remoteChampion, setRemoteChampion] = useState<ChampionRecord | undefined>(undefined);
+  const [remoteRuns, setRemoteRuns] = useState<RunRecord[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // El UI usa IDs tipo "ds_2025_1"; el backend suele usar "2025-1".
+    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+
+    (async () => {
+      try {
+        const { record } = await modelosApi.getChampionUI({
+          datasetId: backendDatasetId,
+          family,
+        });
+
+        // Paridad visual: mantener dataset_id como el ID UI seleccionado.
+        const uiRecord: ChampionRecord = { ...record, dataset_id: datasetId };
+        if (!cancelled) setRemoteChampion(uiRecord);
+      } catch {
+        // Si el backend no está listo/offline, dejamos `remoteChampion` indefinido
+        // y la UI cae a los mocks del prototipo.
+        if (!cancelled) setRemoteChampion(undefined);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [family, datasetId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+
+    (async () => {
+      try {
+        const runs = await modelosApi.listRunsUI({ datasetId: backendDatasetId, family });
+        const uiRuns = runs.map(r => ({ ...r, dataset_id: datasetId }));
+        if (!cancelled) setRemoteRuns(uiRuns);
+      } catch {
+        if (!cancelled) setRemoteRuns(null);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [family, datasetId]);
+
+  const champion = remoteChampion ?? (MOCK_CHAMPIONS[champKey] as ChampionRecord | undefined);
+
+  // Para mostrar badges y acciones, buscamos el run del champion en la lista combinada.
+  const champRun = useMemo(() => {
+    if (!champion) return undefined;
+    const baseRuns = remoteRuns ?? MOCK_RUNS;
+    return [...baseRuns, ...extraRuns].find(r => r.run_id === champion.run_id);
+  }, [champion?.run_id, remoteRuns, extraRuns]);
 
   // All completed runs for potential replacement
   const completedRuns = useMemo(() => {
-    return [...MOCK_RUNS, ...extraRuns]
+    const baseRuns = remoteRuns ?? MOCK_RUNS;
+    return [...baseRuns, ...extraRuns]
       .filter(r => r.family === family && r.dataset_id === datasetId && r.status === 'completed')
       .sort((a, b) => {
         if (fc.metricMode === 'max') return b.primary_metric_value - a.primary_metric_value;
         return a.primary_metric_value - b.primary_metric_value;
       });
-  }, [family, datasetId, extraRuns, fc.metricMode]);
+  }, [family, datasetId, extraRuns, fc.metricMode, remoteRuns]);
 
   const [showReplace, setShowReplace] = useState(false);
   const [replaceRunId, setReplaceRunId] = useState('');
 
-  const handleReplace = () => {
-    if (replaceRunId) {
-      alert(`Champion reemplazado por: ${replaceRunId}`);
-      setShowReplace(false);
+  const handleReplace = async () => {
+    if (!replaceRunId) return;
+
+    // Obtener run seleccionado para enviar contexto al backend.
+    const selected = completedRuns.find(r => r.run_id === replaceRunId);
+
+    // Mapear dataset UI -> dataset backend (periodo).
+    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+
+    try {
+      if (selected) {
+        await modelosApi.promote({
+          dataset_id: backendDatasetId,
+          run_id: selected.run_id,
+          model_name: selected.model_name,
+          family: selected.family,
+          task_type: selected.task_type,
+          input_level: selected.input_level,
+          target_col: selected.target_col,
+          data_plan: (selected as any).data_plan ?? null,
+          data_source: (selected as any).data_source ?? null,
+        });
+
+        // Actualizar champion local (paridad visual + UX inmediata).
+        setRemoteChampion({
+          run_id: selected.run_id,
+          model_name: selected.model_name,
+          primary_metric_value: selected.primary_metric_value,
+          primary_metric: selected.primary_metric,
+          metric_mode: selected.metric_mode,
+          family: selected.family,
+          dataset_id: datasetId,
+          promoted_at: new Date().toISOString(),
+        });
+      }
+    } catch {
+      // Si el backend no está listo, mantenemos el comportamiento del prototipo.
     }
+
+    alert(`Champion reemplazado por: ${replaceRunId}`);
+    setShowReplace(false);
   };
 
   return (
@@ -156,7 +250,7 @@ export function ChampionSubTab({
                 </Select>
               </div>
               <Button
-                onClick={handleReplace}
+                onClick={() => void handleReplace()}
                 disabled={!replaceRunId}
                 className="bg-yellow-600 hover:bg-yellow-700 gap-1"
                 size="sm"

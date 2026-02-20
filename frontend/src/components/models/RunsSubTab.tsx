@@ -1,7 +1,7 @@
 // ============================================================
 // NeuroCampus — Runs Sub-Tab (Table + Detail Panel)
 // ============================================================
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -15,8 +15,9 @@ import {
   CheckCircle2, XCircle,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { modelosApi } from '@/features/modelos/api';
 import {
-  MOCK_RUNS, MODEL_STRATEGIES, FAMILY_CONFIGS, formatDate, formatDuration,
+  MOCK_RUNS, DATASETS, MODEL_STRATEGIES, FAMILY_CONFIGS, formatDate, formatDuration,
   type Family, type RunRecord,
 } from './mockData';
 import {
@@ -37,6 +38,35 @@ export function RunsSubTab({
   const fc = FAMILY_CONFIGS[family];
   const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId ?? null);
 
+  // ---------------------------------------------------------------------------
+  // Backend integration (tolerante): list runs con fallback a mocks.
+  // ---------------------------------------------------------------------------
+  const [remoteRuns, setRemoteRuns] = useState<RunRecord[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // El UI usa IDs tipo "ds_2025_1"; el backend suele usar "2025-1".
+    // Si el dataset no existe en DATASETS, usamos el valor tal cual.
+    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+
+    (async () => {
+      try {
+        const runs = await modelosApi.listRunsUI({ datasetId: backendDatasetId, family });
+
+        // Mantener paridad visual del prototipo:
+        // - `dataset_id` se conserva como el ID UI seleccionado para que los filtros existentes funcionen.
+        const uiRuns = runs.map(r => ({ ...r, dataset_id: datasetId }));
+        if (!cancelled) setRemoteRuns(uiRuns);
+      } catch {
+        // Si el backend aún no está listo, dejamos `remoteRuns` en null y la UI usa MOCK_RUNS.
+        if (!cancelled) setRemoteRuns(null);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [family, datasetId]);
+
   // Filters
   const [filterModel, setFilterModel] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
@@ -45,11 +75,12 @@ export function RunsSubTab({
 
   // All runs (mock + training extras)
   const allRuns = useMemo(() => {
-    const combined = [...MOCK_RUNS, ...extraRuns];
+    const baseRuns = remoteRuns ?? MOCK_RUNS;
+    const combined = [...baseRuns, ...extraRuns];
     return combined
       .filter(r => r.family === family && r.dataset_id === datasetId)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  }, [family, datasetId, extraRuns]);
+  }, [family, datasetId, extraRuns, remoteRuns]);
 
   // Filtered
   const filteredRuns = useMemo(() => {
@@ -64,17 +95,51 @@ export function RunsSubTab({
     });
   }, [allRuns, filterModel, filterStatus, filterWarmStart, filterText]);
 
-  const selectedRun = selectedRunId
-    ? [...MOCK_RUNS, ...extraRuns].find(r => r.run_id === selectedRunId) ?? null
-    : null;
+  // ---------------------------------------------------------------------------
+  // Selección + enriquecimiento: si el run viene del backend, intentamos cargar
+  // el detalle para completar bundle_status, metrics, etc. Mantiene UI 1:1.
+  // ---------------------------------------------------------------------------
+  const selectedBaseRun = useMemo(() => {
+    if (!selectedRunId) return null;
+    return allRuns.find(r => r.run_id === selectedRunId) ?? null;
+  }, [selectedRunId, allRuns]);
 
-  if (selectedRun) {
+  const [resolvedRun, setResolvedRun] = useState<RunRecord | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Base (siempre disponible)
+    setResolvedRun(selectedBaseRun);
+
+    if (!selectedBaseRun) return () => { cancelled = true; };
+
+    // Solo intentamos detalle si el run proviene del backend (está en remoteRuns).
+    const shouldFetchDetails = Boolean(remoteRuns?.some(r => r.run_id === selectedBaseRun.run_id));
+    if (!shouldFetchDetails) return () => { cancelled = true; };
+
+    (async () => {
+      try {
+        const detailed = await modelosApi.getRunDetailsUI(selectedBaseRun.run_id, selectedBaseRun);
+        if (cancelled) return;
+
+        // Paridad visual: mantener dataset_id como el ID UI.
+        setResolvedRun({ ...detailed, dataset_id: datasetId });
+      } catch {
+        // Si falla detalle, mantenemos el baseRun para no romper la UI.
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [selectedBaseRun?.run_id, remoteRuns, datasetId]);
+
+  if (resolvedRun) {
     return (
       <RunDetail
-        run={selectedRun}
+        run={resolvedRun}
         family={family}
         fc={fc}
-        onBack={() => setSelectedRunId(null)}
+        onBack={() => { setSelectedRunId(null); setResolvedRun(null); }}
         onUsePredictions={onUsePredictions}
       />
     );

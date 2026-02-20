@@ -18,8 +18,13 @@ export type ModeloName = "rbm_general" | "rbm_restringida" | "dbm_manual";
  * `apiClient` lanza Error con `err.response = { status, body, json }`.
  */
 function getHttpStatus(err: unknown): number | null {
-  // @ts-expect-error compat: estructura del error en runtime
-  return typeof (err as any)?.response?.status === "number" ? (err as any).response.status : null;
+  // El cliente HTTP adjunta `response.status` en runtime; usamos `any` de forma
+
+  // explícita para evitar acoplar este módulo a un tipo de error específico.
+
+  const status = (err as any)?.response?.status;
+
+  return typeof status === \"number\" ? status : null;
 }
 
 /**

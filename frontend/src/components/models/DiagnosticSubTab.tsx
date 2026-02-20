@@ -1,7 +1,7 @@
 // ============================================================
 // NeuroCampus — Diagnóstico Sub-Tab
 // ============================================================
-import { useEffect, useMemo, useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -10,59 +10,11 @@ import {
   Heart, FileCheck, Activity,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { modelosApi } from '@/features/modelos/api';
 import {
-  generateDiagnostics, MOCK_RUNS, DATASETS, FAMILY_CONFIGS,
+  generateDiagnostics, MOCK_RUNS, FAMILY_CONFIGS,
   type Family, type DiagnosticCheck,
 } from './mockData';
 import { DiagnosticIcon } from './SharedBadges';
-
-/**
- * Integra la respuesta del backend de readiness dentro de los checks del prototipo.
- *
- * Objetivo:
- * - Mantener la UI 1:1 (no agrega tarjetas ni cambia layout).
- * - Ajustar mensajes/estados cuando el backend reporta faltantes reales.
- *
- * Esta función es tolerante a cambios de schema (backend en evolución):
- * - Soporta `ready`, `is_ready` u `ok`.
- * - Soporta `missing`, `missing_artifacts` o `missing_paths`.
- */
-function mergeReadinessIntoDiagnostics(base: DiagnosticCheck[], readiness: any): DiagnosticCheck[] {
-  const ready: boolean | null =
-    typeof readiness?.ready === 'boolean' ? readiness.ready :
-    typeof readiness?.is_ready === 'boolean' ? readiness.is_ready :
-    typeof readiness?.ok === 'boolean' ? readiness.ok :
-    null;
-
-  const missing: string[] =
-    Array.isArray(readiness?.missing) ? readiness.missing :
-    Array.isArray(readiness?.missing_artifacts) ? readiness.missing_artifacts :
-    Array.isArray(readiness?.missing_paths) ? readiness.missing_paths :
-    [];
-
-  if (ready === null && missing.length === 0) return base;
-
-  // Heurística: actualizar el check más cercano a "Feature Pack / Artifacts / Bundle".
-  const idx = base.findIndex(c =>
-    /feature|pack|artifact|bundle/i.test(c.name)
-  );
-
-  if (idx === -1) return base;
-
-  const updated = [...base];
-  const msg = missing.length > 0
-    ? `Faltan artefactos (backend): ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? '…' : ''}`
-    : `Artefactos listos (backend).`;
-
-  updated[idx] = {
-    ...updated[idx],
-    status: ready === false || missing.length > 0 ? 'fail' : 'pass',
-    message: msg,
-  };
-
-  return updated;
-}
 
 interface DiagnosticSubTabProps {
   family: Family;
@@ -74,39 +26,10 @@ export function DiagnosticSubTab({ family, datasetId }: DiagnosticSubTabProps) {
   const [checks, setChecks] = useState<DiagnosticCheck[]>(() => generateDiagnostics(family, datasetId));
   const [lastCheck, setLastCheck] = useState(new Date().toISOString());
 
-  /**
-   * Revalida checks.
-   *
-   * 1) Genera checks base (mocks, UI prototipo).
-   * 2) Intenta enriquecer con readiness real del backend.
-   * 3) Si el backend falla o no está completo, se conserva el resultado mock.
-   */
-  const revalidate = async () => {
-    const base = generateDiagnostics(family, datasetId);
-
-    // El UI usa IDs tipo "ds_2025_1"; el backend suele usar "2025-1".
-    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
-
-    try {
-      const readiness = await modelosApi.readiness(backendDatasetId);
-      setChecks(mergeReadinessIntoDiagnostics(base, readiness));
-    } catch {
-      setChecks(base);
-    } finally {
-      setLastCheck(new Date().toISOString());
-    }
-  };
-
-  // Mantener diagnóstico actualizado al cambiar dataset/family.
-  useEffect(() => {
-    void revalidate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [family, datasetId]);
-
   const handleRevalidate = () => {
-    void revalidate();
+    setChecks(generateDiagnostics(family, datasetId));
+    setLastCheck(new Date().toISOString());
   };
-
 
   // Warnings
   const warnings = useMemo(() => {

@@ -46,10 +46,18 @@ export interface BundleChecklist {
 
 export interface EpochData {
   epoch: number;
-  train_loss: number;
-  val_loss: number;
-  train_metric: number;
-  val_metric: number;
+  /**
+   * En algunos modelos el backend solo expone `loss` (y no necesariamente `val_loss`).
+   * Usamos null para que los gráficos puedan renderizar sin romper tipos.
+   */
+  train_loss: number | null;
+  val_loss: number | null;
+  /**
+   * Métrica principal por época (p.ej. rmse/mae/accuracy) cuando existe.
+   * Puede no venir para todos los modelos.
+   */
+  train_metric: number | null;
+  val_metric: number | null;
 }
 
 export interface RunRecord {
@@ -218,7 +226,17 @@ function buildRun(
   const lastEpoch = epochsData[epochsData.length - 1];
 
   const isCls = overrides.family === 'sentiment_desempeno';
-  const pmv = overrides.primary_metric_value ?? (isCls ? lastEpoch.val_metric : lastEpoch.val_metric);
+  // `val_metric` y `train_metric` pueden ser null por contrato (ver EpochData).
+  // Aseguramos un fallback numérico para que los mocks funcionen con strictNullChecks.
+  const pmvRaw =
+    overrides.primary_metric_value ??
+    lastEpoch.val_metric ??
+    lastEpoch.train_metric ??
+    (isCls ? 0.75 : 10.0);
+
+  const pmv = Number.isFinite(pmvRaw as number)
+    ? (pmvRaw as number)
+    : (isCls ? 0.75 : 10.0);
 
   const nText = overrides.n_feat_text ?? (Math.random() > 0.3 ? Math.floor(Math.random() * 8) + 4 : 0);
 

@@ -309,7 +309,38 @@ function RunDetail({
   onUsePredictions: (runId: string) => void;
 }) {
   const [showTextFeatures, setShowTextFeatures] = useState(false);
+  const [isPromoting, setIsPromoting] = useState(false);
   const isCls = family === 'sentiment_desempeno';
+
+  /**
+   * Promueve el run actual a champion usando el backend.
+   *
+   * Mantiene la UI 1:1: el botón existe ya en el prototipo; aquí reemplazamos
+   * el `alert()` inmediato por una llamada real y luego mostramos el mismo alert.
+   */
+  const handlePromote = async () => {
+    if (isPromoting) return;
+    setIsPromoting(true);
+
+    try {
+      // Map UI dataset id (ds_2025_1) -> backend id (2025-1) cuando aplica.
+      const backendDatasetId = DATASETS.find(d => d.id === run.dataset_id)?.period ?? run.dataset_id;
+
+      await modelosApi.promote({
+        dataset_id: backendDatasetId,
+        family: run.family,
+        model_name: run.model_name,
+        run_id: run.run_id,
+      });
+
+      alert(`Champion actualizado: ${run.run_id}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`No se pudo promover a champion: ${msg}`);
+    } finally {
+      setIsPromoting(false);
+    }
+  };
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-5">
@@ -395,7 +426,8 @@ function RunDetail({
             size="sm"
             variant="outline"
             className="border-yellow-600 text-yellow-400 hover:bg-yellow-600/20 gap-1 text-xs"
-            onClick={() => alert(`Champion actualizado: ${run.run_id}`)}
+            onClick={() => void handlePromote()}
+            disabled={isPromoting}
           >
             <Award className="w-3 h-3" /> Promover a Champion
           </Button>

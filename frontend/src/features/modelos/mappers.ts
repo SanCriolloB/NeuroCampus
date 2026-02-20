@@ -244,6 +244,36 @@ export function mergeRunDetails(record: RunRecord, details: RunDetailsDto): RunR
 
   const bundleStatus = computeBundleStatus(details);
   const bundleChecklist = computeBundleChecklist(details);
+  // Derive epoch-by-epoch series for charts. The list endpoint returns only aggregate metrics,
+  // but the details endpoint includes metrics.history with per-epoch values.
+  const epochsData = (() => {
+    if (record.epochs_data && record.epochs_data.length) return record.epochs_data;
+
+    const history = (details.metrics as any)?.history;
+    const historyArr: any[] = Array.isArray(history) ? history : [];
+    if (!historyArr.length) return [];
+
+    const valKey = record.primary_metric || "val_rmse";
+    const trainKey = valKey.startsWith("val_") ? `train_${valKey.slice(4)}` : `train_${valKey}`;
+
+    return historyArr
+      .map((h, idx) => {
+        const epoch = typeof h?.epoch === "number" ? h.epoch : idx + 1;
+        const valRaw = h?.[valKey];
+        const trainRaw = h?.[trainKey];
+        const lossRaw = h?.loss;
+        const valLossRaw = h?.val_loss;
+        const val_metric = typeof valRaw === "number" ? valRaw : null;
+        const train_metric = typeof trainRaw === "number" ? trainRaw : null;
+        const train_loss = typeof lossRaw === "number" ? lossRaw : null;
+        const val_loss = typeof valLossRaw === "number" ? valLossRaw : null;
+        return { epoch, train_loss, val_loss, train_metric, val_metric };
+      })
+      .filter((p) => p.val_metric !== null || p.train_metric !== null || p.train_loss !== null || p.val_loss !== null);
+  })();
+
+  const epochsFromSeries = epochsData.length ? Math.max(...epochsData.map((p) => p.epoch)) : record.epochs;
+
 
   return {
     ...record,
@@ -253,6 +283,9 @@ export function mergeRunDetails(record: RunRecord, details: RunDetailsDto): RunR
     target_col: details.target_col ?? record.target_col,
     data_source: (details.data_source as any) ?? record.data_source,
     metrics: mapMetricsToRunMetrics(details.metrics ?? record.metrics),
+
+    epochs: epochsFromSeries,
+    epochs_data: epochsData,
 
     primary_metric: fc.primaryMetric,
     metric_mode: fc.metricMode,

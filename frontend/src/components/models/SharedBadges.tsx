@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 // ============================================================
 // NeuroCampus — Shared Badges & Small Components
 // ============================================================
@@ -98,19 +99,37 @@ export function DiagnosticIcon({ status }: { status: 'pass' | 'warn' | 'fail' })
 
 // ---------- Copy Button ----------
 export function CopyButton({ text }: { text: string }) {
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text).catch(() => {});
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
   };
+
   return (
     <button
+      type="button"
       onClick={handleCopy}
-      className="p-1 hover:bg-gray-700 rounded transition-colors"
-      title="Copiar"
+      className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-white/80 hover:bg-white/10"
+      title={copied ? "Copiado" : "Copiar"}
+      aria-label={copied ? "Copiado" : "Copiar"}
     >
-      <Copy className="w-3.5 h-3.5 text-gray-400" />
+      {copied ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-400" />}
+      <span>{copied ? "Copiado" : "Copiar"}</span>
     </button>
   );
 }
+
 
 // ---------- Metric Chip ----------
 export function MetricChip({ label, value, mode }: { label: string; value: string; mode?: string }) {

@@ -24,7 +24,7 @@ function getHttpStatus(err: unknown): number | null {
 
   const status = (err as any)?.response?.status;
 
-  return typeof status === \"number\" ? status : null;
+  return typeof status === "number" ? status : null;
 }
 
 /**

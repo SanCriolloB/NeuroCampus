@@ -206,7 +206,7 @@ export const modelosApi = {
     } as any)) as any;
 
     const family = normalizeFamily(resp.family);
-    const candidates = (resp.candidates ?? []).map((c) => {
+    const candidates = (resp.candidates ?? []).map((c: any) => {
       // Construimos un RunRecord mínimo a partir de cada candidato.
       const record = mapRunSummaryToRunRecord({
         run_id: c.run_id ?? `sweep_${String(c.model_name)}_unknown`,

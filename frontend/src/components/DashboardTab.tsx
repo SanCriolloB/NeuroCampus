@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BarChart, Bar, LineChart, Line, ScatterChart, Scatter, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, LineChart, Line, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Card } from './ui/card';
 import { TrendingUp, TrendingDown, Target, Database, Users, Award } from 'lucide-react';
@@ -308,7 +308,12 @@ export function DashboardTab() {
 // la versión visual (sin rediseño), pero reemplazamos mocks/Math.random por
 // valores provenientes de /dashboard/* (histórico).
 const dashboardData = useMemo(() => {
-  const totalEvaluations = (kpis as any)?.total_evaluaciones ?? (kpis as any)?.totalEvaluaciones ?? 0;
+  // KPIs reales:
+  // - evaluaciones: proviene del histórico processed (/dashboard/kpis)
+  // - predicciones: conteo de artifacts/predictions (filtrado por periodo/rango y filtros)
+  const totalEvaluations =
+    (kpis as any)?.evaluaciones ?? (kpis as any)?.total_evaluaciones ?? (kpis as any)?.totalEvaluaciones ?? 0;
+  const totalPredictions = (kpis as any)?.predicciones ?? 0;
   const avgScoreRaw =
     (kpis as any)?.score_promedio ??
     (kpis as any)?.scorePromedio ??
@@ -333,7 +338,7 @@ const dashboardData = useMemo(() => {
   const kpiData = [
     {
       title: "Predicciones Totales",
-      value: String(totalEvaluations),
+      value: String(totalPredictions),
       change: 0,
       isPositive: true,
       icon: Target,
@@ -405,19 +410,6 @@ const dashboardData = useMemo(() => {
 
   // Scatter: Real vs Predicted (sin mocks). Derivado de la serie (diagonal + offset determinístico).
   const scatterBase = (seriesEvaluaciones?.points || []).slice(0, 30);
-  const scatterData =
-    scatterBase.length > 0
-      ? scatterBase.map((p, idx) => {
-          const real = clampScore50(((seriesScore?.points?.[idx]?.value as any) ?? avgScoreRaw)) ?? avgScore;
-          const predicted = Math.max(0, Math.min(50, real + ((idx % 5) - 2)));
-          return { real: Math.round(real), predicted: Math.round(predicted) };
-        })
-      : Array.from({ length: 30 }, (_, idx) => {
-          const real = avgScore;
-          const predicted = Math.max(0, Math.min(50, real + ((idx % 5) - 2)));
-          return { real: Math.round(real), predicted: Math.round(predicted) };
-        });
-
   // Radar (10 indicadores) — usa /dashboard/radar cuando está disponible.
   const indicatorLabels = [
     "Planificación",
@@ -462,7 +454,6 @@ const dashboardData = useMemo(() => {
     riskBySubject,
     teacherRankings,
     historicalByEntity,
-    scatterData,
     radarData,
   };
 }, [kpis, seriesScore, seriesEvaluaciones, rankDocentes, rankAsignaturas, radarHistorico, radarActual, semester, subject, teacher, rankingMode, periodos]);
@@ -476,7 +467,7 @@ const dashboardData = useMemo(() => {
         .map((it) => ({
           word: it.text,
           count: Number(it.value ?? 0),
-          sentiment: "neutral" as const,
+          sentiment: it.sentiment ?? "neutral",
         }))
         .filter((it) => it.word.trim().length > 0 && Number.isFinite(it.count) && it.count > 0);
     }
@@ -486,12 +477,10 @@ const dashboardData = useMemo(() => {
   // Calculate word sizes for word cloud
   const maxCount = Math.max(...wordCloudItems.map(w => w.count), 1);
   const getWordSize = (count: number) => 12 + (count / maxCount) * 24;
-  const getWordColor = (sentiment: string) => {
-    switch (sentiment) {
-      case 'positive': return '#10B981';
-      case 'negative': return '#EF4444';
-      default: return '#9CA3AF';
-    }
+  const getWordColor = (sentiment?: string) => {
+    if (sentiment === "positive") return '#10B981';
+    if (sentiment === "negative") return '#EF4444';
+    return '#9CA3AF';
   };
 
 
@@ -816,64 +805,6 @@ const dashboardData = useMemo(() => {
             </Card>
           </motion.div>
         </div>
-      </div>
-
-      {/* Section: ¿Qué tan bien predice el modelo? */}
-      <div>
-        <h3 className="text-white mb-4 text-lg">¿Qué tan bien predice el modelo? - Calidad del Modelo</h3>
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.3 }}
-        >
-          <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-            <h3 className="text-white mb-4">Real vs Predicho - Scatter Plot</h3>
-            <ResponsiveContainer width="100%" height={400}>
-              <ScatterChart>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis 
-                  type="number" 
-                  dataKey="real" 
-                  name="Real" 
-                  stroke="#9CA3AF"
-                  label={{ value: 'Desempeño Real', position: 'insideBottom', offset: -5, fill: '#9CA3AF' }}
-                />
-                <YAxis 
-                  type="number" 
-                  dataKey="predicted" 
-                  name="Predicho" 
-                  stroke="#9CA3AF"
-                  label={{ value: 'Predicción', angle: -90, position: 'insideLeft', fill: '#9CA3AF' }}
-                />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1a1f2e', border: '1px solid #374151' }}
-                  labelStyle={{ color: '#fff' }}
-                  cursor={{ strokeDasharray: '3 3' }}
-                />
-                <Legend />
-                <Scatter 
-                  name="Predicciones" 
-                  data={dashboardData.scatterData} 
-                  fill="#06B6D4"
-                  opacity={0.7}
-                />
-                {/* Reference line y=x */}
-                <Line 
-                  type="linear" 
-                  dataKey="real" 
-                  stroke="#F59E0B" 
-                  strokeWidth={2}
-                  strokeDasharray="5 5" 
-                  dot={false}
-                  name="Línea Perfecta (y=x)"
-                />
-              </ScatterChart>
-            </ResponsiveContainer>
-            <p className="text-gray-400 text-sm mt-2 text-center">
-              Cuanto más cerca de la línea naranja, mejor es la predicción del modelo
-            </p>
-          </Card>
-        </motion.div>
       </div>
 
       {/* Section: Contexto Cualitativo - Word Cloud */}

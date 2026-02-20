@@ -52,9 +52,15 @@ export type DashboardCatalogos = {
 
 /** Respuesta de GET /dashboard/kpis. */
 export type DashboardKPIs = {
+  /** Predicciones persistidas (conteo) para el periodo/rango y filtros aplicados. */
+  predicciones: number;
+  /** Evaluaciones registradas (conteo) para el periodo/rango y filtros aplicados. */
   evaluaciones: number;
+  /** Docentes únicos (conteo) para el periodo/rango y filtros aplicados. */
   docentes: number;
+  /** Asignaturas únicas (conteo) para el periodo/rango y filtros aplicados. */
   asignaturas: number;
+  /** Score promedio (si aplica) en el periodo/rango solicitado. */
   score_promedio: number | null;
 };
 
@@ -110,6 +116,7 @@ export type DashboardRadar = {
 export type DashboardWordcloudItem = {
   text: string;
   value: number;
+  sentiment?: "positive" | "neutral" | "negative";
 };
 
 /** Respuesta de GET /dashboard/wordcloud. */

@@ -1,7 +1,7 @@
 // ============================================================
 // NeuroCampus — Bundle / Artefactos Sub-Tab
 // ============================================================
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -11,10 +11,13 @@ import {
   Search, CheckCircle2, XCircle, FileJson, Download,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { modelosApi } from '@/features/modelos/api';
 import {
   MOCK_RUNS, MOCK_CHAMPIONS, MOCK_PREDICTOR_JSON, MOCK_METRICS_JSON, MOCK_JOB_META_JSON,
+  DATASETS,
   FAMILY_CONFIGS,
   type Family, type ModelResolveSource,
+  type RunRecord,
 } from './mockData';
 import { BundleStatusBadge } from './SharedBadges';
 
@@ -32,19 +35,74 @@ export function BundleSubTab({ family, datasetId }: BundleSubTabProps) {
   const [resolveError, setResolveError] = useState<string | null>(null);
   const [activeJsonTab, setActiveJsonTab] = useState('predictor');
 
+  // Estado remoto del backend: cuando el backend está disponible, esta variable
+  // reemplaza el bundle resuelto por mocks manteniendo la UI 1:1.
+  const [remoteRun, setRemoteRun] = useState<RunRecord | null>(null);
+
+  // Si cambia el contexto (family/dataset), invalidamos el bundle resuelto.
+  useEffect(() => {
+    setResolved(false);
+    setResolveError(null);
+    setRemoteRun(null);
+  }, [family, datasetId]);
+
   const champKey = `${family}__${datasetId}`;
   const champion = MOCK_CHAMPIONS[champKey];
 
   const resolvedRun = resolved
-    ? resolveSource === 'champion'
-      ? champion
-        ? MOCK_RUNS.find(r => r.run_id === champion.run_id)
-        : undefined
-      : MOCK_RUNS.find(r => r.run_id === resolveRunId)
+    ? remoteRun
+      ? remoteRun
+      : resolveSource === 'champion'
+        ? champion
+          ? MOCK_RUNS.find(r => r.run_id === champion.run_id)
+          : undefined
+        : MOCK_RUNS.find(r => r.run_id === resolveRunId)
     : undefined;
 
-  const handleResolve = () => {
+  /**
+   * Resuelve el bundle (artefactos) para el contexto actual.
+   *
+   * Estrategia:
+   * 1) Intentar con backend a través de `modelosApi` (adapter).
+   * 2) Si el backend aún no está listo, caer a mocks (prototipo) para mantener UI 1:1.
+   */
+  const handleResolve = async () => {
     setResolveError(null);
+    setRemoteRun(null);
+
+    // Map UI datasetId ("ds_2025_1") a backend datasetId ("2025-1") cuando aplica.
+    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+
+    // -------------------------------------------------------------------------
+    // Intento backend (tolerante)
+    // -------------------------------------------------------------------------
+    try {
+      if (resolveSource === 'champion') {
+        const champ = await modelosApi.getChampionUI({ datasetId: backendDatasetId, family });
+        const runId = champ.record.run_id;
+
+        // Cargar detalle del run para obtener checklist/bundle_status.
+        const run = await modelosApi.getRunDetailsUI(runId);
+        setRemoteRun({ ...run, dataset_id: datasetId });
+        setResolved(true);
+        return;
+      }
+
+      // resolveSource === 'run_id'
+      const run = await modelosApi.getRunDetailsUI(resolveRunId);
+      if (run.bundle_status === 'incomplete') {
+        setResolveError('422: Bundle incompleto — falta artefactos para inferencia completa.');
+      }
+      setRemoteRun({ ...run, dataset_id: datasetId });
+      setResolved(true);
+      return;
+    } catch {
+      // Fallback a mocks
+    }
+
+    // -------------------------------------------------------------------------
+    // Fallback (mocks) — exactamente como el prototipo.
+    // -------------------------------------------------------------------------
     if (resolveSource === 'champion') {
       if (!champion) {
         setResolveError('404: No existe champion para este dataset/family.');
@@ -116,7 +174,7 @@ export function BundleSubTab({ family, datasetId }: BundleSubTabProps) {
         <div className="flex items-end gap-3">
           <div>
             <label className="block text-xs text-gray-400 mb-1">Fuente</label>
-            <Select value={resolveSource} onValueChange={(v) => { setResolveSource(v as ModelResolveSource); setResolved(false); }}>
+            <Select value={resolveSource} onValueChange={(v) => { setResolveSource(v as ModelResolveSource); setResolved(false); setResolveError(null); setRemoteRun(null); }}>
               <SelectTrigger className="bg-[#0f1419] border-gray-700 h-9 text-sm w-[140px]">
                 <SelectValue />
               </SelectTrigger>
@@ -138,7 +196,7 @@ export function BundleSubTab({ family, datasetId }: BundleSubTabProps) {
             </div>
           )}
           <Button
-            onClick={handleResolve}
+            onClick={() => void handleResolve()}
             size="sm"
             className="bg-cyan-600 hover:bg-cyan-700 h-9 gap-1"
           >

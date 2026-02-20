@@ -1,14 +1,16 @@
 // ============================================================
 // NeuroCampus — Resumen (Home) Sub-Tab
 // ============================================================
+import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Award, Eye, ExternalLink, CheckCircle2, XCircle, Flame, FileText } from 'lucide-react';
 import { motion } from 'motion/react';
+import { modelosApi } from '@/features/modelos/api';
 import {
-  MOCK_CHAMPIONS, MOCK_RUNS, FAMILY_CONFIGS, formatDate, formatDuration,
+  DATASETS, MOCK_CHAMPIONS, MOCK_RUNS, FAMILY_CONFIGS, formatDate, formatDuration,
   type Family, type ChampionRecord, type RunRecord,
 } from './mockData';
 import { BundleStatusBadge, WarmStartBadge, TextFeaturesBadge } from './SharedBadges';
@@ -23,17 +25,87 @@ interface SummarySubTabProps {
 export function SummarySubTab({ family, datasetId, onNavigateToRun, onUsePredictions }: SummarySubTabProps) {
   const fc = FAMILY_CONFIGS[family];
   const champKey = `${family}__${datasetId}`;
-  const champion: ChampionRecord | undefined = MOCK_CHAMPIONS[champKey];
-  const champRun = champion ? MOCK_RUNS.find(r => r.run_id === champion.run_id) : undefined;
 
-  // Last trained run for this family+dataset
-  const familyRuns = MOCK_RUNS
-    .filter(r => r.family === family && r.dataset_id === datasetId && r.status === 'completed')
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  /**
+   * Dataset ID usado por la UI (ej. "ds_2025_1") no siempre coincide con el backend
+   * (ej. "2025-1"). Para evitar acoplar UI a backend, convertimos usando `DATASETS`.
+   */
+  const backendDatasetId = useMemo(
+    () => DATASETS.find(d => d.id === datasetId)?.period ?? datasetId,
+    [datasetId]
+  );
+
+  // ---------------------------------------------------------------------------
+  // Estado UI (inicialmente mocks para mantener paridad 1:1).
+  // ---------------------------------------------------------------------------
+  const [champion, setChampion] = useState<ChampionRecord | undefined>(MOCK_CHAMPIONS[champKey]);
+  const [champRun, setChampRun] = useState<RunRecord | undefined>(
+    champion ? MOCK_RUNS.find(r => r.run_id === champion.run_id) : undefined
+  );
+
+  const [familyRuns, setFamilyRuns] = useState<RunRecord[]>(
+    MOCK_RUNS
+      .filter(r => r.family === family && r.dataset_id === datasetId && r.status === 'completed')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  );
+
   const lastRun: RunRecord | undefined = familyRuns[0];
 
   // Bundle checklist for champion
   const bundleChecklist = champRun?.bundle_checklist;
+
+  // ---------------------------------------------------------------------------
+  // Intento de conectar backend: champion + runs. Si falla, se conservan mocks.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const champResp = await modelosApi.getChampionUI({
+          datasetId: backendDatasetId,
+          family,
+        });
+
+        if (!cancelled) {
+          // Mantener paridad visual: dataset_id se conserva como el ID UI seleccionado.
+          const champRecord: ChampionRecord = { ...champResp.record, dataset_id: datasetId };
+          setChampion(champRecord);
+
+          // Traer detalle del run champion para bundle/curvas, etc.
+          const champRunDetails = await modelosApi.getRunDetailsUI(champRecord.run_id);
+          const runUI: RunRecord = { ...champRunDetails, dataset_id: datasetId };
+          setChampRun(runUI);
+        }
+      } catch {
+        // Backend incompleto/offline: conservar mocks.
+      }
+
+      try {
+        const runs = await modelosApi.listRunsUI({
+          datasetId: backendDatasetId,
+          family,
+        });
+
+        if (!cancelled) {
+          // Normalizar datasetId a la convención de UI para filtros locales.
+          const runsUI = runs.map(r => ({ ...r, dataset_id: datasetId }));
+          const completed = runsUI
+            .filter(r => r.family === family && r.dataset_id === datasetId && r.status === 'completed')
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+          setFamilyRuns(completed);
+        }
+      } catch {
+        // Backend incompleto/offline: conservar mocks.
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [backendDatasetId, datasetId, family, champKey]);
 
   return (
     <div className="space-y-6">

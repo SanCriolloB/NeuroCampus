@@ -22,6 +22,7 @@ from torch import nn, Tensor
 from torch.nn import functional as F
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
 from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
+from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols
 
 __all__ = ["RBMRestringida", "ModeloRBMRestringida"]
 
@@ -459,13 +460,18 @@ class RBMRestringida:
         include_text_embeds: bool,
         text_embed_prefix: str
     ) -> Tuple[np.ndarray, Optional[np.ndarray], List[str]]:
-        feat_cols = _pick_feature_cols(
+        # P2.6: Usar selector unificado con trazabilidad de features de texto.
+        sel_result = _unified_pick_feature_cols(
             df,
             max_calif=max_calif,
             include_text_probs=include_text_probs,
             include_text_embeds=include_text_embeds,
-            text_embed_prefix=text_embed_prefix
+            text_embed_prefix=text_embed_prefix if text_embed_prefix != "x_text_" else None,
+            auto_detect_prefix=True,
         )
+        feat_cols = sel_result.feature_cols
+        # Guardar resultado de selección para trazabilidad en save()
+        self._feature_selection_result_ = sel_result
         X = df[feat_cols].to_numpy(dtype=np.float32)
 
         y_raw = self._resolve_labels(df, require_accept=accept_teacher, threshold=threshold)
@@ -831,7 +837,7 @@ class RBMRestringida:
             return
 
         # ============================================================
-        # CLASIFICACIÓN (sentiment_desempeno) -> como estaba
+        # CLASIFICACIÓN (sentiment_desempeno)
         # ============================================================
         accept_teacher = bool(hparams.get("accept_teacher", True))
         accept_threshold = float(hparams.get("accept_threshold", 0.80))
@@ -862,12 +868,74 @@ class RBMRestringida:
                 "(que trae p_neg/p_neu/p_pos) y reconstruye artifacts/features/<ds> con force=true."
             )
 
+        # ------------------------------------------------------------------
+        # P2.4 FIX: Train/val split para clasificación.
+        # Sin este split, ``val_f1_macro`` y ``val_accuracy`` quedaban en
+        # ``None`` porque ``self.X_va`` / ``self.y_va`` nunca se asignaban.
+        # Esto hacía que ``primary_metric_value`` cayera en fallback a
+        # train f1_macro, invalidando la comparación justa en sweeps.
+        # Se usa un DF auxiliar porque ``_split_train_val_indices`` espera
+        # un DataFrame (soporte temporal si 'periodo' está presente).
+        # ------------------------------------------------------------------
+        split_mode = str(hparams.get("split_mode", "random")).lower()
+        val_ratio = float(hparams.get("val_ratio", 0.2))
+        n_samples = int(len(y_np))
+
+        # Construir DF auxiliar para reutilizar _split_train_val_indices
+        # (incluye 'periodo' si estaba en el df original y sobrevivió al filtro).
+        _split_df = pd.DataFrame({"_idx": np.arange(n_samples)})
+        if "periodo" in df.columns and n_samples <= len(df):
+            # _prepare_xy filtra filas con label inválido; necesitamos el
+            # periodo alineado con las filas que sobrevivieron.
+            # Usamos el mismo criterio de filtro: y_raw >= 0.
+            y_raw_all = self._resolve_labels(
+                df, require_accept=accept_teacher, threshold=accept_threshold,
+            )
+            if y_raw_all is not None:
+                _mapped = np.array(
+                    [_LABEL_MAP.get(l, -1) if isinstance(l, str) else -1 for l in y_raw_all],
+                    dtype=np.int64,
+                )
+                _valid_mask = _mapped >= 0
+                _periodos_filtered = df.loc[_valid_mask, "periodo"].reset_index(drop=True)
+                if len(_periodos_filtered) == n_samples:
+                    _split_df["periodo"] = _periodos_filtered.values
+
+        if n_samples > 4:
+            tr_idx, va_idx = self._split_train_val_indices(
+                _split_df,
+                split_mode=split_mode,
+                val_ratio=val_ratio,
+                seed=self.seed,
+            )
+        else:
+            # Dataset muy pequeño: todo a train, sin val
+            tr_idx = np.arange(n_samples, dtype=np.int64)
+            va_idx = np.array([], dtype=np.int64)
+
+        # Vectorizar sobre TODO X_np para que el scaler vea la distribución completa,
+        # luego separar en train/val.
         self.vec = _Vectorizer().fit(X_np, mode=("scale_0_5" if self.scale_mode == "scale_0_5" else "minmax"))
-        X_np = self.vec.transform(X_np)
+        X_scaled = self.vec.transform(X_np)
 
-        self.X = torch.from_numpy(X_np).to(self.device)
+        X_all_t = torch.from_numpy(X_scaled).to(self.device)
+        y_all_t = torch.from_numpy(y_np).to(self.device)
 
-        n_visible = X_np.shape[1]
+        # Asignar splits: self.X / self.y apuntan a train para backward compat
+        # con train_step que itera sobre self.X / self.y.
+        self.X_tr = X_all_t[tr_idx]
+        self.y_tr = y_all_t[tr_idx]
+        self.X = self.X_tr
+        self.y = self.y_tr
+
+        if va_idx.size > 0:
+            self.X_va = X_all_t[va_idx]
+            self.y_va = y_all_t[va_idx]
+        else:
+            self.X_va = None
+            self.y_va = None
+
+        n_visible = X_scaled.shape[1]
         n_hidden = int(hparams.get("n_hidden", 32))
         self.rbm = _RBM(n_visible=n_visible, n_hidden=n_hidden, cd_k=self.cd_k, seed=self.seed).to(self.device)
         self.opt_rbm = torch.optim.SGD(
@@ -879,8 +947,6 @@ class RBMRestringida:
 
         self.head = nn.Linear(n_hidden, len(_CLASSES)).to(self.device)
         self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
-
-        self.y = torch.from_numpy(y_np).to(self.device)
 
         self._epoch = 0
 
@@ -1348,6 +1414,10 @@ class RBMRestringida:
             "teacher_vocab_size": getattr(self, "teacher_vocab_size_", None),
             "materia_vocab_size": getattr(self, "materia_vocab_size_", None),
         }
+        # P2.6: Trazabilidad de features de texto
+        _fsr = getattr(self, "_feature_selection_result_", None)
+        if _fsr is not None:
+            meta.update(_fsr.traceability_dict())
         with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 

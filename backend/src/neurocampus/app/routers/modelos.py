@@ -240,6 +240,14 @@ def _try_write_predictor_bundle(
         # ------------------------------------------------------------
         # 1) Persistencia real del modelo (si la estrategia soporta save())
         # ------------------------------------------------------------
+        # P2.3 FIX: Definir ``model_dir`` — subdirectorio ``model/`` dentro
+        # del run donde se persisten los artefactos serializados del modelo
+        # (meta.json, dbm_state.npz, rbm.pt, head.pt, etc.).
+        # Sin esta definición, ``strategy.save()`` fallaba con NameError y
+        # dejaba la carpeta ``model/`` vacía, rompiendo DBM y warm-start.
+        model_dir = run_path / "model"
+        model_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             save_fn = getattr(strategy, "save", None)
             if callable(save_fn):
@@ -275,6 +283,22 @@ def _try_write_predictor_bundle(
         model_name = str((ctx.get("model_name") or model_name) or "")
         family = str((ctx.get("family") or family) or "")
 
+        # P2.6: Leer trazabilidad de features del modelo serializado
+        # si la estrategia persistió meta.json con conteos de texto.
+        _feat_trace: dict[str, Any] = {}
+        try:
+            _model_meta_path = model_dir / "meta.json"
+            if _model_meta_path.exists():
+                _model_meta = json.loads(_model_meta_path.read_text(encoding="utf-8"))
+                # Extraer campos de trazabilidad P2.6
+                for _fk in ("n_features", "n_text_features", "has_text_features",
+                            "text_embed_prefix", "text_feat_cols", "text_prob_cols",
+                            "feat_cols_", "feat_cols"):
+                    if _fk in _model_meta and _model_meta[_fk] is not None:
+                        _feat_trace[_fk] = _model_meta[_fk]
+        except Exception:
+            pass  # best-effort: no rompe el bundle
+
         manifest = build_predictor_manifest(
             run_id=str(metrics.get("run_id") or ""),
             dataset_id=dataset_id,
@@ -291,6 +315,11 @@ def _try_write_predictor_bundle(
                     "split_mode": ctx.get("split_mode"),
                     "val_ratio": ctx.get("val_ratio"),
                     "target_mode": ctx.get("target_mode"),
+                    # P2.6: conteos de features de texto (si existen)
+                    "n_features_total": _feat_trace.get("n_features"),
+                    "n_text_features": _feat_trace.get("n_text_features"),
+                    "text_features_present": _feat_trace.get("has_text_features"),
+                    "text_embed_prefix": _feat_trace.get("text_embed_prefix"),
                     "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
                 }.items()
                 if v is not None
@@ -1852,11 +1881,17 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
     except Exception as e:
         logger.exception("Falló entrenamiento job_id=%s", job_id)
         dt_ms = (time.perf_counter() - t0) * 1000.0
+        # P2.3 FIX: Preservar ``run_id`` en estado fallido cuando ya fue
+        # generado (e.g. si el error ocurrió en _try_write_predictor_bundle
+        # o _require_exported_model, después de ``save_run``).  Permite
+        # diagnóstico post-mortem del run parcial vía /modelos/estado/{id}.
+        _failed_run_id = locals().get("run_id")
         st.update(
             {
                 "status": "failed",
                 "error": str(e),
                 "time_total_ms": float(dt_ms),
+                "run_id": str(_failed_run_id) if _failed_run_id else st.get("run_id"),
             }
         )
         _ESTADOS[job_id] = st
@@ -2931,13 +2966,25 @@ def get_champion(
             model_name=model_name,
             family=family,
         )
-        # fallback por si tu load_current_champion no acepta family/model_name en alguna versión
+        # P2.3 FIX: El fallback anterior llamaba a ``load_dataset_champion``
+        # sin filtrar por ``model_name``, lo que provocaba que al pedir
+        # el champion de "rbm_general" se devolviera "rbm_restringida"
+        # (o viceversa).  Ahora solo se usa el fallback cuando el motivo
+        # del None NO es el filtro de model_name (i.e. cuando simplemente
+        # no existe champion), y se re-filtra tras obtener el resultado.
         if champ is None:
             champ = _call_with_accepted_kwargs(
                 load_dataset_champion,
                 dataset_id=str(ds),
                 family=family,
             )
+            # Re-filtrar por model_name: si el champion encontrado no coincide
+            # con el modelo solicitado, descartar para evitar cruce de modelos.
+            if champ is not None and model_name:
+                _champ_mn = (champ.get("model_name") or champ.get("model") or "").strip().lower()
+                _req_mn = model_name.strip().lower()
+                if _champ_mn and _champ_mn != _req_mn:
+                    champ = None
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

@@ -467,7 +467,7 @@ const dashboardData = useMemo(() => {
         .map((it) => ({
           word: it.text,
           count: Number(it.value ?? 0),
-          sentiment: "neutral" as const,
+          sentiment: it.sentiment ?? "neutral",
         }))
         .filter((it) => it.word.trim().length > 0 && Number.isFinite(it.count) && it.count > 0);
     }
@@ -477,12 +477,10 @@ const dashboardData = useMemo(() => {
   // Calculate word sizes for word cloud
   const maxCount = Math.max(...wordCloudItems.map(w => w.count), 1);
   const getWordSize = (count: number) => 12 + (count / maxCount) * 24;
-  const getWordColor = (sentiment: string) => {
-    switch (sentiment) {
-      case 'positive': return '#10B981';
-      case 'negative': return '#EF4444';
-      default: return '#9CA3AF';
-    }
+  const getWordColor = (sentiment?: string) => {
+    if (sentiment === "positive") return '#10B981';
+    if (sentiment === "negative") return '#EF4444';
+    return '#9CA3AF';
   };
 
 

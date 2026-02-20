@@ -26,9 +26,11 @@ from neurocampus.app.logging_config import setup_logging
 # Middleware de trazabilidad y LogRecordFactory contextual
 from neurocampus.observability.middleware_correlation import CorrelationIdMiddleware
 from neurocampus.observability.logging_context import install_logrecord_factory
+from neurocampus.app.routers import predicciones
+
 
 # Routers del dominio
-from .routers import datos, jobs, modelos, prediccion, admin_cleanup
+from .routers import datos, jobs, modelos, prediccion, admin_cleanup, dashboard
 
 # ---------------------------------------------------------------------------
 # CORS (necesario para que el navegador permita las peticiones desde Vite)
@@ -138,4 +140,6 @@ app.include_router(datos.router,      prefix="/datos",       tags=["datos"])
 app.include_router(jobs.router,       prefix="/jobs",        tags=["jobs"])
 app.include_router(modelos.router,    prefix="/modelos",     tags=["modelos"])
 app.include_router(prediccion.router, prefix="/prediccion",  tags=["prediccion"])
+app.include_router(dashboard.router,  prefix="/dashboard",  tags=["dashboard"])
+app.include_router(predicciones.router)
 app.include_router(admin_cleanup.router,                     tags=["admin"])

@@ -39,9 +39,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Literal
 
-from pydantic import BaseModel, Field, model_validator, ConfigDict
-
-
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 # ---------------------------------------------------------------------------
 # Tipos comunes (enums via Literal)
 # ---------------------------------------------------------------------------
@@ -150,6 +155,17 @@ class EntrenarRequest(BaseModel):
         aplicar un default (normalmente ``embed``).
     :param auto_prepare: Si ``True``, el backend intentará generar artifacts faltantes
         (unificado/feature-pack) cuando sea posible.
+    :param auto_text_feats: Si ``True`` y ``family=sentiment_desempeno``, el backend puede
+        activar automáticamente ``text_feats_mode='tfidf_lsa'`` durante ``auto_prepare``.
+        Esto evita olvidos al entrenar modelos de sentimiento cuando existen columnas de texto libre.
+    :param text_feats_mode: Modo opcional para generar features de texto al preparar el feature-pack.
+        Por defecto ``"none"`` (no altera el comportamiento actual).
+    :param text_col: Nombre de la columna de texto libre. Si se omite, el builder puede detectar
+        automáticamente una columna candidata.
+    :param text_n_components: Dimensión máxima del espacio LSA (SVD) para features de texto.
+    :param text_min_df: Frecuencia mínima de documento (TF-IDF) para vocabulario.
+    :param text_max_features: Tamaño máximo del vocabulario TF-IDF.
+    :param text_random_state: Semilla para la proyección LSA (determinismo).
     :param split_mode: Cómo hacer train/val.
     :param val_ratio: Proporción del set de validación (0..0.5 recomendado).
     :param epochs: Número de épocas de entrenamiento.
@@ -157,10 +173,15 @@ class EntrenarRequest(BaseModel):
     """
 
     # Mantener tolerancia a campos extra (compatibilidad)
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    modelo: ModeloName = Field(
-        description="Tipo de modelo a entrenar (rbm_general | rbm_restringida | dbm_manual)."
+    modelo: str = Field(
+        ...,
+        validation_alias=AliasChoices("modelo", "model_name", "model"),
+        description=(
+            "Nombre del modelo a entrenar. Backward compatible: acepta `modelo` "
+            "y también `model_name`/`model` como alias para integraciones futuras."
+        ),
     )
 
     # -----------------------------
@@ -321,6 +342,60 @@ class EntrenarRequest(BaseModel):
             "Si True, el backend puede intentar preparar artifacts faltantes (unificado/feature-pack) "
             "antes de entrenar."
         ),
+    )
+
+    auto_text_feats: bool = Field(
+        default=True,
+        description=(
+            "Si True y family=sentiment_desempeno, el backend puede activar automáticamente "
+            "text_feats_mode='tfidf_lsa' durante auto_prepare cuando text_feats_mode='none'. "
+            "Para desactivar este comportamiento, establezca auto_text_feats=False."
+        ),
+    )
+
+    # -----------------------------
+    # P2.6: features de texto (opcional, no rompe compatibilidad)
+    # -----------------------------
+    text_feats_mode: str = Field(
+        default="none",
+        description=(
+            "Modo para features de texto cuando auto_prepare construye el feature-pack. "
+            "Opciones: 'none' (default) | 'tfidf_lsa'."
+        ),
+    )
+
+    text_col: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre de columna de texto libre (si no se especifica, el builder puede auto-detectar). "
+            "Solo aplica cuando text_feats_mode != 'none'."
+        ),
+    )
+
+    text_n_components: int = Field(
+        default=64,
+        ge=2,
+        le=512,
+        description="Dimensión máxima de LSA (SVD) para features de texto (solo tfidf_lsa).",
+    )
+
+    text_min_df: int = Field(
+        default=2,
+        ge=1,
+        le=1000,
+        description="Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_max_features: int = Field(
+        default=20000,
+        ge=100,
+        le=200000,
+        description="Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_random_state: int = Field(
+        default=42,
+        description="Semilla para proyección LSA (determinismo; solo tfidf_lsa).",
     )
 
     split_mode: SplitMode = Field(
@@ -485,6 +560,330 @@ class EntrenarResponse(BaseModel):
     status: Literal["queued", "running"] = Field(default="queued")
     message: str = Field(default="Entrenamiento lanzado")
 
+# ---------------------------------------------------------------------------
+# Sweep (orquestación batch: modelo × hiperparámetros)
+# ---------------------------------------------------------------------------
+
+class SweepCandidate(BaseModel):
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    model_name: ModeloName
+    hparams: Dict[str, Any] = Field(default_factory=dict)
+
+    status: JobStatus = Field(default="queued")
+    child_job_id: Optional[str] = None
+    run_id: Optional[str] = None
+    metrics: Optional[Dict[str, Any]] = None
+    score: Optional[List[Any]] = None  # serializable: [tier, score]
+    error: Optional[str] = None
+
+
+class SweepEntrenarRequest(BaseModel):
+    """    Lanza un sweep (barrido) entrenando múltiples modelos y múltiples hparams.
+
+    - Usa SOLO modelos existentes (rbm_general, rbm_restringida, dbm_manual).
+    - Reutiliza el mismo flujo de entrenamiento/evaluación que /modelos/entrenar.
+
+    Parámetros de texto (P2.6)
+    -------------------------
+    Estos parámetros *solo* afectan la construcción automática del feature-pack cuando el sweep
+    prepara datos (comparabilidad). Por defecto **no** cambian el comportamiento existente.
+
+    :param auto_text_feats: Si True y family=sentiment_desempeno, el backend puede activar
+        automáticamente ``text_feats_mode='tfidf_lsa'`` durante la preparación cuando
+        ``text_feats_mode='none'``.
+    :param text_feats_mode: Modo para generar features de texto en el feature-pack.
+        Opciones: ``'none'`` (default) | ``'tfidf_lsa'``.
+    :param text_col: Nombre de la columna de texto libre. Si None, se intenta auto-detectar.
+    :param text_n_components: Dimensión máxima de LSA (SVD) para texto (solo tfidf_lsa).
+    :param text_min_df: Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).
+    :param text_max_features: Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).
+    :param text_random_state: Semilla para LSA (determinismo; solo tfidf_lsa).
+"""
+    model_config = ConfigDict(extra="ignore")
+
+    dataset_id: str
+    family: Family = "score_docente"
+    task_type: Optional[TaskType] = None
+    input_level: Optional[InputLevel] = None
+
+    # P2.5 FIX: ``data_source`` estaba duplicado (líneas 530 y 535 originales).
+    # Pydantic v2 usa el último campo, sobrescribiendo el default ``"pair_matrix"``
+    # con ``None``.  Se unifica en una sola declaración con default robusto.
+    data_source: Optional[DataSource] = "pair_matrix"
+    epochs: int = 5
+
+    # incremental (score_docente)
+    data_plan: Optional[DataPlan] = None
+    window_k: Optional[int] = None
+    replay_size: Optional[int] = None
+    replay_strategy: ReplayStrategy = "uniform"
+    recency_lambda: Optional[float] = None
+
+    warm_start_from: Optional[WarmStartFrom] = None
+    warm_start_run_id: Optional[str] = None
+
+    # -----------------------------
+    # P2.6: features de texto (opcional, no rompe compatibilidad)
+    # -----------------------------
+    auto_text_feats: bool = Field(
+        default=True,
+        description=(
+            "Si True y family=sentiment_desempeno, el backend puede activar automáticamente "
+            "text_feats_mode='tfidf_lsa' durante la preparación cuando text_feats_mode='none'. "
+            "Para desactivar este comportamiento, establezca auto_text_feats=False."
+        ),
+    )
+
+    text_feats_mode: str = Field(
+        default="none",
+        description=(
+            "Modo para features de texto cuando el sweep prepara el feature-pack. "
+            "Opciones: 'none' (default) | 'tfidf_lsa'."
+        ),
+    )
+
+    text_col: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre de columna de texto libre (si no se especifica, el builder puede auto-detectar). "
+            "Solo aplica cuando text_feats_mode != 'none'."
+        ),
+    )
+
+    text_n_components: int = Field(
+        default=64,
+        ge=2,
+        le=512,
+        description="Dimensión máxima de LSA (SVD) para features de texto (solo tfidf_lsa).",
+    )
+
+    text_min_df: int = Field(
+        default=2,
+        ge=1,
+        le=1000,
+        description="Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_max_features: int = Field(
+        default=20000,
+        ge=100,
+        le=200000,
+        description="Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_random_state: int = Field(
+        default=42,
+        description="Semilla para proyección LSA (determinismo; solo tfidf_lsa).",
+    )
+
+    # selección
+    modelos: List[ModeloName] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("modelos", "models"),
+        description=(
+            "Lista de modelos a entrenar en el sweep. Compatibilidad: acepta también `models` "
+            "como alias (clientes nuevos / frontend)."
+        ),
+    )
+
+    # base hparams (se mezclan con cada combinación)
+    base_hparams: Dict[str, Any] = Field(default_factory=dict)
+
+    # grid global (aplica a todos los modelos si no hay override por modelo)
+    hparams_grid: Optional[List[Dict[str, Any]]] = None
+
+    # override por modelo: {"rbm_general":[{...},{...}], "dbm_manual":[{...}]}
+    hparams_by_model: Optional[Dict[str, List[Dict[str, Any]]]] = None
+
+    # comportamiento
+    auto_promote_champion: bool = True
+    max_total_runs: int = 50
+
+
+class SweepEntrenarResponse(BaseModel):
+    sweep_id: str
+    status: Literal["queued", "running"] = "queued"
+    message: str = "Sweep lanzado"
+
+
+class SweepSummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sweep_id: str
+    dataset_id: str
+    family: Family
+    status: JobStatus
+
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+    n_candidates: int = 0
+    n_completed: int = 0
+    n_failed: int = 0
+
+    best_overall: Optional[SweepCandidate] = None
+    best_by_model: Dict[str, SweepCandidate] = Field(default_factory=dict)
+
+    champion_updated: Optional[bool] = None
+    champion_run_id: Optional[str] = None
+
+    summary_path: Optional[str] = None
+    candidates: List[SweepCandidate] = Field(default_factory=list)
+
+# ---------------------------------------------------------------------------
+# Sweep determinístico de 3 modelos (P2 Parte 5)
+# ---------------------------------------------------------------------------
+
+class ModelSweepCandidateResult(BaseModel):
+    """Resultado de un candidato individual en el sweep."""
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    model_name: str
+    run_id: Optional[str] = None
+    status: JobStatus = Field(default="queued")
+    primary_metric_value: Optional[float] = None
+    metrics: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class ModelSweepRequest(BaseModel):
+    """
+    Request para sweep determinístico (3 modelos × family).
+
+    Entrena rbm_general, rbm_restringida y dbm_manual con los mismos datos
+    y elige el mejor por primary_metric (contrato P2 Parte 4).
+
+    Parámetros de texto (P2.6)
+    -------------------------
+    Estos parámetros controlan *únicamente* la construcción automática del feature-pack
+    cuando ``auto_prepare=True``.  Por defecto ``text_feats_mode='none'`` y el sweep no
+    cambia el comportamiento existente.
+
+    :param auto_text_feats: Si True y ``family=sentiment_desempeno``, el backend puede activar
+        automáticamente ``text_feats_mode='tfidf_lsa'`` durante ``auto_prepare`` cuando
+        ``text_feats_mode='none'``.
+    :param text_feats_mode: Modo para generar features de texto: ``'none'`` (default) | ``'tfidf_lsa'``.
+    :param text_col: Nombre de la columna de texto libre. Si None, el builder puede auto-detectar.
+    :param text_n_components: Dimensión máxima de LSA (SVD) (solo tfidf_lsa).
+    :param text_min_df: Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).
+    :param text_max_features: Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).
+    :param text_random_state: Semilla para LSA (determinismo; solo tfidf_lsa).
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    dataset_id: str
+    family: Family = "score_docente"
+    data_source: DataSource = "pair_matrix"
+    seed: int = 42
+    epochs: int = 5
+    auto_prepare: bool = True
+
+    # -----------------------------
+    # P2.6: features de texto (opcional, no rompe compatibilidad)
+    # -----------------------------
+    auto_text_feats: bool = Field(
+        default=True,
+        description=(
+            "Si True y family=sentiment_desempeno, el backend puede activar automáticamente "
+            "text_feats_mode='tfidf_lsa' durante la preparación cuando text_feats_mode='none'. "
+            "Para desactivar este comportamiento, establezca auto_text_feats=False."
+        ),
+    )
+
+    text_feats_mode: str = Field(
+        default="none",
+        description=(
+            "Modo para features de texto cuando el sweep prepara el feature-pack. "
+            "Opciones: 'none' (default) | 'tfidf_lsa'."
+        ),
+    )
+
+    text_col: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre de columna de texto libre (si no se especifica, el builder puede auto-detectar). "
+            "Solo aplica cuando text_feats_mode != 'none'."
+        ),
+    )
+
+    text_n_components: int = Field(
+        default=64,
+        ge=2,
+        le=512,
+        description="Dimensión máxima de LSA (SVD) para features de texto (solo tfidf_lsa).",
+    )
+
+    text_min_df: int = Field(
+        default=2,
+        ge=1,
+        le=1000,
+        description="Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_max_features: int = Field(
+        default=20000,
+        ge=100,
+        le=200000,
+        description="Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_random_state: int = Field(
+        default=42,
+        description="Semilla para proyección LSA (determinismo; solo tfidf_lsa).",
+    )
+
+    # Selección de modelos (default: los 3)
+    models: List[ModeloName] = Field(
+        default_factory=lambda: ["rbm_general", "rbm_restringida", "dbm_manual"]
+    )
+
+    # Override de hparams por modelo (se mezcla con base)
+    hparams_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    # Hparams base (aplican a todos los modelos si no hay override)
+    base_hparams: Dict[str, Any] = Field(default_factory=dict)
+
+    # Incremental (score_docente)
+    data_plan: Optional[DataPlan] = None
+    window_k: Optional[int] = None
+    replay_size: Optional[int] = None
+    replay_strategy: ReplayStrategy = "uniform"
+
+    # Warm start
+    warm_start_from: Optional[WarmStartFrom] = None
+    warm_start_run_id: Optional[str] = None
+
+    # Comportamiento
+    auto_promote_champion: bool = True
+    max_candidates: int = Field(default=10, ge=1, le=50)
+
+
+class ModelSweepResponse(BaseModel):
+    """Respuesta del sweep determinístico."""
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    sweep_id: str
+    status: JobStatus = "completed"
+    dataset_id: str
+    family: str
+
+    primary_metric: str
+    primary_metric_mode: str  # "max" | "min"
+
+    candidates: List[ModelSweepCandidateResult] = Field(default_factory=list)
+    best: Optional[ModelSweepCandidateResult] = None
+
+    champion_promoted: bool = False
+    champion_run_id: Optional[str] = None
+
+    n_completed: int = 0
+    n_failed: int = 0
+
+    summary_path: Optional[str] = None
+    elapsed_s: Optional[float] = None
+
+
 
 class EstadoResponse(BaseModel):
     """
@@ -511,7 +910,22 @@ class EstadoResponse(BaseModel):
     champion_promoted: Optional[bool] = Field(default=None, description="True si el run fue promovido a champion.")
     time_total_ms: Optional[float] = Field(default=None, description="Tiempo total del job (ms).")
 
+    # Sweep (opcional)
+    job_type: Optional[Literal["train", "sweep"]] = Field(default=None)
+    sweep_summary_path: Optional[str] = Field(default=None)
+    sweep_best_overall: Optional[Dict[str, Any]] = Field(default=None)
+    sweep_best_by_model: Optional[Dict[str, Any]] = Field(default=None)
+
     error: Optional[str] = Field(default=None, description="Mensaje de error si falló.")
+
+    # Trazabilidad warm-start (presente cuando aplica)
+    warm_start_trace: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Trazabilidad del warm-start: warm_started, warm_start_from, "
+            "warm_start_source_run_id, warm_start_path. None si no aplica."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +945,7 @@ class RunSummary(BaseModel):
     input_level: Optional[InputLevel] = None
     target_col: Optional[str] = None
     data_plan: Optional[DataPlan] = None
+    data_source: Optional[str] = None
     created_at: str
     metrics: Dict[str, Any] = Field(default_factory=dict)
 
@@ -548,6 +963,7 @@ class RunDetails(BaseModel):
     input_level: Optional[InputLevel] = None
     target_col: Optional[str] = None
     data_plan: Optional[DataPlan] = None
+    data_source: Optional[str] = None
     metrics: Dict[str, Any]
     config: Optional[Dict[str, Any]] = None
     artifact_path: Optional[str] = None
@@ -568,6 +984,8 @@ class ChampionInfo(BaseModel):
     input_level: Optional[InputLevel] = None
     target_col: Optional[str] = None
     data_plan: Optional[DataPlan] = None
+    data_source: Optional[DataSource] = None
+
 
     # ✅ Nuevo: run fuente del champion (debe venir de champion.json o fallback a metrics.run_id)
     source_run_id: Optional[str] = None
@@ -630,9 +1048,21 @@ class PromoteChampionRequest(BaseModel):
 
     model_config = ConfigDict(protected_namespaces=())
 
-    dataset_id: str = Field(description="Dataset/periodo al que pertenece el run (ej. '2025-1').")
+    dataset_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Dataset/periodo al que pertenece el run (ej. '2025-1'). "
+            "Si se omite, el backend intentará inferirlo desde metrics.json o desde el formato del run_id."
+        ),
+    )
     run_id: str = Field(description="ID del run a promover (carpeta en artifacts/runs/<run_id>).")
-    model_name: str = Field(description="Nombre lógico del modelo (ej. 'rbm_restringida').")
+    model_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre lógico del modelo (ej. 'rbm_restringida'). "
+            "Si se omite, el backend puede inferirlo desde metrics.json (model_name / params.req.modelo)."
+        ),
+    )
 
     # Ruta 2 (families): opcional, pero se recomienda enviarlo para evitar ambigüedad
     family: Optional[Family] = Field(
@@ -656,3 +1086,24 @@ class PromoteChampionRequest(BaseModel):
         description="Plan de datos usado (dataset_only | recent_window | recent_window_plus_replay). Idealmente se infiere del run.",
     )
 
+    @field_validator("run_id")
+    @classmethod
+    def _validate_run_id(cls, v: str) -> str:
+        if v is None:
+            raise ValueError("run_id es requerido")
+        s = str(v).strip()
+        if not s or s.lower() in {"null", "none", "nil"}:
+            raise ValueError("run_id inválido")
+        return s
+
+    @field_validator("dataset_id", "model_name", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v: Any) -> Any:
+        """Normaliza strings vacíos/whitespace a ``None``.
+
+        Esto permite que el frontend omita campos opcionales sin causar 422.
+        """
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None

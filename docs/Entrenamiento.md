@@ -6,6 +6,16 @@ Este documento describe **cómo entrenar** el modelo *Student* basado en **RBM**
 
 ---
 
+## 0) Nota sobre el estado actual (P2.2)
+
+En el estado actual del backend:
+
+- El entrenamiento recomendado para el flujo del sistema se hace **vía API** (`/modelos/entrenar`), que produce un `run_id` y guarda artifacts en `artifacts/runs/<run_id>/`.
+- El endpoint `/predicciones/predict` en **P2.2** es **resolve/validate** del predictor bundle (**no ejecuta inferencia real**).  
+  Para predicciones reales, está previsto avanzar en P2.4+ (ver `docs/predicciones.md`).
+
+---
+
 ## 1) Datos de entrada al entrenamiento
 
 - **Parquet etiquetado** por el *Teacher* (BETO), típico:
@@ -21,7 +31,7 @@ Este documento describe **cómo entrenar** el modelo *Student* basado en **RBM**
 
 ---
 
-## 2) Comando base de entrenamiento
+## 2) Comando base de entrenamiento (CLI, útil para debugging)
 
 El módulo de entrenamiento es `neurocampus.models.train_rbm` y expone opciones para el tipo de RBM, escalado de features y uso de probabilidades de texto.
 
@@ -61,9 +71,10 @@ PYTHONPATH="$PWD/backend/src" python -m neurocampus.models.train_rbm   --type re
 
 ---
 
-## 4) Qué se guarda en cada job
+## 4) Qué se guarda en cada corrida
 
-Cada corrida crea un directorio `artifacts/jobs/<YYYYMMDD_HHMMSS>` con:
+### 4.1 Salida del entrenamiento por CLI (legacy/job)
+Cada corrida por CLI crea un directorio `artifacts/jobs/<YYYYMMDD_HHMMSS>` con:
 
 ```
 job_meta.json         # hiperparámetros usados, semilla, dataset, tamaños
@@ -88,37 +99,51 @@ head.pt               # pesos de la cabeza clasificadora (binarios)
 
 > **Interpretación:** reportamos métricas en **validación**. En datasets desbalanceados, prioriza **macro-F1** frente a accuracy.
 
+### 4.2 Salida del entrenamiento vía API (run) — flujo actual recomendado
+El entrenamiento vía API (`/modelos/entrenar`) produce un `run_id` y guarda:
+
+- `artifacts/runs/<run_id>/`
+
+y típicamente contiene:
+- `metrics.json`
+- `preprocess.json`
+- `predictor.json`
+- `model.bin`
+
 ---
 
-## 5) Promoción de “campeón” (modelo activo)
+## 5) Promoción de “champion” (modelo activo) — flujo actual
 
-Una vez identifiques la mejor corrida, **promuévela** a `artifacts/champions/with_text/current`:
+En el backend actual, el “champion” se guarda como:
 
+- `artifacts/champions/<family>/<dataset_id>/champion.json`
+
+y referencia el `run_id` activo mediante `source_run_id`.
+
+### 5.1 Promover vía API (recomendado)
 ```bash
-JOB="artifacts/jobs/<JOB_ID>"
-DEST="artifacts/champions/with_text/current"
-
-rm -rf "$DEST" && mkdir -p "$DEST"
-cp -r "$JOB"/* "$DEST"/
-
-# Descriptor (opcional)
-cat > "$DEST/CHAMPION.json" <<'JSON'
-{
-  "family": "with_text",
-  "selected_at": "(UTC)",
-  "reason": "best macro-F1",
-  "notes": "text+num, minmax, 100 epochs"
-}
-JSON
+curl -s -X POST "http://127.0.0.1:8000/modelos/champion/promote"   -H "Content-Type: application/json"   -d '{
+    "dataset_id": "<dataset_id>",
+    "family": "<family>",
+    "model_name": "<model_name>",
+    "run_id": "<run_id>"
+  }'
 ```
 
-> El backend lee este **campeón** para las predicciones online. Puedes apuntar con `CHAMPION_WITH_TEXT=artifacts/champions/with_text/current` en `.env`.
+### 5.2 Verificar en disco
+```bash
+cat artifacts/champions/<family>/<dataset_id>/champion.json
+ls -la artifacts/runs/<run_id>
+```
+
+> Nota: ya no se usa `CHAMPION_WITH_TEXT` ni rutas tipo `artifacts/champions/with_text/current`.  
+> El layout vigente es por `family` + `dataset_id`.
 
 ---
 
 ## 6) Evaluación y análisis rápido
 
-### 6.1 Cargar métricas del job
+### 6.1 Cargar métricas del job (CLI)
 ```bash
 python - <<'PY'
 import json, os
@@ -133,7 +158,7 @@ PY
 Si el job guardó predicciones de validación (opcional), puedes inspeccionar la matriz:
 ```bash
 python - <<'PY'
-import json, os, pandas as pd
+import os, pandas as pd
 job = "artifacts/jobs/<JOB_ID>"
 ytrue = pd.read_parquet(os.path.join(job, "y_val.parquet"))["y"]
 ypred = pd.read_parquet(os.path.join(job, "y_val_pred.parquet"))["yhat"]
@@ -148,7 +173,7 @@ PY
 
 ## 7) Recomendaciones prácticas
 
-- **Desbalance**: usa la **regla costo-sensible** en inferencia (ya integrada en el backend) para favorecer *neg* cuando la evidencia es suficiente y evitar falsos positivos de *pos*.
+- **Desbalance**: en P2.4+ se prevé aplicar una regla costo-sensible en inferencia para favorecer *neg* cuando la evidencia es suficiente y evitar falsos positivos de *pos*.
 - **Texto ruidoso**: filtra con `--min-tokens 1..2` en el teacher; eleva `threshold/margin/neu-min` para mayor precisión.
 - **Ajuste de hparams**: comienza con el **preset estable** y prueba variaciones pequeñas (hidden 32/128, lr 1e-3–2e-2, cd-k 1–2).
 - **Semilla**: fija `--seed` para corrida reproducible.
@@ -171,9 +196,9 @@ PYTHONPATH="$PWD/backend/src" python -m neurocampus.models.train_rbm   --type ge
 ## 9) (Opcional) Búsqueda de hiperparámetros
 
 Próximo paso del proyecto:
-- **Random Search** 3-fold (15–25 trials) variando: `n_hidden`, `cd_k`, `epochs_rbm`, `lr_head`, `lr_rbm`, `scale_mode`, `use_text_pros`.
+- **Random Search** 3-fold (15–25 trials) variando: `n_hidden`, `cd_k`, `epochs_rbm`, `lr_head`, `lr_rbm`, `scale_mode`, `use_text_probs`.
 - Selección por **macro-F1** en validación media.
-- Persistir un `search_report.json` y promover automáticamente el mejor job.
+- Persistir un `search_report.json` y promover automáticamente el mejor run/job.
 
 ---
 
@@ -186,11 +211,10 @@ Próximo paso del proyecto:
 
 ---
 
-## 11) Checklist de cierre (Día 7)
+## 11) Checklist de cierre (Día 7 → P2.2)
 
-- [x] Entrenamiento con preset estable ejecutado y **job_dir** identificado.
+- [x] Entrenamiento con preset estable ejecutado y **job_dir** identificado (CLI) o `run_id` (API).
 - [x] `metrics.json` con métricas de validación.
-- [x] Modelo **promovido** a `artifacts/champions/with_text/current`.
-- [x] Backend leyendo el campeón y sirviendo `/prediccion/online`.
-- [x] Documentación actualizada (este archivo + README + Preprocesamiento).
-
+- [x] Run promovido a champion vía `/modelos/champion/promote`.
+- [x] Backend resolviendo bundle con `/predicciones/predict` (P2.2: resolve/validate).
+- [x] Documentación actualizada (este archivo + README + Preprocesamiento + predicciones).

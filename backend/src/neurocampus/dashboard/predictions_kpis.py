@@ -17,12 +17,14 @@ El conteo sin filtros usa metadata de Parquet cuando es posible (rápido).
 Si se aplican filtros (docente/asignatura), se intenta lectura columnar mínima.
 """
 
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import re
 
 _TEACHER_COL_CANDIDATES = [
     "teacher",
@@ -45,17 +47,35 @@ _SUBJECT_COL_CANDIDATES = [
 ]
 
 
+_PERIOD_RE = re.compile(r"^\d{4}-\d+$")
+
 def _parse_periodo(periodo: str) -> tuple[int, int]:
-    """Convierte un periodo "YYYY-1" / "YYYY-2" a tupla (YYYY, semestre)."""
-    y, t = periodo.split("-")
+    """
+    Convierte un periodo 'YYYY-1' / 'YYYY-2' a tupla (YYYY, semestre).
+
+    Nota:
+    - Hay dataset_ids históricos que NO son semestre (p.ej. 'evaluaciones_2025').
+      Para rangos, esos deben ignorarse (no deben romper el servicio).
+    """
+    s = str(periodo).strip()
+    if not _PERIOD_RE.match(s):
+        raise ValueError(f"Periodo no parseable: {periodo!r}")
+    y, t = s.split("-")
     return int(y), int(t)
 
 
 def _periodo_in_range(periodo: str, periodo_from: str, periodo_to: str) -> bool:
-    """True si `periodo` está dentro del rango inclusivo [from, to]."""
-    p = _parse_periodo(periodo)
-    pf = _parse_periodo(periodo_from)
-    pt = _parse_periodo(periodo_to)
+    """
+    True si `periodo` está dentro del rango [periodo_from, periodo_to], inclusivo.
+
+    Si `periodo` no es parseable (no es tipo 'YYYY-n'), retorna False para no romper.
+    """
+    try:
+        p = _parse_periodo(periodo)
+        pf = _parse_periodo(periodo_from)
+        pt = _parse_periodo(periodo_to)
+    except ValueError:
+        return False
     return pf <= p <= pt
 
 
@@ -66,11 +86,20 @@ def resolve_dataset_ids_from_period_filters(
     periodo_from: Optional[str] = None,
     periodo_to: Optional[str] = None,
 ) -> list[str]:
-    """Resuelve dataset_ids (periodos) a usar según filtros de periodo/rango."""
+    """
+    Resuelve dataset_ids (periodos) a usar según filtros.
+
+    Reglas:
+    - Si viene `periodo`, se retorna exactamente ese valor (aunque no sea 'YYYY-n').
+    - Si viene rango (from/to), se filtran solo los que son comparables 'YYYY-n'.
+    - Si no viene nada, se retorna todo lo disponible.
+    """
     if periodo:
         return [periodo]
+
     if periodo_from and periodo_to:
         return [p for p in available_periodos if _periodo_in_range(p, periodo_from, periodo_to)]
+
     return list(available_periodos)
 
 

@@ -60,7 +60,12 @@ from neurocampus.services.predictions_service import (
     load_predictions_preview,
 )
 from neurocampus.utils.model_context import fill_context
-from neurocampus.utils.paths import artifacts_dir, rel_artifact_path
+from neurocampus.utils.paths import (
+    artifacts_dir,
+    rel_artifact_path,
+    resolve_champion_json_candidates,
+    first_existing,
+)
 from neurocampus.utils.score_postprocess import (
     build_comparison,
     build_radar,
@@ -113,12 +118,13 @@ def _list_pair_datasets() -> List[str]:
 
 
 def _champion_exists(dataset_id: str) -> bool:
-    """Verifica si hay un champion score_docente para el dataset."""
-    try:
-        load_predictor_by_champion(dataset_id=dataset_id, family=_FAMILY, use_cache=False)
-        return True
-    except Exception:
-        return False
+    """Verifica si existe champion.json para score_docente en el dataset.
+
+    Nota: aquí validamos *existencia* (layout nuevo + legacy). La disponibilidad
+    para inferencia se valida en los endpoints (p.ej. /individual o /batch/run).
+    """
+    candidates = resolve_champion_json_candidates(dataset_id=dataset_id, family=_FAMILY)
+    return first_existing(candidates) is not None
 
 
 def _get_calif_means(row: pd.Series) -> List[float]:
@@ -145,40 +151,6 @@ def _get_cohorte_means(df: pd.DataFrame, materia_key: str) -> List[float]:
         else:
             result.append(0.0)
     return result
-    # Campos top-level del manifest
-    if ctx.get("dataset_id") is not None:
-        out["dataset_id"] = str(ctx["dataset_id"])
-    if ctx.get("model_name") is not None:
-        out["model_name"] = str(ctx["model_name"])
-    if ctx.get("task_type") is not None:
-        out["task_type"] = str(ctx["task_type"])
-    if ctx.get("input_level") is not None:
-        out["input_level"] = str(ctx["input_level"])
-
-    # target_col debe evitar null cuando sea razonable
-    if ctx.get("target_col") is not None:
-        out["target_col"] = str(ctx["target_col"])
-    if out.get("target_col") is None:
-        out["target_col"] = "target"
-
-    # Campos extra (family y otros)
-    extra = out.get("extra") if isinstance(out.get("extra"), dict) else {}
-    # limpiar nulls heredados del predictor.json para no romper UI
-    extra = {k: v for k, v in dict(extra).items() if v is not None}
-    if ctx.get("family") is not None:
-        extra["family"] = str(ctx["family"])
-    if ctx.get("data_source") is not None:
-        extra["data_source"] = str(ctx["data_source"])
-    else:
-        extra["data_source"] = str(extra.get("data_source") or "feature_pack")
-
-    for k in ("data_plan", "split_mode", "val_ratio", "target_mode"):
-        v = ctx.get(k)
-        if v is not None:
-            extra[k] = v
-
-    if extra:
-        out["extra"] = extra
 
 
 def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
@@ -489,11 +461,14 @@ def batch_run(req: BatchRunRequest, bg: BackgroundTasks) -> BatchJobResponse:
     pair_path = artifacts_dir() / "features" / ds / "pair_matrix.parquet"
     if not pair_path.exists():
         raise HTTPException(status_code=404, detail=f"pair_matrix.parquet no existe para dataset_id={ds}.")
-    if not _champion_exists(ds):
-        raise HTTPException(
-            status_code=404,
-            detail=f"No hay champion score_docente para dataset_id={ds}.",
-        )
+
+    # Validar champion y readiness antes de crear job.
+    try:
+        _ = load_predictor_by_champion(dataset_id=ds, family=_FAMILY, use_cache=False)
+    except ChampionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotReadyError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     job_id = str(uuid.uuid4())
     _PRED_ESTADOS[job_id] = {

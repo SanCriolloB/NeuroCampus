@@ -329,7 +329,11 @@ def dashboard_wordcloud(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     items = [
-        DashboardWordcloudItem(text=str(r.get("text")), value=int(r.get("value") or 0))
+        DashboardWordcloudItem(
+            text=str(r.get("text")),
+            value=int(r.get("value") or 0),
+            sentiment=str(r.get("sentiment") or "neutral"),
+        )
         for r in (rows or [])
     ]
     return DashboardWordcloud(items=items)

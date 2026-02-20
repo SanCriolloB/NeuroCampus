@@ -116,6 +116,7 @@ export type DashboardRadar = {
 export type DashboardWordcloudItem = {
   text: string;
   value: number;
+  sentiment?: "positive" | "neutral" | "negative";
 };
 
 /** Respuesta de GET /dashboard/wordcloud. */

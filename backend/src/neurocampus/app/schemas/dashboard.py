@@ -95,8 +95,8 @@ class DashboardKPIs(BaseModel):
     predicciones: int = Field(
         0,
         description=(
-            \"Cantidad total de predicciones persistidas en artifacts/predictions \"
-            \"para el periodo/rango y filtros aplicados. Si no existen predicciones, retorna 0.\"
+            "Cantidad total de predicciones persistidas en artifacts/predictions "
+            "para el periodo/rango y filtros aplicados. Si no existen predicciones, retorna 0."
         ),
     )
 

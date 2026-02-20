@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, List, Tuple
 
 import numpy as np
 from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
+from ..utils.feature_selectors import auto_detect_embed_prefix as _auto_detect_embed_prefix, CANDIDATE_EMBED_PREFIXES as _CANDIDATE_EMBED_PREFIXES
 import pandas as pd
 
 from neurocampus.models.dbm_manual import DBMManual
@@ -210,6 +211,10 @@ class DBMManualPlantillaStrategy:
             "val_ratio": getattr(self, "val_ratio_", None),
             "seed": getattr(self, "seed_", None),
         }
+        # P2.6: Trazabilidad de features de texto
+        _text_trace = getattr(self, "_text_feature_trace_", None)
+        if isinstance(_text_trace, dict):
+            extra.update(_text_trace)
         if getattr(self, "_warm_start_info_", None):
             extra["warm_start_info"] = self._warm_start_info_
 
@@ -327,6 +332,19 @@ class DBMManualPlantillaStrategy:
             raise ValueError("DBMManualPlantillaStrategy: no hay columnas numéricas para entrenar.")
 
         self.feat_cols_ = cols
+
+        # P2.6: Trazabilidad de features de texto
+        _detected_prefix = _auto_detect_embed_prefix(cols)
+        text_embed_cols = [c for c in cols if _detected_prefix and c.startswith(_detected_prefix)]
+        text_prob_cols = [c for c in cols if c in ("p_neg", "p_neu", "p_pos")]
+        self._text_feature_trace_ = {
+            "n_features": len(cols),
+            "n_text_features": len(text_embed_cols) + len(text_prob_cols),
+            "has_text_features": bool(text_embed_cols or text_prob_cols),
+            "text_embed_prefix": _detected_prefix,
+            "text_feat_cols": text_embed_cols,
+            "text_prob_cols": text_prob_cols,
+        }
         return X
 
     def _split_train_val_indices(

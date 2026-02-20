@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
 from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
+from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols
 
 
 # ============================
@@ -382,36 +383,28 @@ class RBMGeneral:
         text_embed_prefix: str,
         max_calif: int,
     ) -> List[str]:
+        # P2.6: Delegar al selector unificado para trazabilidad y consistencia.
+        sel_result = _unified_pick_feature_cols(
+            df,
+            max_calif=max_calif,
+            include_text_probs=include_text_probs,
+            include_text_embeds=include_text_embeds,
+            text_embed_prefix=text_embed_prefix if text_embed_prefix != "x_text_" else None,
+            auto_detect_prefix=True,
+        )
+        # Guardar resultado para trazabilidad en save()
+        self._feature_selection_result_ = sel_result
+        # Actualizar prefijo si fue autodetectado
+        if sel_result.text_embed_prefix:
+            self.text_embed_prefix_ = sel_result.text_embed_prefix
+
+        # Agregar pregunta_N (compatibilidad con lógica original de rbm_general)
+        features = list(sel_result.feature_cols)
         cols = list(df.columns)
-        features: List[str] = []
-
-        # 1) numéricas calif_1..N (rellenadas más abajo si faltan)
-        for i in range(max_calif):
-            name = f"calif_{i+1}"
-            if name in cols:
-                features.append(name)
-
-        # 2) numéricas pregunta_1..N (si existen)
-        features += [c for c in cols if _matches_any(c, [r"^pregunta_\d+$"])]
-
-        # 3) probas p_neg/p_neu/p_pos
-        if include_text_probs:
-            for p in _PROB_COLS:
-                if p in cols:
-                    features.append(p)
-
-        # 4) embeddings de texto por prefijo
-        if include_text_embeds:
-            embed_cols = [c for c in cols if c.startswith(text_embed_prefix)]
-            if not embed_cols:
-                # Autodetección si el prefijo declarado no aparece
-                auto = _auto_pick_embed_prefix(cols)
-                if auto:
-                    self.text_embed_prefix_ = auto
-                    embed_cols = [c for c in cols if c.startswith(auto)]
-            if embed_cols:
-                embed_cols = sorted(embed_cols, key=lambda c: _suffix_index(c, self.text_embed_prefix_))
-                features += embed_cols
+        pregunta_cols = [c for c in cols if _matches_any(c, [r"^pregunta_\d+$"])]
+        for pc in pregunta_cols:
+            if pc not in features:
+                features.append(pc)
 
         # deduplicar preservando orden
         features = list(dict.fromkeys(features))
@@ -1194,6 +1187,10 @@ class RBMGeneral:
             "task_type": str(getattr(self, "task_type", "classification")).lower(),
             "target_col": getattr(self, "target_col_", None),
         }
+        # P2.6: Trazabilidad de features de texto
+        _fsr = getattr(self, "_feature_selection_result_", None)
+        if _fsr is not None:
+            meta.update(_fsr.traceability_dict())
         if meta["task_type"] == "regression":
             meta.update({
                 "target_scale": float(getattr(self, "target_scale_", 1.0) or 1.0),

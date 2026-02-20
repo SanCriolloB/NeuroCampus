@@ -155,6 +155,17 @@ class EntrenarRequest(BaseModel):
         aplicar un default (normalmente ``embed``).
     :param auto_prepare: Si ``True``, el backend intentará generar artifacts faltantes
         (unificado/feature-pack) cuando sea posible.
+    :param auto_text_feats: Si ``True`` y ``family=sentiment_desempeno``, el backend puede
+        activar automáticamente ``text_feats_mode='tfidf_lsa'`` durante ``auto_prepare``.
+        Esto evita olvidos al entrenar modelos de sentimiento cuando existen columnas de texto libre.
+    :param text_feats_mode: Modo opcional para generar features de texto al preparar el feature-pack.
+        Por defecto ``"none"`` (no altera el comportamiento actual).
+    :param text_col: Nombre de la columna de texto libre. Si se omite, el builder puede detectar
+        automáticamente una columna candidata.
+    :param text_n_components: Dimensión máxima del espacio LSA (SVD) para features de texto.
+    :param text_min_df: Frecuencia mínima de documento (TF-IDF) para vocabulario.
+    :param text_max_features: Tamaño máximo del vocabulario TF-IDF.
+    :param text_random_state: Semilla para la proyección LSA (determinismo).
     :param split_mode: Cómo hacer train/val.
     :param val_ratio: Proporción del set de validación (0..0.5 recomendado).
     :param epochs: Número de épocas de entrenamiento.
@@ -331,6 +342,60 @@ class EntrenarRequest(BaseModel):
             "Si True, el backend puede intentar preparar artifacts faltantes (unificado/feature-pack) "
             "antes de entrenar."
         ),
+    )
+
+    auto_text_feats: bool = Field(
+        default=True,
+        description=(
+            "Si True y family=sentiment_desempeno, el backend puede activar automáticamente "
+            "text_feats_mode='tfidf_lsa' durante auto_prepare cuando text_feats_mode='none'. "
+            "Para desactivar este comportamiento, establezca auto_text_feats=False."
+        ),
+    )
+
+    # -----------------------------
+    # P2.6: features de texto (opcional, no rompe compatibilidad)
+    # -----------------------------
+    text_feats_mode: str = Field(
+        default="none",
+        description=(
+            "Modo para features de texto cuando auto_prepare construye el feature-pack. "
+            "Opciones: 'none' (default) | 'tfidf_lsa'."
+        ),
+    )
+
+    text_col: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre de columna de texto libre (si no se especifica, el builder puede auto-detectar). "
+            "Solo aplica cuando text_feats_mode != 'none'."
+        ),
+    )
+
+    text_n_components: int = Field(
+        default=64,
+        ge=2,
+        le=512,
+        description="Dimensión máxima de LSA (SVD) para features de texto (solo tfidf_lsa).",
+    )
+
+    text_min_df: int = Field(
+        default=2,
+        ge=1,
+        le=1000,
+        description="Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_max_features: int = Field(
+        default=20000,
+        ge=100,
+        le=200000,
+        description="Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_random_state: int = Field(
+        default=42,
+        description="Semilla para proyección LSA (determinismo; solo tfidf_lsa).",
     )
 
     split_mode: SplitMode = Field(
@@ -514,12 +579,27 @@ class SweepCandidate(BaseModel):
 
 
 class SweepEntrenarRequest(BaseModel):
-    """
-    Lanza un sweep (barrido) entrenando múltiples modelos y múltiples hparams.
+    """    Lanza un sweep (barrido) entrenando múltiples modelos y múltiples hparams.
 
     - Usa SOLO modelos existentes (rbm_general, rbm_restringida, dbm_manual).
     - Reutiliza el mismo flujo de entrenamiento/evaluación que /modelos/entrenar.
-    """
+
+    Parámetros de texto (P2.6)
+    -------------------------
+    Estos parámetros *solo* afectan la construcción automática del feature-pack cuando el sweep
+    prepara datos (comparabilidad). Por defecto **no** cambian el comportamiento existente.
+
+    :param auto_text_feats: Si True y family=sentiment_desempeno, el backend puede activar
+        automáticamente ``text_feats_mode='tfidf_lsa'`` durante la preparación cuando
+        ``text_feats_mode='none'``.
+    :param text_feats_mode: Modo para generar features de texto en el feature-pack.
+        Opciones: ``'none'`` (default) | ``'tfidf_lsa'``.
+    :param text_col: Nombre de la columna de texto libre. Si None, se intenta auto-detectar.
+    :param text_n_components: Dimensión máxima de LSA (SVD) para texto (solo tfidf_lsa).
+    :param text_min_df: Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).
+    :param text_max_features: Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).
+    :param text_random_state: Semilla para LSA (determinismo; solo tfidf_lsa).
+"""
     model_config = ConfigDict(extra="ignore")
 
     dataset_id: str
@@ -543,8 +623,69 @@ class SweepEntrenarRequest(BaseModel):
     warm_start_from: Optional[WarmStartFrom] = None
     warm_start_run_id: Optional[str] = None
 
+    # -----------------------------
+    # P2.6: features de texto (opcional, no rompe compatibilidad)
+    # -----------------------------
+    auto_text_feats: bool = Field(
+        default=True,
+        description=(
+            "Si True y family=sentiment_desempeno, el backend puede activar automáticamente "
+            "text_feats_mode='tfidf_lsa' durante la preparación cuando text_feats_mode='none'. "
+            "Para desactivar este comportamiento, establezca auto_text_feats=False."
+        ),
+    )
+
+    text_feats_mode: str = Field(
+        default="none",
+        description=(
+            "Modo para features de texto cuando el sweep prepara el feature-pack. "
+            "Opciones: 'none' (default) | 'tfidf_lsa'."
+        ),
+    )
+
+    text_col: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre de columna de texto libre (si no se especifica, el builder puede auto-detectar). "
+            "Solo aplica cuando text_feats_mode != 'none'."
+        ),
+    )
+
+    text_n_components: int = Field(
+        default=64,
+        ge=2,
+        le=512,
+        description="Dimensión máxima de LSA (SVD) para features de texto (solo tfidf_lsa).",
+    )
+
+    text_min_df: int = Field(
+        default=2,
+        ge=1,
+        le=1000,
+        description="Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_max_features: int = Field(
+        default=20000,
+        ge=100,
+        le=200000,
+        description="Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_random_state: int = Field(
+        default=42,
+        description="Semilla para proyección LSA (determinismo; solo tfidf_lsa).",
+    )
+
     # selección
-    modelos: List[ModeloName] = Field(min_length=1)
+    modelos: List[ModeloName] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("modelos", "models"),
+        description=(
+            "Lista de modelos a entrenar en el sweep. Compatibilidad: acepta también `models` "
+            "como alias (clientes nuevos / frontend)."
+        ),
+    )
 
     # base hparams (se mezclan con cada combinación)
     base_hparams: Dict[str, Any] = Field(default_factory=dict)
@@ -612,6 +753,22 @@ class ModelSweepRequest(BaseModel):
 
     Entrena rbm_general, rbm_restringida y dbm_manual con los mismos datos
     y elige el mejor por primary_metric (contrato P2 Parte 4).
+
+    Parámetros de texto (P2.6)
+    -------------------------
+    Estos parámetros controlan *únicamente* la construcción automática del feature-pack
+    cuando ``auto_prepare=True``.  Por defecto ``text_feats_mode='none'`` y el sweep no
+    cambia el comportamiento existente.
+
+    :param auto_text_feats: Si True y ``family=sentiment_desempeno``, el backend puede activar
+        automáticamente ``text_feats_mode='tfidf_lsa'`` durante ``auto_prepare`` cuando
+        ``text_feats_mode='none'``.
+    :param text_feats_mode: Modo para generar features de texto: ``'none'`` (default) | ``'tfidf_lsa'``.
+    :param text_col: Nombre de la columna de texto libre. Si None, el builder puede auto-detectar.
+    :param text_n_components: Dimensión máxima de LSA (SVD) (solo tfidf_lsa).
+    :param text_min_df: Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).
+    :param text_max_features: Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).
+    :param text_random_state: Semilla para LSA (determinismo; solo tfidf_lsa).
     """
     model_config = ConfigDict(extra="ignore")
 
@@ -621,6 +778,60 @@ class ModelSweepRequest(BaseModel):
     seed: int = 42
     epochs: int = 5
     auto_prepare: bool = True
+
+    # -----------------------------
+    # P2.6: features de texto (opcional, no rompe compatibilidad)
+    # -----------------------------
+    auto_text_feats: bool = Field(
+        default=True,
+        description=(
+            "Si True y family=sentiment_desempeno, el backend puede activar automáticamente "
+            "text_feats_mode='tfidf_lsa' durante la preparación cuando text_feats_mode='none'. "
+            "Para desactivar este comportamiento, establezca auto_text_feats=False."
+        ),
+    )
+
+    text_feats_mode: str = Field(
+        default="none",
+        description=(
+            "Modo para features de texto cuando el sweep prepara el feature-pack. "
+            "Opciones: 'none' (default) | 'tfidf_lsa'."
+        ),
+    )
+
+    text_col: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre de columna de texto libre (si no se especifica, el builder puede auto-detectar). "
+            "Solo aplica cuando text_feats_mode != 'none'."
+        ),
+    )
+
+    text_n_components: int = Field(
+        default=64,
+        ge=2,
+        le=512,
+        description="Dimensión máxima de LSA (SVD) para features de texto (solo tfidf_lsa).",
+    )
+
+    text_min_df: int = Field(
+        default=2,
+        ge=1,
+        le=1000,
+        description="Frecuencia mínima de documento para TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_max_features: int = Field(
+        default=20000,
+        ge=100,
+        le=200000,
+        description="Tamaño máximo del vocabulario TF-IDF (solo tfidf_lsa).",
+    )
+
+    text_random_state: int = Field(
+        default=42,
+        description="Semilla para proyección LSA (determinismo; solo tfidf_lsa).",
+    )
 
     # Selección de modelos (default: los 3)
     models: List[ModeloName] = Field(
@@ -837,9 +1048,21 @@ class PromoteChampionRequest(BaseModel):
 
     model_config = ConfigDict(protected_namespaces=())
 
-    dataset_id: str = Field(description="Dataset/periodo al que pertenece el run (ej. '2025-1').")
+    dataset_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Dataset/periodo al que pertenece el run (ej. '2025-1'). "
+            "Si se omite, el backend intentará inferirlo desde metrics.json o desde el formato del run_id."
+        ),
+    )
     run_id: str = Field(description="ID del run a promover (carpeta en artifacts/runs/<run_id>).")
-    model_name: str = Field(description="Nombre lógico del modelo (ej. 'rbm_restringida').")
+    model_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nombre lógico del modelo (ej. 'rbm_restringida'). "
+            "Si se omite, el backend puede inferirlo desde metrics.json (model_name / params.req.modelo)."
+        ),
+    )
 
     # Ruta 2 (families): opcional, pero se recomienda enviarlo para evitar ambigüedad
     family: Optional[Family] = Field(
@@ -872,3 +1095,15 @@ class PromoteChampionRequest(BaseModel):
         if not s or s.lower() in {"null", "none", "nil"}:
             raise ValueError("run_id inválido")
         return s
+
+    @field_validator("dataset_id", "model_name", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v: Any) -> Any:
+        """Normaliza strings vacíos/whitespace a ``None``.
+
+        Esto permite que el frontend omita campos opcionales sin causar 422.
+        """
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None

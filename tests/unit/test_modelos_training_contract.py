@@ -72,6 +72,11 @@ def test_run_training_uses_template_contract(monkeypatch, tmp_path):
 
     monkeypatch.setattr(m, "save_run", fake_save_run)
 
+    # Este test valida el contrato router <-> template <-> runs_io.
+    # No valida export/serialización del modelo (eso se cubre en tests específicos),
+    # por lo que neutralizamos la verificación de archivos exportados.
+    monkeypatch.setattr(m, "_require_exported_model", lambda *_a, **_k: None)
+
     monkeypatch.setattr(
         m,
         "maybe_update_champion",

@@ -272,26 +272,18 @@ def resolve_warm_start_path(
             model_name=model_name,
         )
 
+
         if champ_path is None:
-            trace = dict(_empty_trace)
-            trace.update(
-                {
-                    "warm_started": False,
-                    "warm_start_from": "champion",
-                    "warm_start_reason": "no_champion",
-                    "warm_start_error": (
-                        f"No existe champion.json para dataset_id='{dataset_id}', "
-                        f"family='{family}', model='{model_name}'."
-                    ),
-                }
+            # Contrato: si se solicita warm_start_from="champion" y no existe champion.json,
+            # debe fallar con 404 (no continuar silenciosamente).
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No existe champion.json para dataset_id='{dataset_id}', "
+                    f"family='{family}', model='{model_name}'."
+                ),
             )
-            logger.info(
-                "warm_start skip [champion]: no champion.json dataset_id=%s family=%s model=%s",
-                dataset_id,
-                family,
-                model_name,
-            )
-            return None, trace
+
 
         try:
             champ = json.loads(champ_path.read_text(encoding="utf-8"))

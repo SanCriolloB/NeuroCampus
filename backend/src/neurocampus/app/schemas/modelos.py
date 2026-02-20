@@ -527,12 +527,14 @@ class SweepEntrenarRequest(BaseModel):
     task_type: Optional[TaskType] = None
     input_level: Optional[InputLevel] = None
 
-    data_source: DataSource = "pair_matrix"
+    # P2.5 FIX: ``data_source`` estaba duplicado (líneas 530 y 535 originales).
+    # Pydantic v2 usa el último campo, sobrescribiendo el default ``"pair_matrix"``
+    # con ``None``.  Se unifica en una sola declaración con default robusto.
+    data_source: Optional[DataSource] = "pair_matrix"
     epochs: int = 5
 
     # incremental (score_docente)
     data_plan: Optional[DataPlan] = None
-    data_source: Optional[str] = None
     window_k: Optional[int] = None
     replay_size: Optional[int] = None
     replay_strategy: ReplayStrategy = "uniform"

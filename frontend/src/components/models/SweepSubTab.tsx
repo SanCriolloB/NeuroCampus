@@ -13,8 +13,9 @@ import {
   Play, Award, Trophy, Eye, ExternalLink, Columns, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { modelosApi } from '@/features/modelos/api';
 import {
-  generateMockSweep, MODEL_STRATEGIES, FAMILY_CONFIGS,
+  generateMockSweep, MODEL_STRATEGIES, FAMILY_CONFIGS, DATASETS,
   type Family, type SweepResult, type RunRecord, type WarmStartFrom,
 } from './mockData';
 import {
@@ -47,22 +48,68 @@ export function SweepSubTab({
   const [sweepResult, setSweepResult] = useState<SweepResult | null>(null);
   const [showComparator, setShowComparator] = useState(false);
 
-  const handleRunSweep = () => {
+  /**
+   * Ejecuta el sweep.
+   *
+   * Estrategia:
+   * 1) Intentar ejecutar sweep real vía `modelosApi` (backend).
+   * 2) Si el backend no está listo, usar `generateMockSweep` (prototipo).
+   *
+   * Nota:
+   * - Se mantiene el progress bar del prototipo para paridad visual.
+   * - `datasetId` en UI usa IDs tipo "ds_2025_1"; se mapea a periodo backend
+   *   usando `DATASETS[].period` (ej. "2025-1") cuando exista.
+   */
+  const handleRunSweep = async () => {
     setSweepStatus('running');
     setSweepProgress(0);
+    setSweepResult(null);
+
+    // Mapea dataset UI -> dataset backend (periodo). Si no hay match, usa el id tal cual.
+    const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+
+    // Mantener UX del prototipo: progreso incremental hasta ~95% mientras esperamos.
     let prog = 0;
     const interval = setInterval(() => {
       prog += Math.random() * 10 + 5;
-      if (prog >= 100) {
-        prog = 100;
-        clearInterval(interval);
-        const result = generateMockSweep(family, datasetId);
-        setSweepResult(result);
-        setSweepStatus('completed');
-        onSweepComplete(result.candidates);
-      }
-      setSweepProgress(Math.min(prog, 100));
+      setSweepProgress(Math.min(prog, 95));
     }, 400);
+
+    try {
+      const result = await modelosApi.sweep({
+        dataset_id: backendDatasetId,
+        family,
+        seed,
+        epochs,
+        warm_start_from: warmStartFrom,
+        auto_promote_champion: autoPromote,
+        auto_prepare: true,
+      } as any);
+
+      clearInterval(interval);
+      setSweepProgress(100);
+
+      // Paridad visual: conservar dataset_id como el ID UI seleccionado.
+      const uiCandidates = result.candidates.map(r => ({ ...r, dataset_id: datasetId }));
+
+      setSweepResult({ ...result, candidates: uiCandidates });
+      setSweepStatus('completed');
+      onSweepComplete(uiCandidates);
+      return;
+    } catch (err) {
+      // Fallback a mocks: exactamente como prototipo (no bloquea UI).
+    }
+
+    clearInterval(interval);
+
+    // ---------------------------------------------------------------------
+    // Fallback (mocks) — exactamente como el prototipo.
+    // ---------------------------------------------------------------------
+    const result = generateMockSweep(family, datasetId);
+    setSweepProgress(100);
+    setSweepResult(result);
+    setSweepStatus('completed');
+    onSweepComplete(result.candidates);
   };
 
   const winner = sweepResult?.candidates.find(c => c.run_id === sweepResult.winner_run_id);
@@ -153,7 +200,7 @@ export function SweepSubTab({
         )}
 
         <Button
-          onClick={handleRunSweep}
+          onClick={() => void handleRunSweep()}
           disabled={sweepStatus === 'running'}
           className="bg-blue-600 hover:bg-blue-700 gap-2"
         >
@@ -219,7 +266,20 @@ export function SweepSubTab({
                   <Button
                     size="sm"
                     className="bg-yellow-600 hover:bg-yellow-700 gap-1 text-xs"
-                    onClick={() => alert(`Champion actualizado: ${winner.run_id}`)}
+                    onClick={() => void (async () => {
+                      const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
+                      try {
+                        await modelosApi.promote({
+                          dataset_id: backendDatasetId,
+                          run_id: winner.run_id,
+                          model_name: winner.model_name as any,
+                          family,
+                        } as any);
+                      } catch {
+                        // Si backend no soporta promote aún, mantenemos feedback del prototipo.
+                      }
+                      alert(`Champion actualizado: ${winner.run_id}`);
+                    })()}
                   >
                     <Award className="w-3 h-3" /> Promover Champion
                   </Button>

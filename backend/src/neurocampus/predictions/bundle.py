@@ -71,6 +71,28 @@ def read_json(path: Path) -> Dict[str, Any]:
     """Lee JSON UTF-8 y retorna dict."""
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
+def _drop_none(obj: Any) -> Any:
+    """Elimina keys con None de forma recursiva (dict/list)."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if v is None:
+                continue
+            vv = _drop_none(v)
+            if vv is None:
+                continue
+            out[k] = vv
+        return out
+    if isinstance(obj, list):
+        out_list = []
+        for v in obj:
+            vv = _drop_none(v)
+            if vv is None:
+                continue
+            out_list.append(vv)
+        return out_list
+    return obj
+
 
 def build_predictor_manifest(
     *,
@@ -111,9 +133,13 @@ def build_predictor_manifest(
         "model_name": str(model_name),
         "task_type": str(task_type),
         "input_level": str(input_level),
-        "target_col": str(target_col) if target_col else None,
+        # target_col es crítico: si no se conoce, dejar un default estable
+        "target_col": str(target_col) if target_col else "target",
         "format": "pickle",
     }
-    if extra:
-        payload["extra"] = extra
+
+    extra_clean = _drop_none(extra or {})
+    if isinstance(extra_clean, dict) and extra_clean:
+        payload["extra"] = extra_clean
+
     return payload

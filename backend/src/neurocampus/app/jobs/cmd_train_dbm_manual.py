@@ -35,7 +35,18 @@ def main():
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Aquí podrías guardar representaciones transformadas o pesos preentrenados
+
+    model_dir = out_dir / "model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    # Guardar DBM (dbm_state.npz + meta.json)
+    if strategy.model is None:
+        raise RuntimeError("DBMManualStrategy: modelo no entrenado (strategy.model es None)")
+
+    # Meta extra mínima (cols numéricas)
+    num_cols = df.select_dtypes(include=[float, int]).columns.tolist()
+    strategy.model.save(str(model_dir), extra_meta={"feat_cols_": num_cols, "task_type": "unsupervised"})
+
 
 if __name__ == "__main__":
     main()

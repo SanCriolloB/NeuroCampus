@@ -145,6 +145,40 @@ def _get_cohorte_means(df: pd.DataFrame, materia_key: str) -> List[float]:
         else:
             result.append(0.0)
     return result
+    # Campos top-level del manifest
+    if ctx.get("dataset_id") is not None:
+        out["dataset_id"] = str(ctx["dataset_id"])
+    if ctx.get("model_name") is not None:
+        out["model_name"] = str(ctx["model_name"])
+    if ctx.get("task_type") is not None:
+        out["task_type"] = str(ctx["task_type"])
+    if ctx.get("input_level") is not None:
+        out["input_level"] = str(ctx["input_level"])
+
+    # target_col debe evitar null cuando sea razonable
+    if ctx.get("target_col") is not None:
+        out["target_col"] = str(ctx["target_col"])
+    if out.get("target_col") is None:
+        out["target_col"] = "target"
+
+    # Campos extra (family y otros)
+    extra = out.get("extra") if isinstance(out.get("extra"), dict) else {}
+    # limpiar nulls heredados del predictor.json para no romper UI
+    extra = {k: v for k, v in dict(extra).items() if v is not None}
+    if ctx.get("family") is not None:
+        extra["family"] = str(ctx["family"])
+    if ctx.get("data_source") is not None:
+        extra["data_source"] = str(ctx["data_source"])
+    else:
+        extra["data_source"] = str(extra.get("data_source") or "feature_pack")
+
+    for k in ("data_plan", "split_mode", "val_ratio", "target_mode"):
+        v = ctx.get(k)
+        if v is not None:
+            extra[k] = v
+
+    if extra:
+        out["extra"] = extra
 
 
 def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:

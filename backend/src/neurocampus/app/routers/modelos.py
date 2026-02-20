@@ -60,6 +60,9 @@ from ..schemas.modelos import (
     SweepEntrenarResponse,
     SweepSummary,
     SweepCandidate,
+    ModelSweepRequest,
+    ModelSweepCandidateResult,
+    ModelSweepResponse,
 )
 
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
@@ -68,6 +71,8 @@ from ...models.strategies.modelo_rbm_restringida import RBMRestringida
 from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
 from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
 from ...utils.model_context import fill_context
+from ...utils.warm_start import resolve_warm_start_path
+from ...models.utils.metrics_contract import standardize_run_metrics, primary_metric_for_family
 
 
 from ...observability.bus_eventos import BUS
@@ -221,23 +226,41 @@ def _try_write_predictor_bundle(
         run_path = _Path(run_dir).expanduser().resolve()
         bp = bundle_paths(run_path)
 
-        metrics = metrics or {}
+        # Preferir el metrics.json persistido (incluye params.req).
+        # Esto evita que predictor.json quede con extra=null aunque el request sí lo tenía.
+        metrics_payload = metrics or {}
+        try:
+            mp = run_path / "metrics.json"
+            if mp.exists():
+                metrics_payload = json.loads(mp.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("No se pudo leer metrics.json para contexto; se usa metrics in-memory")
+
 
         # ------------------------------------------------------------
         # 1) Persistencia real del modelo (si la estrategia soporta save())
         # ------------------------------------------------------------
+        # P2.3 FIX: Definir ``model_dir`` — subdirectorio ``model/`` dentro
+        # del run donde se persisten los artefactos serializados del modelo
+        # (meta.json, dbm_state.npz, rbm.pt, head.pt, etc.).
+        # Sin esta definición, ``strategy.save()`` fallaba con NameError y
+        # dejaba la carpeta ``model/`` vacía, rompiendo DBM y warm-start.
+        model_dir = run_path / "model"
+        model_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             save_fn = getattr(strategy, "save", None)
             if callable(save_fn):
-                model_dir = run_path / "model"
-                model_dir.mkdir(parents=True, exist_ok=True)
+                # Llamada robusta (posibles diferencias de firma entre estrategias)
+                _call_with_accepted_kwargs(save_fn, out_dir=str(model_dir))
 
-                # Soportar firmas tipo save(path: str)
-                save_fn(str(model_dir))
-
-                # Marcador NO-placeholder: el loader debe considerarlo “ready”.
-                # (el contenido exacto da igual, mientras no sea el placeholder P2.1)
-                bp.model_bin.write_bytes(b"DIR:model\n")
+                # Validación mínima: si quedó vacío, lo tratamos como fallo de export
+                present = [p.name for p in Path(model_dir).iterdir() if p.is_file()]
+                if not present:
+                    raise RuntimeError(
+                        f"Export de modelo dejó model/ vacío en {model_dir}. "
+                        "Revisa strategy.save() y logs del backend."
+                    )
         except Exception:
             logger.exception("No se pudo persistir modelo en run_dir=%s (best-effort)", str(run_path))
 
@@ -253,12 +276,28 @@ def _try_write_predictor_bundle(
             family=family or None,
             dataset_id=dataset_id or None,
             model_name=model_name or None,
-            metrics=metrics,
+            metrics=metrics_payload,
             predictor_manifest=None,
         )
         dataset_id = str((ctx.get("dataset_id") or dataset_id) or "")
         model_name = str((ctx.get("model_name") or model_name) or "")
         family = str((ctx.get("family") or family) or "")
+
+        # P2.6: Leer trazabilidad de features del modelo serializado
+        # si la estrategia persistió meta.json con conteos de texto.
+        _feat_trace: dict[str, Any] = {}
+        try:
+            _model_meta_path = model_dir / "meta.json"
+            if _model_meta_path.exists():
+                _model_meta = json.loads(_model_meta_path.read_text(encoding="utf-8"))
+                # Extraer campos de trazabilidad P2.6
+                for _fk in ("n_features", "n_text_features", "has_text_features",
+                            "text_embed_prefix", "text_feat_cols", "text_prob_cols",
+                            "feat_cols_", "feat_cols"):
+                    if _fk in _model_meta and _model_meta[_fk] is not None:
+                        _feat_trace[_fk] = _model_meta[_fk]
+        except Exception:
+            pass  # best-effort: no rompe el bundle
 
         manifest = build_predictor_manifest(
             run_id=str(metrics.get("run_id") or ""),
@@ -268,13 +307,22 @@ def _try_write_predictor_bundle(
             input_level=str(ctx.get("input_level") or "row"),
             target_col=str(ctx.get("target_col")) if ctx.get("target_col") else None,
             extra={
-                "family": family,
-                "data_source": ctx.get("data_source"),
-                "data_plan": ctx.get("data_plan"),
-                "split_mode": ctx.get("split_mode"),
-                "val_ratio": ctx.get("val_ratio"),
-                "target_mode": ctx.get("target_mode"),
-                "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
+                k: v
+                for k, v in {
+                    "family": family,
+                    "data_source": ctx.get("data_source"),
+                    "data_plan": ctx.get("data_plan"),
+                    "split_mode": ctx.get("split_mode"),
+                    "val_ratio": ctx.get("val_ratio"),
+                    "target_mode": ctx.get("target_mode"),
+                    # P2.6: conteos de features de texto (si existen)
+                    "n_features_total": _feat_trace.get("n_features"),
+                    "n_text_features": _feat_trace.get("n_text_features"),
+                    "text_features_present": _feat_trace.get("has_text_features"),
+                    "text_embed_prefix": _feat_trace.get("text_embed_prefix"),
+                    "note": "P2.3+: si model.bin != placeholder, el modelo se considera listo para inferencia.",
+                }.items()
+                if v is not None
             },
         )
         write_json(bp.predictor_json, manifest)
@@ -1589,6 +1637,26 @@ def _evaluate_post_training_metrics(estrategia, df: "pd.DataFrame", hparams: dic
         "confusion_matrix": cm_va,
     }
 
+def _require_exported_model(run_dir: str | Path, model_name: str) -> None:
+    run_dir = Path(run_dir)
+    model_dir = run_dir / "model"
+    present = {p.name for p in model_dir.iterdir() if p.is_file()} if model_dir.exists() else set()
+
+    mn = (model_name or "").lower().strip()
+
+    if mn.startswith("rbm"):
+        if "meta.json" not in present or not ({"rbm.pt", "head.pt"} & present):
+            raise RuntimeError(
+                f"Run {run_dir.name}: export RBM incompleto en {model_dir}. "
+                f"Se esperaba meta.json + rbm.pt/head.pt. Presentes: {sorted(present)}"
+            )
+
+    if mn.startswith("dbm"):
+        if not {"meta.json", "dbm_state.npz"} <= present:
+            raise RuntimeError(
+                f"Run {run_dir.name}: export DBM incompleto en {model_dir}. "
+                f"Se esperaba meta.json + dbm_state.npz. Presentes: {sorted(present)}"
+            )
 
 # ---------------------------------------------------------------------------
 # Entrenamiento (persistencia vía runs_io)
@@ -1633,6 +1701,23 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         run_hparams = _build_run_hparams(req, job_id)
         # Asegurar job_id para PlantillaEntrenamiento (usa hparams.job_id como override)
         run_hparams["job_id"] = job_id
+
+        # 1b) Resolver warm_start_path (RBM) si el request lo solicita.
+        #     Debe ocurrir ANTES de crear la estrategia para que hparams
+        #     llegue con warm_start_path ya seteado.
+        _ws_mode = str(getattr(req, "warm_start_from", None) or "none").lower()
+        _ws_path, _ws_trace = resolve_warm_start_path(
+            artifacts_dir=ARTIFACTS_DIR,
+            dataset_id=str(req.dataset_id or ""),
+            family=str(getattr(req, "family", "") or ""),
+            model_name=str(getattr(req, "modelo", "") or ""),
+            warm_start_from=_ws_mode,
+            warm_start_run_id=getattr(req, "warm_start_run_id", None),
+        )
+        if _ws_path is not None:
+            run_hparams["warm_start_path"] = str(_ws_path)
+        else:
+            run_hparams.pop("warm_start_path", None)
 
         # 2) Normalizar request para snapshot/UI (que "params.req" sea consistente)
         inferred_target_col = _infer_target_col(req, run_hparams)
@@ -1692,6 +1777,15 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         final_metrics.setdefault("dataset_id", str(req_norm.dataset_id))
         final_metrics.setdefault("model_name", str(req_norm.modelo))
 
+        # Trazabilidad warm-start (siempre presente; False si no se usó)
+        final_metrics["warm_started"] = _ws_trace.get("warm_started", False)
+        if _ws_trace.get("warm_start_from"):
+            final_metrics["warm_start_from"] = _ws_trace["warm_start_from"]
+        if _ws_trace.get("warm_start_source_run_id"):
+            final_metrics["warm_start_source_run_id"] = _ws_trace["warm_start_source_run_id"]
+        if _ws_trace.get("warm_start_path"):
+            final_metrics["warm_start_path"] = _ws_trace["warm_start_path"]
+
         # 6) Guardar run en artifacts (fuente de verdad)
         req_snapshot = req_norm.model_dump()
         params = {"req": req_snapshot, "hparams": run_hparams}
@@ -1703,6 +1797,14 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         )
         # Asegurar run_id en métricas para que predictor.json quede consistente.
         final_metrics.setdefault("run_id", str(run_id))
+
+        # Estandarizar métricas según contrato por family (P2 Parte 4)
+        _task_type_hint = str(final_metrics.get("task_type") or "").lower() or str(getattr(req_norm, "task_type", "") or "")
+        final_metrics = standardize_run_metrics(
+            final_metrics,
+            family=str(req_norm.family or ""),
+            task_type=_task_type_hint,
+        )
 
         run_dir = save_run(
             run_id=str(run_id),
@@ -1717,6 +1819,21 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
 
         # (best-effort): persistir predictor bundle + modelo serializado para inferencia.
         # Importante: NO debe romper P0 si falla; solo deja bundle en placeholder.
+        # Cargar el metrics.json completo (incluye params.req) para evitar nulls en predictor.json
+        metrics_payload: dict[str, Any] = {}
+        try:
+            metrics_payload = json.loads((Path(run_dir) / "metrics.json").read_text(encoding="utf-8"))
+        except Exception:
+            # Fallback defensivo si por alguna razón no se puede leer el archivo recién escrito
+            metrics_payload = {
+                "run_id": str(run_id),
+                "job_id": str(job_id),
+                "dataset_id": str(req_norm.dataset_id),
+                "model_name": str(req_norm.modelo),
+                "params": params,
+                **(final_metrics or {}),
+            }
+
         _try_write_predictor_bundle(
             run_dir=run_dir,
             req_norm=req_norm,
@@ -1724,6 +1841,7 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
             strategy=strategy,
         )
 
+        _require_exported_model(run_dir, str(req_norm.modelo))
 
         # 7) Champion (si aplica) - usar metrics.json como contrato (incluye params.req)
         champion_promoted = None
@@ -1755,6 +1873,7 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
                 "history": history,
                 "champion_promoted": champion_promoted,
                 "time_total_ms": float(dt_ms),
+                "warm_start_trace": _ws_trace,
             }
         )
         _ESTADOS[job_id] = st
@@ -1762,11 +1881,17 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
     except Exception as e:
         logger.exception("Falló entrenamiento job_id=%s", job_id)
         dt_ms = (time.perf_counter() - t0) * 1000.0
+        # P2.3 FIX: Preservar ``run_id`` en estado fallido cuando ya fue
+        # generado (e.g. si el error ocurrió en _try_write_predictor_bundle
+        # o _require_exported_model, después de ``save_run``).  Permite
+        # diagnóstico post-mortem del run parcial vía /modelos/estado/{id}.
+        _failed_run_id = locals().get("run_id")
         st.update(
             {
                 "status": "failed",
                 "error": str(e),
                 "time_total_ms": float(dt_ms),
+                "run_id": str(_failed_run_id) if _failed_run_id else st.get("run_id"),
             }
         )
         _ESTADOS[job_id] = st
@@ -1968,6 +2093,7 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
                     dataset_id=req.dataset_id,
                     run_id=str(best_overall["run_id"]),
                     model_name=str(best_overall["model_name"]),
+                    family=str(req.family) if req.family else None,
                 )
     except Exception:
         logger.exception("No se pudo evaluar/promover champion en sweep=%s", sweep_id)
@@ -2164,6 +2290,294 @@ def entrenar(req: EntrenarRequest, bg: BackgroundTasks) -> EntrenarResponse:
     bg.add_task(_run_training, job_id, req_norm)
     return EntrenarResponse(job_id=job_id, status="running", message="Entrenamiento lanzado")
 
+
+# ---------------------------------------------------------------------------
+# Sweep determinístico P2 Parte 5
+# ---------------------------------------------------------------------------
+
+_SWEEP_MODEL_ORDER: list[str] = ["rbm_general", "rbm_restringida", "dbm_manual"]
+
+
+def _pick_best_deterministic(
+    candidates: list[dict],
+    *,
+    primary_metric: str,
+    mode: str,
+) -> dict | None:
+    """
+    Elige el mejor candidato de forma determinística.
+
+    Criterios (en orden de prioridad):
+    1. primary_metric_value (mayor si mode=max, menor si mode=min)
+    2. Tie-breaker: model_name en _SWEEP_MODEL_ORDER (primero en el orden canónico)
+    3. Tie-breaker final: run_id (orden lexicográfico, más pequeño = más temprano)
+    """
+    completed = [c for c in candidates if c.get("status") == "completed" and c.get("run_id")]
+    if not completed:
+        return None
+
+    def _sort_key(c: dict):
+        val = c.get("primary_metric_value")
+        if not isinstance(val, (int, float)) or not math.isfinite(float(val)):
+            # Peores posibles: mayor = peor para max, menor = peor para min
+            metric_key = float("-inf") if mode == "max" else float("inf")
+        else:
+            metric_key = float(val) if mode == "max" else -float(val)
+
+        model_idx = _SWEEP_MODEL_ORDER.index(c["model_name"]) if c["model_name"] in _SWEEP_MODEL_ORDER else 999
+        run_id_key = str(c.get("run_id") or "")
+        return (metric_key, -model_idx, run_id_key)  # mayor métrica mejor; menor model_idx mejor
+
+    return max(completed, key=_sort_key)
+
+
+def _run_model_sweep(sweep_id: str, req: "ModelSweepRequest") -> dict:
+    """
+    Ejecuta sweep determinístico sobre los modelos en req.models.
+
+    Reutiliza _run_training() por candidato (mismo flujo que /modelos/entrenar).
+    Devuelve payload del resumen para construir ModelSweepResponse.
+    """
+    t0 = time.perf_counter()
+    from ...models.utils.metrics_contract import primary_metric_for_family
+
+    # Contrato de métricas para esta family
+    primary_metric, pm_mode = primary_metric_for_family(str(req.family or ""), task_type="")
+
+    # Orden canónico de modelos (fijo para determinismo)
+    models_ordered = [m for m in _SWEEP_MODEL_ORDER if m in req.models]
+    # Añadir modelos no estándar al final (para extensibilidad futura)
+    models_ordered += [m for m in req.models if m not in _SWEEP_MODEL_ORDER]
+
+    # Construir request base compartido (mismos datos para todos los candidatos)
+    base_req = EntrenarRequest(
+        modelo="rbm_restringida",  # placeholder
+        dataset_id=req.dataset_id,
+        family=req.family,
+        data_source=req.data_source,
+        epochs=req.epochs,
+        data_plan=req.data_plan,
+        window_k=req.window_k,
+        replay_size=req.replay_size,
+        replay_strategy=req.replay_strategy,
+        warm_start_from=req.warm_start_from,
+        warm_start_run_id=req.warm_start_run_id,
+        hparams={**req.base_hparams, "seed": req.seed},
+        auto_prepare=req.auto_prepare,
+    )
+
+    # Selección de datos única (comparabilidad)
+    selected_ref = _prepare_selected_data(base_req, sweep_id)
+
+    candidates_out: list[dict] = []
+
+    for model_name in models_ordered[: int(req.max_candidates)]:
+        child_job_id = str(uuid.uuid4())
+
+        # Hparams = base + override por modelo
+        merged_hparams = {
+            **req.base_hparams,
+            "seed": req.seed,
+            **(req.hparams_overrides.get(model_name) or {}),
+        }
+
+        cand_req = base_req.model_copy(
+            update={
+                "modelo": model_name,
+                "hparams": merged_hparams,
+                "data_ref": str(selected_ref),
+                "auto_prepare": False,
+            }
+        )
+
+        # Normalización igual que /modelos/entrenar
+        resolved = _build_run_hparams(cand_req, child_job_id)
+        inferred_target_col = _infer_target_col(cand_req, resolved)
+
+        update_payload: dict = {
+            "hparams": merged_hparams,
+            "data_source": resolved.get("data_source"),
+            "target_mode": resolved.get("target_mode"),
+            "split_mode": resolved.get("split_mode"),
+            "val_ratio": resolved.get("val_ratio"),
+            "include_teacher_materia": resolved.get("include_teacher_materia"),
+            "teacher_materia_mode": resolved.get("teacher_materia_mode"),
+        }
+        if inferred_target_col is not None:
+            update_payload["target_col"] = inferred_target_col
+
+        model_fields = getattr(type(cand_req), "model_fields", None)
+        if isinstance(model_fields, dict):
+            update_payload = {k: v for k, v in update_payload.items() if k in model_fields}
+
+        cand_req_norm = cand_req.model_copy(update=update_payload)
+
+        # Estado hijo
+        _ESTADOS[child_job_id] = {
+            "job_id": child_job_id,
+            "job_type": "train",
+            "status": "running",
+            "progress": 0.0,
+            "metrics": {},
+            "history": [],
+            "run_id": None,
+            "error": None,
+        }
+
+        _run_training(child_job_id, cand_req_norm)
+
+        child = _ESTADOS.get(child_job_id) or {}
+        cand: dict = {
+            "model_name": model_name,
+            "run_id": child.get("run_id"),
+            "status": child.get("status", "failed"),
+            "primary_metric_value": None,
+            "metrics": None,
+            "error": None,
+        }
+
+        if child.get("status") == "completed" and child.get("run_id"):
+            from ...utils.runs_io import load_run_metrics as _lrm
+            metrics = _lrm(str(child["run_id"]))
+            cand["metrics"] = metrics
+            pmv = metrics.get("primary_metric_value")
+            if isinstance(pmv, (int, float)) and math.isfinite(float(pmv)):
+                cand["primary_metric_value"] = float(pmv)
+        else:
+            cand["status"] = "failed"
+            cand["error"] = child.get("error") or "Entrenamiento falló"
+
+        candidates_out.append(cand)
+
+    # Elegir best determinístico
+    best = _pick_best_deterministic(candidates_out, primary_metric=primary_metric, mode=pm_mode)
+
+    # Champion promotion
+    champion_promoted = False
+    champion_run_id: str | None = None
+
+    if req.auto_promote_champion and best and best.get("run_id"):
+        try:
+            from ...utils.runs_io import (
+                maybe_update_champion as _muc,
+                load_run_metrics as _lrm2,
+            )
+            best_metrics = best.get("metrics") or _lrm2(str(best["run_id"]))
+            result = _muc(
+                dataset_id=req.dataset_id,
+                model_name=str(best["model_name"]),
+                metrics=best_metrics,
+                source_run_id=str(best["run_id"]),
+                family=str(req.family),
+            )
+            if isinstance(result, dict) and result.get("promoted"):
+                champion_promoted = True
+                champion_run_id = str(best["run_id"])
+        except Exception:
+            logger.exception("No se pudo promover champion en sweep=%s", sweep_id)
+
+    elapsed = float(time.perf_counter() - t0)
+
+    return {
+        "sweep_id": sweep_id,
+        "status": "completed",
+        "dataset_id": req.dataset_id,
+        "family": str(req.family),
+        "primary_metric": primary_metric,
+        "primary_metric_mode": pm_mode,
+        "candidates": candidates_out,
+        "best": best,
+        "champion_promoted": champion_promoted,
+        "champion_run_id": champion_run_id,
+        "n_completed": sum(1 for c in candidates_out if c["status"] == "completed"),
+        "n_failed": sum(1 for c in candidates_out if c["status"] == "failed"),
+        "elapsed_s": elapsed,
+    }
+
+
+@router.post(
+    "/sweep",
+    response_model=ModelSweepResponse,
+    summary="Sweep determinístico: entrena N modelos y elige el mejor",
+)
+def model_sweep(req: ModelSweepRequest) -> ModelSweepResponse:
+    """
+    Entrena los modelos en ``req.models`` con los mismos datos y elige el mejor
+    por ``primary_metric`` (contrato P2 Parte 4).
+
+    - Ejecución **síncrona** (espera hasta completar todos los candidatos).
+    - Tie-breaker determinístico: primary_metric_value → model_name → run_id.
+    - Si ``auto_promote_champion=true``, promueve el best a champion.
+
+    Usa el mismo flujo de entrenamiento que ``POST /modelos/entrenar``,
+    garantizando que las métricas sean comparables.
+    """
+    # Validar modelos
+    allowed = set(_STRATEGY_CLASSES.keys())
+    invalid = [m for m in req.models if m not in allowed]
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Modelos no soportados: {invalid}. Permitidos: {sorted(allowed)}",
+        )
+    if not req.dataset_id:
+        raise HTTPException(status_code=422, detail="dataset_id es requerido")
+    if not req.family:
+        raise HTTPException(status_code=422, detail="family es requerida")
+
+    sweep_id = str(uuid.uuid4())
+
+    result = _run_model_sweep(sweep_id, req)
+
+    # Persistir resumen
+    try:
+        summary_path = _write_sweep_summary(sweep_id, result)
+        result["summary_path"] = str(summary_path)
+    except Exception:
+        logger.exception("No se pudo persistir sweep summary sweep=%s", sweep_id)
+
+    # Construir response (mapear candidatos a schema)
+    candidates_resp = [
+        ModelSweepCandidateResult(
+            model_name=c["model_name"],
+            run_id=c.get("run_id"),
+            status=c.get("status", "failed"),
+            primary_metric_value=c.get("primary_metric_value"),
+            metrics=c.get("metrics"),
+            error=c.get("error"),
+        )
+        for c in result["candidates"]
+    ]
+
+    best_resp: ModelSweepCandidateResult | None = None
+    if result["best"]:
+        b = result["best"]
+        best_resp = ModelSweepCandidateResult(
+            model_name=b["model_name"],
+            run_id=b.get("run_id"),
+            status=b.get("status", "completed"),
+            primary_metric_value=b.get("primary_metric_value"),
+            metrics=b.get("metrics"),
+        )
+
+    return ModelSweepResponse(
+        sweep_id=sweep_id,
+        status="completed",
+        dataset_id=req.dataset_id,
+        family=str(req.family),
+        primary_metric=result["primary_metric"],
+        primary_metric_mode=result["primary_metric_mode"],
+        candidates=candidates_resp,
+        best=best_resp,
+        champion_promoted=result["champion_promoted"],
+        champion_run_id=result.get("champion_run_id"),
+        n_completed=result["n_completed"],
+        n_failed=result["n_failed"],
+        summary_path=result.get("summary_path"),
+        elapsed_s=result.get("elapsed_s"),
+    )
+
+
 @router.post("/entrenar/sweep", response_model=SweepEntrenarResponse)
 def entrenar_sweep(req: SweepEntrenarRequest, bg: BackgroundTasks) -> SweepEntrenarResponse:
     sweep_id = str(uuid.uuid4())
@@ -2208,6 +2622,7 @@ def estado(job_id: str):
         payload.setdefault("sweep_summary_path", st.get("sweep_summary_path"))
         payload.setdefault("sweep_best_overall", st.get("sweep_best_overall"))
         payload.setdefault("sweep_best_by_model", st.get("sweep_best_by_model"))
+        payload.setdefault("warm_start_trace", st.get("warm_start_trace"))
 
         # time_total_ms: preferido si existe, sino derivar de elapsed_s
         if payload.get("time_total_ms") is None and payload.get("elapsed_s") is not None:
@@ -2551,13 +2966,25 @@ def get_champion(
             model_name=model_name,
             family=family,
         )
-        # fallback por si tu load_current_champion no acepta family/model_name en alguna versión
+        # P2.3 FIX: El fallback anterior llamaba a ``load_dataset_champion``
+        # sin filtrar por ``model_name``, lo que provocaba que al pedir
+        # el champion de "rbm_general" se devolviera "rbm_restringida"
+        # (o viceversa).  Ahora solo se usa el fallback cuando el motivo
+        # del None NO es el filtro de model_name (i.e. cuando simplemente
+        # no existe champion), y se re-filtra tras obtener el resultado.
         if champ is None:
             champ = _call_with_accepted_kwargs(
                 load_dataset_champion,
                 dataset_id=str(ds),
                 family=family,
             )
+            # Re-filtrar por model_name: si el champion encontrado no coincide
+            # con el modelo solicitado, descartar para evitar cruce de modelos.
+            if champ is not None and model_name:
+                _champ_mn = (champ.get("model_name") or champ.get("model") or "").strip().lower()
+                _req_mn = model_name.strip().lower()
+                if _champ_mn and _champ_mn != _req_mn:
+                    champ = None
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

@@ -22,7 +22,7 @@ describe("services/datos", () => {
   beforeEach(() => {
     // Sobrescribimos fetch con un mock limpio en cada test
     // @ts-ignore
-    global.fetch = vi.fn();
+    globalThis.fetch = vi.fn();
   });
 
   it("upload envía FormData con periodo, dataset_id y overwrite", async () => {
@@ -34,7 +34,7 @@ describe("services/datos", () => {
     };
 
     // @ts-ignore
-    (global.fetch as any).mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       status: 201,
       statusText: "Created",
@@ -48,7 +48,7 @@ describe("services/datos", () => {
     expect(resp.ok).toBe(true);
     expect(resp.dataset_id).toBe("2020-1");
 
-    const call = (global.fetch as any).mock.calls[0];
+    const call = (globalThis.fetch as any).mock.calls[0];
     const url = call[0] as string;
     const init = call[1] as RequestInit;
 
@@ -70,7 +70,7 @@ describe("services/datos", () => {
     };
 
     // @ts-ignore
-    (global.fetch as any).mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -84,7 +84,7 @@ describe("services/datos", () => {
     expect(resp.ok).toBe(true);
     expect(Array.isArray(resp.sample)).toBe(true);
 
-    const call = (global.fetch as any).mock.calls[0];
+    const call = (globalThis.fetch as any).mock.calls[0];
     const url = call[0] as string;
     const init = call[1] as RequestInit;
 
@@ -117,7 +117,7 @@ describe("services/datos", () => {
     };
 
     // @ts-ignore
-    (global.fetch as any).mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -127,7 +127,7 @@ describe("services/datos", () => {
 
     const resp = await resumen({ dataset: "2024-2" });
 
-    const call = (global.fetch as any).mock.calls[0];
+    const call = (globalThis.fetch as any).mock.calls[0];
     const url = call[0] as string;
 
     expect(url).toContain("/datos/resumen?dataset=2024-2");
@@ -166,7 +166,7 @@ describe("services/datos", () => {
     };
 
     // @ts-ignore
-    (global.fetch as any).mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       status: 200,
       statusText: "OK",
@@ -176,7 +176,7 @@ describe("services/datos", () => {
 
     const resp = await sentimientos({ dataset: "2024-2" });
 
-    const call = (global.fetch as any).mock.calls[0];
+    const call = (globalThis.fetch as any).mock.calls[0];
     const url = call[0] as string;
 
     expect(url).toContain("/datos/sentimientos?dataset=2024-2");

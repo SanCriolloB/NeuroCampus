@@ -699,6 +699,14 @@ def load_run_details(run_id: str) -> Optional[Dict[str, Any]]:
 
 def _champion_score(metrics: Dict[str, Any]) -> Tuple[int, float]:
     """Retorna (tier, score). Mayor es mejor."""
+    # Si el run tiene contrato estandarizado (P2 Parte 4): usarlo directamente.
+    pm = metrics.get("primary_metric")
+    pm_mode = str(metrics.get("primary_metric_mode") or "min").lower()
+    pm_value = metrics.get("primary_metric_value")
+    if isinstance(pm, str) and pm and isinstance(pm_value, (int, float)):
+        score_val = float(pm_value) if pm_mode == "max" else -float(pm_value)
+        return (100, score_val)  # tier 100: contrato estandarizado, siempre gana a heurísticas
+
     task_type = str(metrics.get("task_type") or "").lower().strip()
 
     is_regression = (
@@ -757,27 +765,35 @@ def _ensure_champions_ds_dir(dataset_id: str, family: Optional[str] = None) -> P
 
 
 def _copy_run_artifacts_to_dir(run_dir: Path, target_dir: Path) -> None:
-    """Copia artifacts relevantes del run al directorio del champion."""
+    """Copia artifacts relevantes del run al directorio del champion.
+
+    Nota: los pesos reales viven en `run_dir/model/` (P2.x). Aquí copiamos:
+    - metadata root del run (metrics/history/config/job_meta/predictor/preprocess/model.bin)
+    - pesos de `run_dir/model/` (RBM: rbm.pt/head.pt/meta.json; DBM: dbm_state.npz/meta.json; + extras)
+    """
     ensure_dir(target_dir)
 
-    for fname in ("metrics.json", "history.json", "config.snapshot.yaml", "job_meta.json"):
-        src = run_dir / fname
-        if src.exists():
-            shutil.copy2(src, target_dir / fname)
-
-    # pesos / extras comunes
+    # 1) Root metadata del run
     for fname in (
-        "rbm.pt",
-        "head.pt",
-        "model.pt",
-        "weights.pt",
-        "vectorizer.json",
-        "encoder.json",
-        "meta.json",
+        "metrics.json",
+        "history.json",
+        "config.snapshot.yaml",
+        "job_meta.json",
+        "predictor.json",
+        "preprocess.json",
+        "model.bin",
     ):
         src = run_dir / fname
         if src.exists():
             shutil.copy2(src, target_dir / fname)
+
+    # 2) Pesos y archivos dentro de run_dir/model/
+    model_src = run_dir / "model"
+    if model_src.is_dir():
+        for p in model_src.iterdir():
+            if p.is_file():
+                shutil.copy2(p, target_dir / p.name)
+
 
 
 def _ensure_source_run_id(champ: Dict[str, Any]) -> Dict[str, Any]:
@@ -893,7 +909,14 @@ def maybe_update_champion(
     source_run_id: Optional[str] = None,
     family: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Compara contra champion actual y actualiza si mejora."""
+    """Compara contra champion actual y actualiza si mejora.
+
+    - Escribe SIEMPRE champion POR MODELO en:
+      artifacts/champions/<family>/<dataset>/<model>/champion.json
+    - Mantiene champion GLOBAL del dataset (ds_dir/champion.json) solo si:
+      (a) este run es el mejor de su modelo y
+      (b) supera el score del champion global actual
+    """
 
     req = _extract_req(metrics)
     fam = (family or metrics.get("family") or req.get("family"))
@@ -902,26 +925,35 @@ def maybe_update_champion(
     ds_dir = _ensure_champions_ds_dir(dataset_id, family=fam)
     model_dir = ensure_dir(ds_dir / _slug(model_name))
 
-    current = load_dataset_champion(dataset_id, family=fam)
-    old_score = _champion_score((current or {}).get("metrics") or {}) if current else (-1, float("-inf"))
+    # source_run_id obligatorio en payload: inferir si no viene
+    if not source_run_id:
+        source_run_id = str(metrics.get("run_id") or metrics.get("source_run_id") or "")
+
     new_score = _champion_score(metrics)
 
-    promoted = (current is None) or (new_score > old_score)
+    # ----------------------------
+    # 1) Champion POR MODELO
+    # ----------------------------
+    model_champ_path = model_dir / "champion.json"
+    current_model = _try_read_json(model_champ_path)
+    old_model_score = (
+        _champion_score((current_model or {}).get("metrics") or {})
+        if current_model
+        else (-1, float("-inf"))
+    )
+    promoted_model = (current_model is None) or (new_score > old_model_score)
 
-    if promoted:
-        # snapshot mínimo
+    if promoted_model:
+        # snapshot mínimo del modelo
         _write_json(model_dir / "metrics.json", metrics)
 
+        # copiar artifacts del run al directorio del modelo champion
         if source_run_id:
             run_dir = (RUNS_DIR / str(source_run_id)).resolve()
             if run_dir.exists():
                 _copy_run_artifacts_to_dir(run_dir, model_dir)
 
-        if not source_run_id:
-            # Para mantener contrato (source_run_id obligatorio), en este flujo lo inferimos desde metrics.
-            source_run_id = str(metrics.get("run_id") or metrics.get("source_run_id") or "")
-
-        champion_payload = _build_champion_payload(
+        payload_model = _build_champion_payload(
             dataset_id=str(dataset_id),
             family=str(fam or ""),
             model_name=str(model_name),
@@ -930,33 +962,81 @@ def maybe_update_champion(
             ds_dir=ds_dir,
             model_dir=model_dir,
         )
-        _write_json(ds_dir / "champion.json", champion_payload)
+        _write_json(model_champ_path, payload_model)
+
+    # ----------------------------
+    # 2) Champion GLOBAL (dataset)
+    #    Solo si el run es campeón de su modelo y mejora el global
+    # ----------------------------
+    current_ds = load_dataset_champion(dataset_id, family=fam)
+    old_ds_score = (
+        _champion_score((current_ds or {}).get("metrics") or {})
+        if current_ds
+        else (-1, float("-inf"))
+    )
+
+    promoted_ds = bool(promoted_model) and ((current_ds is None) or (new_score > old_ds_score))
+
+    if promoted_ds:
+        # Reusamos el payload del modelo si ya lo construimos, o lo reconstruimos
+        if promoted_model:
+            payload_ds = payload_model
+        else:
+            payload_ds = _build_champion_payload(
+                dataset_id=str(dataset_id),
+                family=str(fam or ""),
+                model_name=str(model_name),
+                source_run_id=str(source_run_id),
+                metrics=metrics,
+                ds_dir=ds_dir,
+                model_dir=model_dir,
+            )
+
+        _write_json(ds_dir / "champion.json", payload_ds)
 
         # mirror legacy best-effort
         try:
             legacy_ds_dir = _ensure_champions_ds_dir(dataset_id, family=None)
             legacy_model_dir = ensure_dir(legacy_ds_dir / _slug(model_name))
+
             _write_json(legacy_model_dir / "metrics.json", metrics)
             if source_run_id:
                 run_dir = (RUNS_DIR / str(source_run_id)).resolve()
                 if run_dir.exists():
                     _copy_run_artifacts_to_dir(run_dir, legacy_model_dir)
-            payload_legacy = dict(champion_payload)
+
+            payload_legacy = dict(payload_ds)
             payload_legacy["path"] = str(legacy_model_dir.resolve())
             if isinstance(payload_legacy.get("paths"), dict):
                 payload_legacy["paths"] = dict(payload_legacy["paths"])
                 payload_legacy["paths"]["champion_ds_dir"] = _artifacts_ref(legacy_ds_dir)
                 payload_legacy["paths"]["champion_model_dir"] = _artifacts_ref(legacy_model_dir)
+
             _write_json(legacy_ds_dir / "champion.json", payload_legacy)
+
+            # También mirror del champion por modelo en legacy (opcional pero útil)
+            try:
+                payload_legacy_model = dict(payload_legacy)
+                payload_legacy_model["path"] = str(legacy_model_dir.resolve())
+                _write_json(legacy_model_dir / "champion.json", payload_legacy_model)
+            except Exception:
+                pass
+
         except Exception:
             pass
 
+    # Para compatibilidad con lo que ya consumía el job/UI:
+    # - "promoted" mantiene el sentido histórico (promoción del champion global del dataset)
     return {
-        "promoted": bool(promoted),
-        "old_score": old_score,
+        "promoted": bool(promoted_ds),
+        "promoted_model": bool(promoted_model),
+        "old_score": old_ds_score,
         "new_score": new_score,
+        "old_model_score": old_model_score,
         "champion_path": str((ds_dir / "champion.json").resolve()),
+        "model_champion_path": str((model_dir / "champion.json").resolve()),
     }
+
 
 
 def promote_run_to_champion(

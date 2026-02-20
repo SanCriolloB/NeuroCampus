@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
+from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
+from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols
 
 
 # ============================
@@ -381,36 +383,28 @@ class RBMGeneral:
         text_embed_prefix: str,
         max_calif: int,
     ) -> List[str]:
+        # P2.6: Delegar al selector unificado para trazabilidad y consistencia.
+        sel_result = _unified_pick_feature_cols(
+            df,
+            max_calif=max_calif,
+            include_text_probs=include_text_probs,
+            include_text_embeds=include_text_embeds,
+            text_embed_prefix=text_embed_prefix if text_embed_prefix != "x_text_" else None,
+            auto_detect_prefix=True,
+        )
+        # Guardar resultado para trazabilidad en save()
+        self._feature_selection_result_ = sel_result
+        # Actualizar prefijo si fue autodetectado
+        if sel_result.text_embed_prefix:
+            self.text_embed_prefix_ = sel_result.text_embed_prefix
+
+        # Agregar pregunta_N (compatibilidad con lógica original de rbm_general)
+        features = list(sel_result.feature_cols)
         cols = list(df.columns)
-        features: List[str] = []
-
-        # 1) numéricas calif_1..N (rellenadas más abajo si faltan)
-        for i in range(max_calif):
-            name = f"calif_{i+1}"
-            if name in cols:
-                features.append(name)
-
-        # 2) numéricas pregunta_1..N (si existen)
-        features += [c for c in cols if _matches_any(c, [r"^pregunta_\d+$"])]
-
-        # 3) probas p_neg/p_neu/p_pos
-        if include_text_probs:
-            for p in _PROB_COLS:
-                if p in cols:
-                    features.append(p)
-
-        # 4) embeddings de texto por prefijo
-        if include_text_embeds:
-            embed_cols = [c for c in cols if c.startswith(text_embed_prefix)]
-            if not embed_cols:
-                # Autodetección si el prefijo declarado no aparece
-                auto = _auto_pick_embed_prefix(cols)
-                if auto:
-                    self.text_embed_prefix_ = auto
-                    embed_cols = [c for c in cols if c.startswith(auto)]
-            if embed_cols:
-                embed_cols = sorted(embed_cols, key=lambda c: _suffix_index(c, self.text_embed_prefix_))
-                features += embed_cols
+        pregunta_cols = [c for c in cols if _matches_any(c, [r"^pregunta_\d+$"])]
+        for pc in pregunta_cols:
+            if pc not in features:
+                features.append(pc)
 
         # deduplicar preservando orden
         features = list(dict.fromkeys(features))
@@ -472,6 +466,11 @@ class RBMGeneral:
                 )
             else:
                 # Sin labels ni probas: devolvemos y=None y NO filtramos a vacío
+                self._periodos_last_xy_ = (
+                    df["periodo"].astype("string").to_numpy()
+                    if "periodo" in df.columns
+                    else None
+                )
                 return X, None, feat_cols
 
         # Filtro por aceptación:
@@ -503,6 +502,12 @@ class RBMGeneral:
             X = df[feat_cols].to_numpy(dtype=np.float32)
 
         y_np = None if len(y_norm) == 0 else np.array([_LABEL_MAP[s] for s in y_norm.tolist()], dtype=np.int64)
+        # Guardar periodo alineado con X/y (después de TODOS los filtros)
+        self._periodos_last_xy_ = (
+            df["periodo"].astype("string").to_numpy()
+            if "periodo" in df.columns
+            else None
+        )
         return X, y_np, feat_cols
 
     # --------------------------
@@ -596,13 +601,25 @@ class RBMGeneral:
 
     def _split_train_val_indices(
         self,
-        df: pd.DataFrame,
+        df: Optional[pd.DataFrame] = None,
         *,
+        n: Optional[int] = None,
         split_mode: str,
         val_ratio: float,
         seed: int,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        n = int(len(df))
+        """
+        Devuelve (train_idx, val_idx). Retrocompatible:
+        - Preferir df=... (permite split temporal por 'periodo')
+        - Si df es None, permite n=... y hace split aleatorio (no temporal)
+        """
+        if df is not None:
+            n = int(len(df))
+        elif n is not None:
+            n = int(n)
+        else:
+            raise TypeError("Se requiere df o n para _split_train_val_indices")
+
         if n < 2:
             return np.arange(n, dtype=np.int64), np.array([], dtype=np.int64)
 
@@ -612,11 +629,13 @@ class RBMGeneral:
         idx = np.arange(n, dtype=np.int64)
         sm = str(split_mode or "").lower()
 
-        if sm == "temporal" and ("periodo" in df.columns):
+        # Temporal solo si df existe y trae 'periodo'
+        if df is not None and sm == "temporal" and ("periodo" in df.columns):
             order = np.argsort(df["periodo"].apply(self._period_key).to_numpy())
             idx = idx[order]
             return idx[: n - n_val], idx[n - n_val :]
 
+        # Fallback aleatorio
         rng = np.random.default_rng(int(seed))
         rng.shuffle(idx)
         return idx[: n - n_val], idx[n - n_val :]
@@ -821,9 +840,53 @@ class RBMGeneral:
 
             self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
 
-            # limpiar slots de regresión
-            self.X_tr = self.y_tr = self.tid_tr = self.mid_tr = None
-            self.X_va = self.y_va = self.tid_va = self.mid_va = None
+            # split train/val para métricas de clasificación (ALINEADO con X_np filtrado)
+            split_mode = str(hparams.get("split_mode", "random")).lower()
+            val_ratio = float(hparams.get("val_ratio", 0.2))
+
+            n_rows = int(X_t.shape[0])  # <- tamaño real de X (ya filtrado por _prepare_xy)
+            periodos = getattr(self, "_periodos_last_xy_", None)
+
+            if y_np is not None and len(y_np) > 4 and n_rows == int(len(y_np)):
+                # Si pidieron temporal y tenemos periodos alineados, hacemos split temporal.
+                if split_mode == "temporal" and periodos is not None and len(periodos) == n_rows:
+                    df_split = pd.DataFrame({"periodo": periodos})
+                    tr_idx, va_idx = self._split_train_val_indices(
+                        df=df_split,
+                        split_mode="temporal",
+                        val_ratio=val_ratio,
+                        seed=self.seed,
+                    )
+                else:
+                    # Para no inventar temporal sin 'periodo', hacemos random si split_mode=temporal sin periodos.
+                    sm = "random" if split_mode == "temporal" else split_mode
+                    tr_idx, va_idx = self._split_train_val_indices(
+                        n=n_rows,
+                        split_mode=sm,
+                        val_ratio=val_ratio,
+                        seed=self.seed,
+                    )
+
+                # Guardas defensivas para evitar out-of-bounds silencioso
+                if (tr_idx.max(initial=-1) >= n_rows) or (va_idx.max(initial=-1) >= n_rows):
+                    raise RuntimeError(
+                        f"Split fuera de rango: n_rows={n_rows}, tr_max={tr_idx.max(initial=-1)}, va_max={va_idx.max(initial=-1)}"
+                    )
+
+                self.X_tr = X_t[tr_idx]
+                self.y_tr = torch.from_numpy(y_np[tr_idx]).to(self.device)
+                self.X_va = X_t[va_idx]
+                self.y_va = torch.from_numpy(y_np[va_idx]).to(self.device)
+                self.X = self.X_tr   # entrenamiento solo en train split
+                self.y = self.y_tr
+            else:
+                self.X_tr = X_t
+                self.y_tr = self.y
+                self.X_va = self.y_va = None
+
+            # limpiar slots de regresión (ids/pesos — no aplican a clasificación)
+            self.tid_tr = self.mid_tr = None
+            self.tid_va = self.mid_va = None
             self.w_tr = self.w_va = None
 
         self._epoch = 0
@@ -990,6 +1053,42 @@ class RBMGeneral:
 
             metrics["loss"] = metrics["recon_error"] + metrics["reg_loss"]
         else:
+            # --- Evaluación clasificación: accuracy/f1_macro en train y val ---
+            self.rbm.eval()
+            self.head.eval()
+            n_classes = 3 if not hasattr(self.head, "out_features") else int(getattr(self.head[-1] if hasattr(self.head, "__getitem__") else self.head, "out_features", 3))
+            labels_list = list(getattr(self, "labels", list(range(n_classes))))
+
+            def _cls_eval(Xb, yb):
+                with torch.no_grad():
+                    H = self.rbm.hidden_probs(Xb)
+                    logits = self.head(H)
+                    preds = int(logits.shape[-1]) and logits.argmax(dim=-1)
+                y_true_np = yb.detach().cpu().numpy().astype(int)
+                y_pred_np = preds.detach().cpu().numpy().astype(int)
+                return y_true_np, y_pred_np
+
+            y_tr_true, y_tr_pred = _cls_eval(self.X_tr, self.y_tr) if (self.X_tr is not None and self.y_tr is not None) else (None, None)
+            y_va_true, y_va_pred = _cls_eval(self.X_va, self.y_va) if (self.X_va is not None and self.y_va is not None) else (None, None)
+
+            if y_tr_true is not None:
+                metrics.update({
+                    "task_type": "classification",
+                    "labels": labels_list,
+                    "n_classes": n_classes,
+                    "n_train": int(len(y_tr_true)),
+                    "accuracy": float(_accuracy(y_tr_true, y_tr_pred)),
+                    "f1_macro": float(_f1_macro(y_tr_true, y_tr_pred, n_classes)),
+                })
+            if y_va_true is not None:
+                metrics.update({
+                    "n_val": int(len(y_va_true)),
+                    "val_accuracy": float(_accuracy(y_va_true, y_va_pred)),
+                    "val_f1_macro": float(_f1_macro(y_va_true, y_va_pred, n_classes)),
+                    "confusion_matrix": _confusion_matrix(y_va_true, y_va_pred, n_classes),
+                })
+            self.rbm.train()
+            self.head.train()
             metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
 
         return metrics
@@ -1088,6 +1187,10 @@ class RBMGeneral:
             "task_type": str(getattr(self, "task_type", "classification")).lower(),
             "target_col": getattr(self, "target_col_", None),
         }
+        # P2.6: Trazabilidad de features de texto
+        _fsr = getattr(self, "_feature_selection_result_", None)
+        if _fsr is not None:
+            meta.update(_fsr.traceability_dict())
         if meta["task_type"] == "regression":
             meta.update({
                 "target_scale": float(getattr(self, "target_scale_", 1.0) or 1.0),

@@ -25,6 +25,27 @@ interface ChampionSubTabProps {
   onUsePredictions: (runId: string) => void;
 }
 
+// ---------------------------------------------------------------------------
+// Deployability (Modelos ↔ Predictions)
+// ---------------------------------------------------------------------------
+// Regla de producto: Predictions consume el champion GLOBAL (dataset + family).
+// Para evitar romper inferencia, filtramos/promovemos sólo runs "deployable".
+const DEPLOYABLE_BY_FAMILY: Record<Family, Set<string>> = {
+  score_docente: new Set(['rbm_restringida']),
+  sentiment_desempeno: new Set(['rbm_general', 'rbm_restringida']),
+};
+
+const normalizeModelName = (name: string) => (name || '')
+  .toLowerCase()
+  .replace(/\s+/g, '_')
+  .trim();
+
+const isDeployableForPredictions = (modelName: string, family: Family) => {
+  const allowed = DEPLOYABLE_BY_FAMILY[family];
+  return allowed.has(normalizeModelName(modelName));
+};
+
+
 export function ChampionSubTab({
   family, datasetId, extraRuns, onNavigateToRun, onUsePredictions,
 }: ChampionSubTabProps) {
@@ -104,6 +125,25 @@ export function ChampionSubTab({
 
   const champion = remoteChampion ?? (MOCK_CHAMPIONS[champKey] as ChampionRecord | undefined);
 
+  // Fuente del champion para habilitar/inhabilitar acciones críticas.
+  // - "api": proviene del backend (artifacts reales).
+  // - "mock": fallback del prototipo (sin garantía de artifacts).
+  const championSource: "api" | "mock" | "none" = champion
+    ? (remoteChampion ? "api" : "mock")
+    : "none";
+
+  const predictionsDisableReason =
+    championSource !== "api"
+      ? "Este champion es un fallback del prototipo (sin artifacts reales). Activa el backend o promueve un run real para usar Predictions."
+      : champion?.run_id === "unknown"
+        ? "Champion legacy sin source_run_id. Re-promueve un run real para habilitar Predictions."
+        : "";
+
+  const canUsePredictions = Boolean(
+    championSource === "api" && champion?.run_id && champion.run_id !== "unknown"
+  );
+
+
   // Para mostrar badges y acciones, buscamos el run del champion en la lista combinada.
   const champRun = useMemo(() => {
     if (!champion) return undefined;
@@ -122,6 +162,18 @@ export function ChampionSubTab({
       });
   }, [family, datasetId, extraRuns, fc.metricMode, remoteRuns]);
 
+
+  // Candidates that are safe to promote as GLOBAL champion (consumido por Predictions).
+  const replaceCandidates = useMemo(() => completedRuns
+    .filter(r => isDeployableForPredictions(r.model_name, family)), [completedRuns, family]);
+
+  const allowedModelsText = useMemo(
+    () => Array.from(DEPLOYABLE_BY_FAMILY[family])
+      .sort()
+      .map(mn => mn.replace(/_/g, ' '))
+      .join(', '),
+    [family],
+  );
   const [showReplace, setShowReplace] = useState(false);
   const [replaceRunId, setReplaceRunId] = useState('');
 
@@ -129,43 +181,47 @@ export function ChampionSubTab({
     if (!replaceRunId) return;
 
     // Obtener run seleccionado para enviar contexto al backend.
-    const selected = completedRuns.find(r => r.run_id === replaceRunId);
+    const selected = replaceCandidates.find(r => r.run_id === replaceRunId);
+
+    if (!selected) {
+      alert(`Este run no es compatible con Predictions para la family "${family}". Modelos permitidos: ${allowedModelsText}.`);
+      return;
+    }
 
     // Mapear dataset UI -> dataset backend (periodo).
     const backendDatasetId = DATASETS.find(d => d.id === datasetId)?.period ?? datasetId;
 
     try {
-      if (selected) {
-        await modelosApi.promote({
-          dataset_id: backendDatasetId,
-          run_id: selected.run_id,
-          model_name: selected.model_name,
-          family: selected.family,
-          task_type: selected.task_type,
-          input_level: selected.input_level,
-          target_col: selected.target_col,
-          data_plan: (selected as any).data_plan ?? null,
-          data_source: (selected as any).data_source ?? null,
-        });
+      await modelosApi.promote({
+        dataset_id: backendDatasetId,
+        run_id: selected.run_id,
+        model_name: selected.model_name,
+        family: selected.family,
+        task_type: selected.task_type,
+        input_level: selected.input_level,
+        target_col: selected.target_col,
+        data_plan: (selected as any).data_plan ?? null,
+        data_source: (selected as any).data_source ?? null,
+      });
 
-        // Actualizar champion local (paridad visual + UX inmediata).
-        setRemoteChampion({
-          run_id: selected.run_id,
-          model_name: selected.model_name,
-          primary_metric_value: selected.primary_metric_value,
-          primary_metric: selected.primary_metric,
-          metric_mode: selected.metric_mode,
-          family: selected.family,
-          dataset_id: datasetId,
-          promoted_at: new Date().toISOString(),
-        });
-      }
-    } catch {
-      // Si el backend no está listo, mantenemos el comportamiento del prototipo.
+      // Actualizar champion local (paridad visual + UX inmediata).
+      setRemoteChampion({
+        run_id: selected.run_id,
+        model_name: selected.model_name,
+        primary_metric_value: selected.primary_metric_value,
+        primary_metric: selected.primary_metric,
+        metric_mode: selected.metric_mode,
+        family: selected.family,
+        dataset_id: datasetId,
+        promoted_at: new Date().toISOString(),
+      });
+
+      alert(`Champion reemplazado por: ${replaceRunId}`);
+      setShowReplace(false);
+    } catch (err: any) {
+      const msg = (err?.response?.data?.detail || err?.message || 'Error desconocido');
+      alert(`No se pudo reemplazar el champion. ${msg}`);
     }
-
-    alert(`Champion reemplazado por: ${replaceRunId}`);
-    setShowReplace(false);
   };
 
   return (
@@ -211,6 +267,15 @@ export function ChampionSubTab({
                 <BundleStatusBadge status={champRun.bundle_status} />
                 <WarmStartBadge warmed={champRun.warm_started} from={champRun.warm_start_from} result={champRun.warm_start_result} />
                 <TextFeaturesBadge count={champRun.n_feat_text} />
+                {isDeployableForPredictions(champRun.model_name, family) ? (
+                  <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30 text-xs">
+                    Compatible con Predictions
+                  </Badge>
+                ) : (
+                  <Badge className="bg-red-500/15 text-red-300 border-red-500/30 text-xs">
+                    No compatible con Predictions
+                  </Badge>
+                )}
               </div>
 
               {/* Actions */}
@@ -218,7 +283,9 @@ export function ChampionSubTab({
                 <Button
                   size="sm"
                   className="bg-cyan-600 hover:bg-cyan-700 gap-1 text-xs"
-                  onClick={() => onUsePredictions(champion.run_id)}
+                  onClick={() => { if (canUsePredictions) onUsePredictions(champion.run_id); }}
+                  disabled={!canUsePredictions}
+                  title={!canUsePredictions ? predictionsDisableReason : undefined}
                 >
                   <ExternalLink className="w-3 h-3" /> Usar Champion en Predictions
                 </Button>
@@ -239,6 +306,14 @@ export function ChampionSubTab({
                   <RefreshCw className="w-3 h-3" /> Reemplazar Champion
                 </Button>
               </div>
+
+              {!canUsePredictions && (
+                <div className="pt-2 flex items-start gap-2 text-xs text-gray-500">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 text-yellow-500/80" />
+                  <span>{predictionsDisableReason}</span>
+                </div>
+              )}
+
             </div>
           ) : (
             <div className="py-8 text-center">
@@ -251,10 +326,19 @@ export function ChampionSubTab({
       </motion.div>
 
       {/* Replace Champion */}
-      {showReplace && completedRuns.length > 0 && (
+      {showReplace && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
           <Card className="bg-[#1a1f2e] border-gray-800 p-5">
-            <h4 className="text-white mb-3">Seleccionar Nuevo Champion</h4>
+            <h4 className="text-white mb-1">Seleccionar Nuevo Champion</h4>
+            <p className="text-xs text-gray-500 mb-3">
+              Para no romper Predictions, el champion global solo puede ser: <span className="text-gray-300">{allowedModelsText}</span>.
+            </p>
+            {replaceCandidates.length === 0 && (
+              <div className="rounded-md border border-gray-800 bg-[#0f1419] p-3 text-sm text-gray-400">
+                No hay runs completados compatibles con Predictions para promover como champion global.
+              </div>
+            )}
+            {replaceCandidates.length > 0 && (
             <div className="flex items-end gap-3">
               <div className="flex-1">
                 <label className="block text-xs text-gray-400 mb-1">Run</label>
@@ -263,7 +347,7 @@ export function ChampionSubTab({
                     <SelectValue placeholder="Seleccionar run..." />
                   </SelectTrigger>
                   <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    {completedRuns.map(r => (
+                    {replaceCandidates.map(r => (
                       <SelectItem key={r.run_id} value={r.run_id}>
                         {r.run_id} — {r.model_name.replace(/_/g, ' ')} — {fc.primaryMetric}: {r.primary_metric_value.toFixed(4)}
                       </SelectItem>
@@ -280,6 +364,7 @@ export function ChampionSubTab({
                 <Award className="w-3 h-3" /> Confirmar
               </Button>
             </div>
+            )}
           </Card>
         </motion.div>
       )}
@@ -311,7 +396,16 @@ export function ChampionSubTab({
                     <td className="py-2 px-3">
                       <span className="text-cyan-400 font-mono text-xs">{run.run_id}</span>
                     </td>
-                    <td className="py-2 px-3 text-gray-300 text-xs capitalize">{run.model_name.replace(/_/g, ' ')}</td>
+                    <td className="py-2 px-3 text-gray-300 text-xs capitalize">
+                      <div className="flex items-center gap-2">
+                        <span>{run.model_name.replace(/_/g, ' ')}</span>
+                        {!isDeployableForPredictions(run.model_name, family) && (
+                          <Badge className="bg-red-500/10 text-red-300 border-red-500/30 text-[10px]">
+                            No deployable
+                          </Badge>
+                        )}
+                      </div>
+                    </td>
                     <td className="py-2 px-3 text-white">{run.primary_metric_value.toFixed(4)}</td>
                     <td className="py-2 px-3">
                       {isChamp && (

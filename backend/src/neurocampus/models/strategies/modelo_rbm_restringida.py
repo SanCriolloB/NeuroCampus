@@ -22,7 +22,7 @@ from torch import nn, Tensor
 from torch.nn import functional as F
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
 from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
-from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols
+from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols, auto_detect_embed_prefix as _auto_detect_embed_prefix
 
 __all__ = ["RBMRestringida", "ModeloRBMRestringida"]
 
@@ -862,6 +862,13 @@ class RBMRestringida:
         self.text_embed_prefix_ = str(hparams.get("text_embed_prefix", "x_text_"))
 
         df = self._load_df(data_ref)
+        # P2.6: Auto-enable de embeddings de texto si existen columnas tipo feat_t_*/x_text_*
+        detected_prefix = _auto_detect_embed_prefix(df.columns)
+        if detected_prefix and not include_text_embeds:
+            include_text_embeds = True
+            if not hparams.get("text_embed_prefix") and (str(self.text_embed_prefix_ or "").strip() in ("", "x_text_")):
+                self.text_embed_prefix_ = detected_prefix
+
         X_np, y_np, feat_cols = self._prepare_xy(
             df,
             accept_teacher=accept_teacher,

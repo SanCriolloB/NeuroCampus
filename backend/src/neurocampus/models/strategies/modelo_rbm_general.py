@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
 from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
-from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols
+from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols, auto_detect_embed_prefix as _auto_detect_embed_prefix
 
 
 # ============================
@@ -834,13 +834,20 @@ class RBMGeneral:
 
             df = self._load_df(data_ref) if data_ref else pd.DataFrame({f"calif_{i+1}": np.random.rand(256).astype(np.float32) * 5.0 for i in range(max_calif)})
 
+            # P2.6: Auto-enable de embeddings de texto si existen columnas tipo feat_t_*/x_text_*
+            detected_prefix = _auto_detect_embed_prefix(df.columns)
+            if detected_prefix and not include_text_embeds:
+                include_text_embeds = True
+                if not hparams.get("text_embed_prefix") and (str(self.text_embed_prefix_ or '').strip() in ('', 'x_text_')):
+                    self.text_embed_prefix_ = detected_prefix
+
             X_np, y_np, feat_cols = self._prepare_xy(
                 df,
                 accept_teacher=bool(hparams.get("accept_teacher", False)),
                 threshold=float(hparams.get("accept_threshold", 0.8)),
                 max_calif=max_calif,
                 include_text_probs=include_text_probs,
-                include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
+                include_text_embeds=include_text_embeds,
                 text_embed_prefix=self.text_embed_prefix_,
             )
 
@@ -1460,7 +1467,7 @@ class RBMGeneral:
                 threshold=float(get("accept_threshold", 0.8)),
                 max_calif=max_calif,
                 include_text_probs=include_text_probs,
-                include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
+                include_text_embeds=include_text_embeds,
                 text_embed_prefix=self.text_embed_prefix_,
             )
             self.feat_cols_ = list(feat_cols)

@@ -51,10 +51,12 @@ __all__ = [
 #: Se prueban en orden; el primero que coincida con alguna columna del DF gana.
 CANDIDATE_EMBED_PREFIXES: List[str] = [
     "x_text_",
-    "text_embed_",
-    "text_",
+    "text_emb_",
+    "emb_",
     "feat_text_",
     "feat_t_",
+    "mean_feat_t_",
+    "std_feat_t_",
 ]
 
 #: Columnas de metadatos que NO deben incluirse como features numéricas,
@@ -128,6 +130,20 @@ def _suffix_index(name: str, prefix: str) -> int:
     except (ValueError, IndexError):
         return 0
 
+_EMBED_SUFFIX_RE = re.compile(r"^\d+$")
+
+def _is_embed_column(name: str, prefix: str) -> bool:
+    """True si `name` representa una dimensión de embedding para `prefix`.
+
+    Se exige que el sufijo después del prefijo sea numérico (e.g. `feat_t_0`).
+    Esto evita falsos positivos en columnas como `text_coverage`.
+    """
+    if not name.startswith(prefix):
+        return False
+    suffix = name[len(prefix):]
+    return bool(_EMBED_SUFFIX_RE.match(suffix))
+
+
 
 def auto_detect_embed_prefix(columns: Sequence[str]) -> Optional[str]:
     """Detecta automáticamente el prefijo de columnas de embeddings de texto.
@@ -147,7 +163,7 @@ def auto_detect_embed_prefix(columns: Sequence[str]) -> Optional[str]:
     """
     cols_list = list(columns)
     for prefix in CANDIDATE_EMBED_PREFIXES:
-        if any(c.startswith(prefix) for c in cols_list):
+        if any(_is_embed_column(c, prefix) for c in cols_list):
             return prefix
     return None
 
@@ -324,7 +340,7 @@ def pick_feature_cols(
             # Default del proyecto si no se detectó nada
             resolved_prefix = "x_text_"
 
-        embed_cols = [c for c in cols if c.startswith(resolved_prefix)]
+        embed_cols = [c for c in cols if _is_embed_column(c, resolved_prefix)]
         if embed_cols:
             # Ordenar por sufijo numérico: x_text_0, x_text_1, ...
             embed_cols = sorted(

@@ -150,9 +150,9 @@ slug = _slug
 _DEPLOYABLE_DEFAULT: set[str] = {"rbm_general", "rbm_restringida"}
 
 # Actualmente, `score_docente` requiere un predictor de score implementado.
-# En este repo, sólo `rbm_restringida` lo soporta end-to-end.
+# Con P2.2 (predict_score_df en RBMGeneral), ambos RBM son deployable.
 _DEPLOYABLE_BY_FAMILY: dict[str, set[str]] = {
-    "score_docente": {"rbm_restringida"},
+    "score_docente": {"rbm_general", "rbm_restringida"},
     "sentiment_desempeno": {"rbm_general", "rbm_restringida"},
 }
 

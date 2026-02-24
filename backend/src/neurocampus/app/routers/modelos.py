@@ -137,6 +137,7 @@ from ...utils.runs_io import (  # noqa: E402
     load_run_details,
     load_current_champion,
     load_dataset_champion,
+    is_deployable_for_predictions,
 )
 
 
@@ -2346,22 +2347,41 @@ def _run_sweep_training(sweep_id: str, req: SweepEntrenarRequest) -> None:
         "n_completed": sum(1 for c in cand_state if c.get("status") == "completed"),
         "n_failed": sum(1 for c in cand_state if c.get("status") == "failed"),
         "best_overall": best_overall,
+        "best_deployable": None,
         "best_by_model": best_by_model,
         "candidates": cand_state,
     }
+
+    # Elegir best deployable (para promoción a champion global consumido por Predictions)
+    best_deployable = None
+    try:
+        deployable_completed = [
+            c
+            for c in cand_state
+            if c.get("status") == "completed"
+            and c.get("run_id")
+            and is_deployable_for_predictions(str(c.get("model_name")), str(req.family or ""))
+        ]
+        if deployable_completed:
+            best_deployable = max(deployable_completed, key=lambda x: tuple(x.get("score") or (-999, -1e30)))
+    except Exception:
+        best_deployable = None
+
+    summary_payload["best_deployable"] = best_deployable
 
     summary_path = _write_sweep_summary(sweep_id, summary_payload)
 
     # opcional: champion promotion
     try:
+        best_for_promotion = best_deployable or best_overall
         current = load_current_champion(dataset_id=req.dataset_id)
-        if current and best_overall and current.get("run_id"):
+        if current and best_for_promotion and current.get("run_id"):
             current_score = champion_score(load_run_metrics(str(current["run_id"])))
-            if tuple(best_overall["score"]) > tuple(current_score):
+            if tuple(best_for_promotion["score"]) > tuple(current_score):
                 promote_run_to_champion(
                     dataset_id=req.dataset_id,
-                    run_id=str(best_overall["run_id"]),
-                    model_name=str(best_overall["model_name"]),
+                    run_id=str(best_for_promotion["run_id"]),
+                    model_name=str(best_for_promotion["model_name"]),
                     family=str(req.family) if req.family else None,
                 )
     except Exception:
@@ -2745,8 +2765,15 @@ def _run_model_sweep(sweep_id: str, req: "ModelSweepRequest") -> dict:
 
         candidates_out.append(cand)
 
-    # Elegir best determinístico
-    best = _pick_best_deterministic(candidates_out, primary_metric=primary_metric, mode=pm_mode)
+    # Elegir best determinístico.
+    # Importante: el champion GLOBAL es consumido por Predictions, por lo que
+    # preferimos modelos "deployable" para esa family.
+    best_overall = _pick_best_deterministic(candidates_out, primary_metric=primary_metric, mode=pm_mode)
+    eligible = [
+        c for c in candidates_out
+        if is_deployable_for_predictions(str(c.get("model_name")), str(req.family or ""))
+    ]
+    best = _pick_best_deterministic(eligible, primary_metric=primary_metric, mode=pm_mode) or best_overall
 
     # Champion promotion
     champion_promoted = False
@@ -2783,6 +2810,7 @@ def _run_model_sweep(sweep_id: str, req: "ModelSweepRequest") -> dict:
         "primary_metric_mode": pm_mode,
         "candidates": candidates_out,
         "best": best,
+        "best_overall": best_overall,
         "champion_promoted": champion_promoted,
         "champion_run_id": champion_run_id,
         "n_completed": sum(1 for c in candidates_out if c["status"] == "completed"),

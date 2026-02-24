@@ -990,6 +990,10 @@ class ChampionInfo(BaseModel):
     # ✅ Nuevo: run fuente del champion (debe venir de champion.json o fallback a metrics.run_id)
     source_run_id: Optional[str] = None
 
+    # ✅ Nuevo: compat Modelos ↔ Predictions
+    # True si el champion global es cargable y usable por la pestaña Predictions.
+    deployable_for_predictions: Optional[bool] = None
+
     metrics: Optional[Dict[str, Any]] = None
     path: str
 

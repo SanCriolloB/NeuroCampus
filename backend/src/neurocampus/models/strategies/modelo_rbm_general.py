@@ -1115,6 +1115,79 @@ class RBMGeneral:
         X_np = df[self.feat_cols_].to_numpy(dtype=np.float32)
         return X_np
 
+    def predict_score_df(self, df: pd.DataFrame) -> np.ndarray:
+        """Predice score_total (0..50) para la ruta de regresión (score_docente).
+
+        Requiere que el modelo haya sido entrenado/cargado con ``task_type='regression'``.
+
+        Notes
+        -----
+        - Usa ``feat_cols_`` persistidas para construir X (rellena columnas faltantes con 0.0).
+        - Si el head usa embeddings de docente/materia (include_ids=True), espera columnas
+          ``teacher_id``/``materia_id`` (o las configuradas en meta). Si faltan, usa el token
+          desconocido (UNK) de forma defensiva.
+        """
+        if str(getattr(self, "task_type", "classification")).lower() != "regression":
+            raise ValueError("RBMGeneral.predict_score_df() requiere task_type='regression'")
+
+        assert self.rbm is not None and self.head is not None, "Modelo no cargado (rbm/head None)"
+        assert len(getattr(self, "feat_cols_", [])) > 0, "feat_cols_ vacío: no se puede inferir X"
+
+        dfc = df.copy()
+
+        # Features numéricas (misma convención que entrenamiento)
+        missing = [c for c in self.feat_cols_ if c not in dfc.columns]
+        for c in missing:
+            dfc[c] = 0.0
+
+        X_np = dfc[self.feat_cols_].to_numpy(dtype=np.float32)
+        Xt = torch.from_numpy(self.vec.transform(X_np).astype(np.float32, copy=False)).to(self.device)
+
+        tid_t: Optional[Tensor] = None
+        mid_t: Optional[Tensor] = None
+
+        if isinstance(self.head, _RegressionHead) and bool(getattr(self.head, "include_ids", False)):
+            tcol = str(getattr(self, "teacher_id_col_", "teacher_id"))
+            mcol = str(getattr(self, "materia_id_col_", "materia_id"))
+
+            # UNK = último índice del vocab (por cómo se construye en entrenamiento)
+            t_vocab = max(1, int(getattr(self, "teacher_vocab_size_", 1) or 1))
+            m_vocab = max(1, int(getattr(self, "materia_vocab_size_", 1) or 1))
+            t_unk = max(0, t_vocab - 1)
+            m_unk = max(0, m_vocab - 1)
+
+            if tcol not in dfc.columns:
+                tid = np.full((len(dfc),), t_unk, dtype=np.int64)
+            else:
+                tid = pd.to_numeric(dfc[tcol], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
+                tid = np.where((tid < 0) | (tid >= t_vocab), t_unk, tid)
+
+            if mcol not in dfc.columns:
+                mid = np.full((len(dfc),), m_unk, dtype=np.int64)
+            else:
+                mid = pd.to_numeric(dfc[mcol], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
+                mid = np.where((mid < 0) | (mid >= m_vocab), m_unk, mid)
+
+            tid_t = torch.from_numpy(tid).to(self.device)
+            mid_t = torch.from_numpy(mid).to(self.device)
+
+        self.rbm.eval(); self.head.eval()
+        with torch.no_grad():
+            H = self.rbm.hidden_probs(Xt)
+            if isinstance(self.head, _RegressionHead) and bool(getattr(self.head, "include_ids", False)):
+                pred = self.head(H, tid_t, mid_t)  # type: ignore[arg-type]
+            else:
+                pred = self.head(H)
+                if pred.ndim > 1:
+                    pred = pred.squeeze(-1)
+
+        pred_np = pred.detach().cpu().numpy().astype(np.float32).reshape(-1)
+        scale = float(getattr(self, "target_scale_", 1.0) or 1.0)
+        out = pred_np * scale
+        # Clip defensivo al rango de entrenamiento
+        hi = float(scale) if float(scale) > 0 else 1.0
+        return np.clip(out, 0.0, hi)
+
     def predict_proba_df(self, df: pd.DataFrame) -> np.ndarray:
         X_np = self._df_to_X(df.copy())
         self.rbm.eval(); self.head.eval()
@@ -1217,6 +1290,7 @@ class RBMGeneral:
         meta_path = os.path.join(in_dir, "meta.json")
         vec_path  = os.path.join(in_dir, "vectorizer.json")
 
+        meta: dict = {}
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as fh:
                 meta = json.load(fh)

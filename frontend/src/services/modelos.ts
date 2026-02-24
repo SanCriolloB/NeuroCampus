@@ -114,6 +114,30 @@ export type EstadoResp = {
   error?: string | null;
 };
 
+
+// ---------------------------------------------------------------------------
+// Datasets listing (Modelos)
+// ---------------------------------------------------------------------------
+
+export type DatasetInfo = {
+  dataset_id: string;
+  has_train_matrix: boolean;
+  has_pair_matrix: boolean;
+  has_labeled: boolean;
+  has_processed: boolean;
+  has_raw_dataset: boolean;
+  n_rows?: number | null;
+  n_pairs?: number | null;
+  created_at?: string | null;
+  has_champion_sentiment?: boolean;
+  has_champion_score?: boolean;
+};
+
+/** GET /modelos/datasets */
+export function listDatasets() {
+  return api.get<DatasetInfo[]>("/modelos/datasets").then((r) => r.data);
+}
+
 export interface RunSummary {
   /**
    * Resumen de un run de entrenamiento/auditoría.

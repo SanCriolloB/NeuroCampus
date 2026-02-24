@@ -63,6 +63,7 @@ from ..schemas.modelos import (
     ModelSweepRequest,
     ModelSweepCandidateResult,
     ModelSweepResponse,
+    DatasetInfo,
 )
 
 from ...models.templates.plantilla_entrenamiento import PlantillaEntrenamiento
@@ -72,6 +73,7 @@ from ...models.strategies.dbm_manual_strategy import DBMManualPlantillaStrategy
 from neurocampus.predictions.bundle import build_predictor_manifest, bundle_paths, write_json
 from ...utils.model_context import fill_context
 from ...utils.warm_start import resolve_warm_start_path
+from ...utils.paths import resolve_champion_json_candidates, first_existing
 from ...models.utils.metrics_contract import standardize_run_metrics, primary_metric_for_family
 
 
@@ -1683,6 +1685,142 @@ def _evaluate_model_metrics(
         return {}
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# Endpoints: datasets
+# ---------------------------------------------------------------------------
+
+_KNOWN_LABELED_SUFFIXES = (
+    "_beto",
+    "_teacher",
+    "_labeled",
+    "_beto_labeled",
+    "_teacher_labeled",
+    "_unificado_labeled",
+    "_unificado",
+)
+
+
+def _strip_known_suffix(stem: str) -> str:
+    s = str(stem)
+    for suf in _KNOWN_LABELED_SUFFIXES:
+        if s.endswith(suf) and len(s) > len(suf):
+            return s[: -len(suf)]
+    return s
+
+
+def _dataset_sort_key(ds: str) -> tuple:
+    y, t = _period_key(ds)
+    if (y, t) != (0, 0):
+        return (1, y, t, str(ds))
+    return (0, str(ds))
+
+
+def _list_dataset_ids_any() -> list[str]:
+    '''Lista dataset_id candidatos desde artifacts/ y data/.
+
+    - artifacts/features/<ds> (train_matrix/pair_matrix)
+    - data/labeled/<ds>_* (beto/teacher)
+    - data/processed/<ds>.parquet
+    - datasets/<ds>.parquet|csv
+    '''
+    ids: set[str] = set()
+
+    # 1) artifacts/features
+    feat_base = _abs_path("artifacts/features")
+    if feat_base.exists():
+        for p in feat_base.iterdir():
+            if p.is_dir():
+                ids.add(p.name)
+
+    # 2) data/labeled
+    labeled_dir = (BASE_DIR / "data" / "labeled").resolve()
+    if labeled_dir.exists():
+        for f in list(labeled_dir.glob("*.parquet")) + list(labeled_dir.glob("*.csv")):
+            ids.add(_strip_known_suffix(f.stem))
+
+    # 3) data/processed
+    processed_dir = (BASE_DIR / "data" / "processed").resolve()
+    if processed_dir.exists():
+        for f in list(processed_dir.glob("*.parquet")) + list(processed_dir.glob("*.csv")):
+            ids.add(f.stem)
+
+    # 4) datasets/
+    raw_dir = (BASE_DIR / "datasets").resolve()
+    if raw_dir.exists():
+        for f in list(raw_dir.glob("*.parquet")) + list(raw_dir.glob("*.csv")):
+            ids.add(f.stem)
+
+    return sorted([i for i in ids if str(i).strip()], key=_dataset_sort_key)
+
+
+@router.get(
+    "/datasets",
+    response_model=List[DatasetInfo],
+    summary="Lista datasets detectados para la pestaña Modelos",
+)
+def list_datasets() -> List[DatasetInfo]:
+    '''Retorna datasets disponibles para poblar el selector de Modelos.
+
+    Nota:
+    - Este endpoint NO crea artifacts.
+    - Solo detecta dataset_id desde el estado actual del filesystem.
+    '''
+    out: list[DatasetInfo] = []
+
+    for ds in _list_dataset_ids_any():
+        ds = str(ds)
+
+        feat_dir = _abs_path(f"artifacts/features/{ds}")
+        train_path = feat_dir / "train_matrix.parquet"
+        pair_path = feat_dir / "pair_matrix.parquet"
+        meta_path = feat_dir / "meta.json"
+        pair_meta_path = feat_dir / "pair_meta.json"
+
+        has_train = train_path.exists()
+        has_pair = pair_path.exists()
+
+        meta: dict = _read_json_if_exists(_relpath(meta_path)) if meta_path.exists() else {}
+        pair_meta: dict = _read_json_if_exists(_relpath(pair_meta_path)) if pair_meta_path.exists() else {}
+
+        # labeled
+        has_labeled = False
+        try:
+            lp = resolve_labeled_path(ds)
+            has_labeled = bool(lp and Path(lp).exists())
+        except Exception:
+            # fallback: intenta el patrón más común
+            has_labeled = (BASE_DIR / "data" / "labeled" / f"{ds}_beto.parquet").exists()
+
+        # processed / raw
+        has_processed = (BASE_DIR / "data" / "processed" / f"{ds}.parquet").exists() or (BASE_DIR / "data" / "processed" / f"{ds}.csv").exists()
+        has_raw = (BASE_DIR / "datasets" / f"{ds}.parquet").exists() or (BASE_DIR / "datasets" / f"{ds}.csv").exists()
+
+        # champion
+        has_champ_sent = first_existing(resolve_champion_json_candidates(dataset_id=ds, family="sentiment_desempeno")) is not None
+        has_champ_score = first_existing(resolve_champion_json_candidates(dataset_id=ds, family="score_docente")) is not None
+
+        created_at = pair_meta.get("created_at") or meta.get("created_at")
+
+        out.append(
+            DatasetInfo(
+                dataset_id=ds,
+                has_train_matrix=bool(has_train),
+                has_pair_matrix=bool(has_pair),
+                has_labeled=bool(has_labeled),
+                has_processed=bool(has_processed),
+                has_raw_dataset=bool(has_raw),
+                n_rows=int(meta.get("n_rows")) if meta.get("n_rows") is not None else None,
+                n_pairs=int(pair_meta.get("n_pairs")) if pair_meta.get("n_pairs") is not None else None,
+                created_at=str(created_at) if created_at else None,
+                has_champion_sentiment=bool(has_champ_sent),
+                has_champion_score=bool(has_champ_score),
+            )
+        )
+
+    return out
 # ---------------------------------------------------------------------------
 # Endpoints: readiness
 # ---------------------------------------------------------------------------

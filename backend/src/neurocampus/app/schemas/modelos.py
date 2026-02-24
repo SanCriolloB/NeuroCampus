@@ -1111,3 +1111,38 @@ class PromoteChampionRequest(BaseModel):
             return None
         s = str(v).strip()
         return s or None
+
+
+
+# ---------------------------------------------------------------------------
+# Listing: datasets (para pestaña Modelos)
+# ---------------------------------------------------------------------------
+
+class DatasetInfo(BaseModel):
+    '''Información mínima de un dataset_id para poblar la UI de Modelos.
+
+    Objetivo:
+    - Evitar desalineamiento UI-backend (p.ej. UI usa ds_2025_1)
+    - Permitir seleccionar IDs reales (ej. '2025-1' o 'evaluaciones_2025')
+      detectados desde artifacts/data.
+    '''
+
+    dataset_id: str
+
+    # Disponibilidad de artifacts
+    has_train_matrix: bool = False
+    has_pair_matrix: bool = False
+
+    # Disponibilidad de insumos previos (para preparar feature-pack)
+    has_labeled: bool = False
+    has_processed: bool = False
+    has_raw_dataset: bool = False
+
+    # Conteos (si están disponibles via meta.json / pair_meta.json)
+    n_rows: Optional[int] = None
+    n_pairs: Optional[int] = None
+    created_at: Optional[str] = None
+
+    # Champion por family (existencia, no necesariamente deployable)
+    has_champion_sentiment: bool = False
+    has_champion_score: bool = False

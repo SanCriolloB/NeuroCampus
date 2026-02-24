@@ -1,7 +1,7 @@
 // ============================================================
 // NeuroCampus — Global Model Context Header (always visible)
 // ============================================================
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Button } from '../ui/button';
@@ -31,8 +31,86 @@ export function ModelContextHeader({
   const [resolveSource, setResolveSource] = useState<ModelResolveSource>('champion');
   const [resolveRunId, setResolveRunId] = useState('');
   const [resolveError, setResolveError] = useState<string | null>(null);
+  const [backendDatasets, setBackendDatasets] = useState<Array<{
+    dataset_id: string;
+    n_rows?: number | null;
+    n_pairs?: number | null;
+    has_pair_matrix: boolean;
+    has_train_matrix: boolean;
+    has_champion_sentiment?: boolean;
+    has_champion_score?: boolean;
+  }> | null>(null);
+
 
   const fc = FAMILY_CONFIGS[family];
+
+  // ---------------------------------------------------------------------------
+  // Dataset listing (backend-first).
+  // - Evita desalineamiento UI vs backend (ds_2025_1 vs 2025-1, etc.).
+  // - Si el backend no está disponible, mantenemos el prototipo (DATASETS).
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDatasets() {
+      try {
+        const list = await modelosApi.listDatasets();
+        if (cancelled) return;
+
+        const normalized = (list || []).map((d) => ({
+          dataset_id: d.dataset_id,
+          n_rows: d.n_rows ?? null,
+          n_pairs: d.n_pairs ?? null,
+          has_pair_matrix: Boolean(d.has_pair_matrix),
+          has_train_matrix: Boolean(d.has_train_matrix),
+          has_champion_sentiment: (d as any).has_champion_sentiment,
+          has_champion_score: (d as any).has_champion_score,
+        }));
+
+        setBackendDatasets(normalized);
+
+        // Si el dataset seleccionado no existe en backend, selecciona el primero disponible.
+        if (normalized.length > 0) {
+          const values = new Set(normalized.map((x) => x.dataset_id));
+          if (!values.has(datasetId)) {
+            onDatasetChange(normalized[0].dataset_id);
+          }
+        }
+      } catch {
+        // Backend offline/incompleto: nos quedamos con DATASETS (prototipo).
+        if (!cancelled) setBackendDatasets(null);
+      }
+    }
+
+    void loadDatasets();
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId, onDatasetChange]);
+
+  const datasetOptions = useMemo(() => {
+    if (backendDatasets && backendDatasets.length > 0) {
+      return backendDatasets.map((d) => {
+        const bits: string[] = [];
+        if (typeof d.n_rows === 'number') bits.push(`${d.n_rows} filas`);
+        if (typeof d.n_pairs === 'number') bits.push(`${d.n_pairs} pares`);
+        if (d.has_train_matrix) bits.push('train_matrix');
+        if (d.has_pair_matrix) bits.push('pair_matrix');
+        return {
+          value: d.dataset_id,
+          label: d.dataset_id,
+          detail: bits.length ? bits.join(' · ') : null,
+        };
+      });
+    }
+
+    return DATASETS.map((d) => ({
+      value: d.id,
+      label: `${d.label} (${d.rows} filas)`,
+      detail: d.period,
+    }));
+  }, [backendDatasets]);
 
   /**
    * Resuelve el "modelo activo" para inferencia.
@@ -141,8 +219,10 @@ export function ModelContextHeader({
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="bg-[#1a1f2e] border-gray-700">
-              {DATASETS.map(d => (
-                <SelectItem key={d.id} value={d.id}>{d.label} ({d.rows} rows)</SelectItem>
+              {datasetOptions.map((d) => (
+                <SelectItem key={d.value} value={d.value}>
+                  {d.label}{d.detail ? ` — ${d.detail}` : ''}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>

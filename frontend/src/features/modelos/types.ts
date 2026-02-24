@@ -371,3 +371,24 @@ export type {
   SweepResult,
   DiagnosticCheck,
 } from "@/components/models/mockData";
+
+
+// =============================================================================
+// Datasets listing (`GET /modelos/datasets`)
+// =============================================================================
+
+export interface DatasetInfoDto {
+  dataset_id: string;
+  has_train_matrix: boolean;
+  has_pair_matrix: boolean;
+  has_labeled: boolean;
+  has_processed: boolean;
+  has_raw_dataset: boolean;
+
+  n_rows?: number | null;
+  n_pairs?: number | null;
+  created_at?: string | null;
+
+  has_champion_sentiment?: boolean;
+  has_champion_score?: boolean;
+}

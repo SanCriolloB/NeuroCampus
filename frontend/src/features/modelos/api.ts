@@ -24,6 +24,7 @@ import {
   type EstadoResponseDto,
   type ModelSweepRequestDto,
   type ReadinessResponseDto,
+  type DatasetInfoDto,
   type RunDetailsDto,
   type RunSummaryDto,
   type PromoteChampionRequestDto,
@@ -93,6 +94,12 @@ export const modelosApi = {
     return (await modelosService.getReadiness({ dataset_id: datasetId })) as unknown as ReadinessResponseDto;
   },
 
+
+
+  /** Lista datasets detectados (para selector). */
+  async listDatasets(): Promise<DatasetInfoDto[]> {
+    return (await modelosService.listDatasets()) as unknown as DatasetInfoDto[];
+  },
   /**
    * Lista runs como `RunRecord` (forma UI prototipo).
    *

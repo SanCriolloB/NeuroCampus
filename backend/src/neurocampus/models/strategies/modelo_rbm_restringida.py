@@ -647,8 +647,11 @@ class RBMRestringida:
 
             meta = json.loads(meta_path.read_text(encoding="utf-8")) or {}
             prev_task = str(meta.get("task_type") or "classification").lower()
-            if prev_task != "regression":
-                info["reason"] = "previous_task_not_regression"
+            cur_task = str(getattr(self, "task_type", "classification") or "classification").lower()
+            if prev_task != cur_task:
+                info["reason"] = "task_type_mismatch"
+                info["previous_task_type"] = prev_task
+                info["current_task_type"] = cur_task
                 return info
 
             prev_cols = meta.get("feat_cols") or meta.get("feat_cols_") or []
@@ -658,6 +661,17 @@ class RBMRestringida:
 
             rbm_ckpt = torch.load(str(rbm_path), map_location=self.device)
             head_ckpt = torch.load(str(head_path), map_location=self.device)
+
+            # Validar arquitectura
+            n_visible_prev = int(rbm_ckpt.get("n_visible", -1))
+            n_hidden_prev = int(rbm_ckpt.get("n_hidden", -1))
+            n_visible_cur = int(getattr(self.rbm.W, "shape", [0, 0])[0])
+            n_hidden_cur = int(getattr(self.rbm.W, "shape", [0, 0])[1])
+            if (n_visible_prev != n_visible_cur) or (n_hidden_prev != n_hidden_cur):
+                info["reason"] = "shape_mismatch"
+                info["previous_shape"] = [n_visible_prev, n_hidden_prev]
+                info["current_shape"] = [n_visible_cur, n_hidden_cur]
+                return info
 
             self.rbm.load_state_dict(rbm_ckpt["state_dict"], strict=True)
             self.head.load_state_dict(head_ckpt["state_dict"], strict=True)
@@ -950,6 +964,13 @@ class RBMRestringida:
 
         self._epoch = 0
 
+        # Warm-start también en clasificación (P2 Parte 2)
+        warm_path = hparams.get("warm_start_path")
+        if warm_path:
+            self._warm_start_info_ = self._try_warm_start(str(warm_path))
+        else:
+            self._warm_start_info_ = {"warm_start": "none"}
+
 
     # ---------- Mini-batches ----------
     def _iter_minibatches(self, X: Tensor, y: Optional[Tensor]):
@@ -1165,6 +1186,9 @@ class RBMRestringida:
                 })
             self.rbm.train()
             self.head.train()
+
+        if hasattr(self, "_warm_start_info_"):
+            metrics["warm_start"] = getattr(self, "_warm_start_info_", None)
 
         return metrics["recon_error"] + metrics["cls_loss"], metrics
 

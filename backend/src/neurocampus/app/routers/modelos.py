@@ -2011,14 +2011,30 @@ def _run_training(job_id: str, req: EntrenarRequest) -> None:
         final_metrics.setdefault("dataset_id", str(req_norm.dataset_id))
         final_metrics.setdefault("model_name", str(req_norm.modelo))
 
-        # Trazabilidad warm-start (siempre presente; False si no se usó)
-        final_metrics["warm_started"] = _ws_trace.get("warm_started", False)
+        # -----------------------------------------------------------------
+        # Warm-start: distinguir entre
+        # - "resuelto" (se encontró un model_dir base), y
+        # - "aplicado" (la estrategia efectivamente cargó pesos).
+        #
+        # Esto evita falsos positivos donde el path existe pero hay mismatch
+        # de tarea/columnas/arquitectura y el warm-start se omite.
+        # -----------------------------------------------------------------
+        final_metrics["warm_start_resolved"] = bool(_ws_path is not None)
+
+        # Copiar trazabilidad de resolución (para debugging/UI)
         if _ws_trace.get("warm_start_from"):
             final_metrics["warm_start_from"] = _ws_trace["warm_start_from"]
         if _ws_trace.get("warm_start_source_run_id"):
             final_metrics["warm_start_source_run_id"] = _ws_trace["warm_start_source_run_id"]
         if _ws_trace.get("warm_start_path"):
             final_metrics["warm_start_path"] = _ws_trace["warm_start_path"]
+
+        # Determinar si el warm-start se aplicó realmente (según estrategia)
+        ws_obj = final_metrics.get("warm_start")
+        ws_applied = False
+        if isinstance(ws_obj, dict):
+            ws_applied = str(ws_obj.get("warm_start") or "").lower() == "ok"
+        final_metrics["warm_started"] = bool(ws_applied)
 
         # 6) Guardar run en artifacts (fuente de verdad)
         req_snapshot = req_norm.model_dump()

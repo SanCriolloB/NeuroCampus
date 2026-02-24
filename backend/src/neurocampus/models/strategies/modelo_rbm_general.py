@@ -641,6 +641,13 @@ class RBMGeneral:
         return idx[: n - n_val], idx[n - n_val :]
 
     def _try_warm_start(self, warm_start_dir: str) -> Dict[str, Any]:
+        """Intenta cargar pesos desde un directorio ``model/`` previo.
+
+        Reglas:
+        - La tarea previa debe coincidir con la tarea actual (classification/regression).
+        - Deben coincidir las columnas de features (para evitar desalineaciones silenciosas).
+        - Debe coincidir la arquitectura (n_visible/n_hidden) o se rechaza.
+        """
         info: Dict[str, Any] = {"warm_start": "skipped", "warm_start_dir": str(warm_start_dir)}
         try:
             in_dir = Path(str(warm_start_dir)).expanduser().resolve()
@@ -653,17 +660,31 @@ class RBMGeneral:
 
             meta = json.loads(meta_path.read_text(encoding="utf-8")) or {}
             prev_task = str(meta.get("task_type") or "classification").lower()
-            if prev_task != "regression":
-                info["reason"] = "previous_task_not_regression"
+            cur_task = str(getattr(self, "task_type", "classification") or "classification").lower()
+            if prev_task != cur_task:
+                info["reason"] = "task_type_mismatch"
+                info["previous_task_type"] = prev_task
+                info["current_task_type"] = cur_task
                 return info
 
-            prev_cols = meta.get("feat_cols_") or []
-            if not isinstance(prev_cols, list) or list(prev_cols) != list(self.feat_cols_):
+            prev_cols = meta.get("feat_cols") or meta.get("feat_cols_") or []
+            if not isinstance(prev_cols, list) or list(prev_cols) != list(getattr(self, "feat_cols_", [])):
                 info["reason"] = "feature_cols_mismatch"
                 return info
 
             rbm_ckpt = torch.load(str(rbm_path), map_location=self.device)
             head_ckpt = torch.load(str(head_path), map_location=self.device)
+
+            # Validar arquitectura
+            n_visible_prev = int(rbm_ckpt.get("n_visible", -1))
+            n_hidden_prev = int(rbm_ckpt.get("n_hidden", -1))
+            n_visible_cur = int(getattr(self.rbm.W, "shape", [0, 0])[0])
+            n_hidden_cur = int(getattr(self.rbm.W, "shape", [0, 0])[1])
+            if (n_visible_prev != n_visible_cur) or (n_hidden_prev != n_hidden_cur):
+                info["reason"] = "shape_mismatch"
+                info["previous_shape"] = [n_visible_prev, n_hidden_prev]
+                info["current_shape"] = [n_visible_cur, n_hidden_cur]
+                return info
 
             self.rbm.load_state_dict(rbm_ckpt["state_dict"], strict=True)
             self.head.load_state_dict(head_ckpt["state_dict"], strict=True)
@@ -837,6 +858,15 @@ class RBMGeneral:
 
             self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
             self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+
+            # Warm-start también en clasificación (P2 Parte 2)
+            warm_dir = str(hparams.get("warm_start_path") or "")
+            self.warm_start_info_ = {"warm_start": "skipped", "warm_start_dir": warm_dir}
+            if warm_dir:
+                try:
+                    self.warm_start_info_ = self._try_warm_start(warm_dir)
+                except Exception:
+                    self.warm_start_info_ = {"warm_start": "skipped", "warm_start_dir": warm_dir, "reason": "exception"}
 
             self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
 
@@ -1089,6 +1119,10 @@ class RBMGeneral:
                 })
             self.rbm.train()
             self.head.train()
+
+            # Trazabilidad warm-start también en clasificación
+            if hasattr(self, "warm_start_info_") and isinstance(self.warm_start_info_, dict):
+                metrics["warm_start"] = dict(self.warm_start_info_)
             metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
 
         return metrics

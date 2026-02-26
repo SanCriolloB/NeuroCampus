@@ -41,6 +41,7 @@ from neurocampus.app.schemas.predicciones import (
     PredictRequest,
     PredictResolvedResponse,
     PredictionsPreviewResponse,
+    PredictionRunInfoResponse,
     TeacherInfoResponse,
 )
 from neurocampus.predictions.loader import (
@@ -75,6 +76,7 @@ from neurocampus.utils.score_postprocess import (
 )
 from neurocampus.utils.predictions_run_io import (
     create_pred_run_dir,
+    list_pred_runs,
     write_pred_meta,
 )
 from neurocampus.predictions.bundle import bundle_paths
@@ -154,11 +156,44 @@ def _get_cohorte_means(df: pd.DataFrame, materia_key: str) -> List[float]:
 
 
 def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
-    """Aplica contexto resuelto al manifest del predictor para eliminar nulls."""
+    """Aplica contexto resuelto al manifest del predictor para eliminar nulls.
+
+    En algunos runs legacy, ``predictor.json`` puede traer valores como
+    ``"unknown"`` o ``"null"`` en campos críticos (``task_type``, ``input_level``, ...).
+    Esos valores son *truthy* en Python, por lo que un chequeo simple
+    ``if not out.get(field)`` no los reemplaza.
+
+    Esta función aplica el contexto resuelto por
+    :func:`neurocampus.utils.model_context.fill_context` y considera explícitamente
+    ciertos literales como *ausentes*.
+
+    Notes
+    -----
+    - Mantener esta lógica aquí permite que tanto ``/predicciones/model-info``
+      como ``/predicciones/predict`` devuelvan metadata limpia para UI.
+    """
+    missing = {"", "none", "null", "unknown", "n/a"}
+
+    def _is_missing(v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, str):
+            return v.strip().lower() in missing
+        return False
+
     out = dict(predictor or {})
-    for field in ("task_type", "input_level", "family", "dataset_id", "model_name"):
-        if not out.get(field) and ctx.get(field):
+    for field in ("task_type", "input_level", "target_col", "family", "dataset_id", "model_name"):
+        if _is_missing(out.get(field)) and ctx.get(field):
             out[field] = ctx[field]
+
+    # Backfill en extra.* (útil para UI legacy que lee predictor.extra)
+    extra = out.get("extra") if isinstance(out.get("extra"), dict) else {}
+    for key in ("family", "dataset_id", "model_name", "data_source", "data_plan", "split_mode", "target_mode", "val_ratio"):
+        if _is_missing(extra.get(key)) and ctx.get(key) is not None:
+            extra[key] = ctx.get(key)
+    if extra:
+        out["extra"] = extra
+
     return out
 
 @router.get("/health", response_model=HealthResponse)
@@ -201,7 +236,64 @@ def list_datasets() -> List[DatasetInfoResponse]:
 
 
 @router.get(
+    "/runs",
+    response_model=List[PredictionRunInfoResponse],
+    summary="Lista runs batch persistidos de predicción para un dataset",
+)
+def list_runs(dataset_id: str) -> List[PredictionRunInfoResponse]:
+    """Lista runs persistidos para el bloque **Historial**.
+
+    Este endpoint lee ``meta.json`` de cada run bajo ``artifacts/predictions/``
+    y retorna información mínima para que el frontend pueda:
+
+    - abrir vista previa (``/predicciones/outputs/preview``)
+    - descargar el parquet (``/predicciones/outputs/file``)
+
+    Notes
+    -----
+    - Para runs antiguos cuyo ``meta.json`` no incluya ``predictions_uri``, se
+      intenta inferir el path estándar ``predictions.parquet``.
+    """
+    ds = str(dataset_id or "").strip()
+    if not ds:
+        raise HTTPException(status_code=422, detail="dataset_id es requerido")
+
+    metas = list_pred_runs(ds)
+    out: List[PredictionRunInfoResponse] = []
+
+    for meta in metas:
+        pred_run_id = str(meta.get("pred_run_id") or "")
+        predictions_uri = meta.get("predictions_uri")
+
+        # Compat: inferir predictions_uri cuando no está en meta.json
+        if (not predictions_uri) and pred_run_id:
+            candidate = artifacts_dir() / "predictions" / ds / _FAMILY / pred_run_id / "predictions.parquet"
+            if candidate.exists():
+                predictions_uri = rel_artifact_path(candidate)
+            else:
+                legacy = artifacts_dir() / "predictions" / ds / _FAMILY / pred_run_id / "predicciones.parquet"
+                if legacy.exists():
+                    predictions_uri = rel_artifact_path(legacy)
+
+        out.append(
+            PredictionRunInfoResponse(
+                pred_run_id=pred_run_id,
+                dataset_id=str(meta.get("dataset_id") or ds),
+                family=str(meta.get("family") or _FAMILY),
+                created_at=meta.get("created_at"),
+                n_pairs=int(meta.get("n_pairs") or 0),
+                champion_run_id=meta.get("champion_run_id"),
+                model_name=meta.get("model_name"),
+                predictions_uri=predictions_uri,
+            )
+        )
+
+    return out
+
+
+@router.get(
     "/teachers",
+
     response_model=List[TeacherInfoResponse],
     summary="Lista docentes únicos de un dataset",
 )
@@ -606,6 +698,7 @@ def _run_batch_job(job_id: str, dataset_id: str) -> None:
 
         bundle = load_predictor_by_champion(dataset_id=dataset_id, family=_FAMILY, use_cache=False)
         champion_run_id = str(bundle.run_id)
+        model_name = str(getattr(bundle, "predictor", {}).get("model_name") or "unknown")
         model = load_inference_model(bundle)
         st["champion_run_id"] = champion_run_id
         st["progress"] = 0.30
@@ -645,13 +738,17 @@ def _run_batch_job(job_id: str, dataset_id: str) -> None:
         pd.DataFrame(records).to_parquet(out_parquet, index=False)
 
         import datetime as dt
+
+        predictions_uri = rel_artifact_path(out_parquet)
         meta = {
             "pred_run_id": pred_run_id,
             "dataset_id": dataset_id,
             "champion_run_id": champion_run_id,
+            "model_name": model_name,
             "n_pairs": len(records),
             "created_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
             "family": _FAMILY,
+            "predictions_uri": predictions_uri,
         }
         write_pred_meta(out_dir, meta)
 
@@ -659,7 +756,7 @@ def _run_batch_job(job_id: str, dataset_id: str) -> None:
         st["progress"] = 1.0
         st["pred_run_id"] = pred_run_id
         st["n_pairs"] = len(records)
-        st["predictions_uri"] = rel_artifact_path(out_parquet)
+        st["predictions_uri"] = predictions_uri
 
     except Exception as e:
         logger.exception("Error en batch job %s", job_id)

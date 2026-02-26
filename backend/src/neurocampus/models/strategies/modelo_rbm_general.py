@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..utils.metrics import mae as _mae, rmse as _rmse, r2_score as _r2_score
 from ..utils.metrics import accuracy as _accuracy, f1_macro as _f1_macro, confusion_matrix as _confusion_matrix
-from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols
+from ..utils.feature_selectors import pick_feature_cols as _unified_pick_feature_cols, auto_detect_embed_prefix as _auto_detect_embed_prefix
 
 
 # ============================
@@ -641,6 +641,13 @@ class RBMGeneral:
         return idx[: n - n_val], idx[n - n_val :]
 
     def _try_warm_start(self, warm_start_dir: str) -> Dict[str, Any]:
+        """Intenta cargar pesos desde un directorio ``model/`` previo.
+
+        Reglas:
+        - La tarea previa debe coincidir con la tarea actual (classification/regression).
+        - Deben coincidir las columnas de features (para evitar desalineaciones silenciosas).
+        - Debe coincidir la arquitectura (n_visible/n_hidden) o se rechaza.
+        """
         info: Dict[str, Any] = {"warm_start": "skipped", "warm_start_dir": str(warm_start_dir)}
         try:
             in_dir = Path(str(warm_start_dir)).expanduser().resolve()
@@ -653,17 +660,31 @@ class RBMGeneral:
 
             meta = json.loads(meta_path.read_text(encoding="utf-8")) or {}
             prev_task = str(meta.get("task_type") or "classification").lower()
-            if prev_task != "regression":
-                info["reason"] = "previous_task_not_regression"
+            cur_task = str(getattr(self, "task_type", "classification") or "classification").lower()
+            if prev_task != cur_task:
+                info["reason"] = "task_type_mismatch"
+                info["previous_task_type"] = prev_task
+                info["current_task_type"] = cur_task
                 return info
 
-            prev_cols = meta.get("feat_cols_") or []
-            if not isinstance(prev_cols, list) or list(prev_cols) != list(self.feat_cols_):
+            prev_cols = meta.get("feat_cols") or meta.get("feat_cols_") or []
+            if not isinstance(prev_cols, list) or list(prev_cols) != list(getattr(self, "feat_cols_", [])):
                 info["reason"] = "feature_cols_mismatch"
                 return info
 
             rbm_ckpt = torch.load(str(rbm_path), map_location=self.device)
             head_ckpt = torch.load(str(head_path), map_location=self.device)
+
+            # Validar arquitectura
+            n_visible_prev = int(rbm_ckpt.get("n_visible", -1))
+            n_hidden_prev = int(rbm_ckpt.get("n_hidden", -1))
+            n_visible_cur = int(getattr(self.rbm.W, "shape", [0, 0])[0])
+            n_hidden_cur = int(getattr(self.rbm.W, "shape", [0, 0])[1])
+            if (n_visible_prev != n_visible_cur) or (n_hidden_prev != n_hidden_cur):
+                info["reason"] = "shape_mismatch"
+                info["previous_shape"] = [n_visible_prev, n_hidden_prev]
+                info["current_shape"] = [n_visible_cur, n_hidden_cur]
+                return info
 
             self.rbm.load_state_dict(rbm_ckpt["state_dict"], strict=True)
             self.head.load_state_dict(head_ckpt["state_dict"], strict=True)
@@ -813,13 +834,20 @@ class RBMGeneral:
 
             df = self._load_df(data_ref) if data_ref else pd.DataFrame({f"calif_{i+1}": np.random.rand(256).astype(np.float32) * 5.0 for i in range(max_calif)})
 
+            # P2.6: Auto-enable de embeddings de texto si existen columnas tipo feat_t_*/x_text_*
+            detected_prefix = _auto_detect_embed_prefix(df.columns)
+            if detected_prefix and not include_text_embeds:
+                include_text_embeds = True
+                if not hparams.get("text_embed_prefix") and (str(self.text_embed_prefix_ or '').strip() in ('', 'x_text_')):
+                    self.text_embed_prefix_ = detected_prefix
+
             X_np, y_np, feat_cols = self._prepare_xy(
                 df,
                 accept_teacher=bool(hparams.get("accept_teacher", False)),
                 threshold=float(hparams.get("accept_threshold", 0.8)),
                 max_calif=max_calif,
                 include_text_probs=include_text_probs,
-                include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
+                include_text_embeds=include_text_embeds,
                 text_embed_prefix=self.text_embed_prefix_,
             )
 
@@ -837,6 +865,15 @@ class RBMGeneral:
 
             self.head = nn.Sequential(nn.Linear(n_hidden, 3)).to(self.device)
             self.opt_head = torch.optim.Adam(self.head.parameters(), lr=self.lr_head, weight_decay=self.weight_decay)
+
+            # Warm-start también en clasificación (P2 Parte 2)
+            warm_dir = str(hparams.get("warm_start_path") or "")
+            self.warm_start_info_ = {"warm_start": "skipped", "warm_start_dir": warm_dir}
+            if warm_dir:
+                try:
+                    self.warm_start_info_ = self._try_warm_start(warm_dir)
+                except Exception:
+                    self.warm_start_info_ = {"warm_start": "skipped", "warm_start_dir": warm_dir, "reason": "exception"}
 
             self.y = torch.from_numpy(y_np).to(self.device) if y_np is not None else None
 
@@ -1089,6 +1126,10 @@ class RBMGeneral:
                 })
             self.rbm.train()
             self.head.train()
+
+            # Trazabilidad warm-start también en clasificación
+            if hasattr(self, "warm_start_info_") and isinstance(self.warm_start_info_, dict):
+                metrics["warm_start"] = dict(self.warm_start_info_)
             metrics["loss"] = metrics["recon_error"] + metrics["cls_loss"]
 
         return metrics
@@ -1114,6 +1155,79 @@ class RBMGeneral:
                 df[c] = 0.0
         X_np = df[self.feat_cols_].to_numpy(dtype=np.float32)
         return X_np
+
+    def predict_score_df(self, df: pd.DataFrame) -> np.ndarray:
+        """Predice score_total (0..50) para la ruta de regresión (score_docente).
+
+        Requiere que el modelo haya sido entrenado/cargado con ``task_type='regression'``.
+
+        Notes
+        -----
+        - Usa ``feat_cols_`` persistidas para construir X (rellena columnas faltantes con 0.0).
+        - Si el head usa embeddings de docente/materia (include_ids=True), espera columnas
+          ``teacher_id``/``materia_id`` (o las configuradas en meta). Si faltan, usa el token
+          desconocido (UNK) de forma defensiva.
+        """
+        if str(getattr(self, "task_type", "classification")).lower() != "regression":
+            raise ValueError("RBMGeneral.predict_score_df() requiere task_type='regression'")
+
+        assert self.rbm is not None and self.head is not None, "Modelo no cargado (rbm/head None)"
+        assert len(getattr(self, "feat_cols_", [])) > 0, "feat_cols_ vacío: no se puede inferir X"
+
+        dfc = df.copy()
+
+        # Features numéricas (misma convención que entrenamiento)
+        missing = [c for c in self.feat_cols_ if c not in dfc.columns]
+        for c in missing:
+            dfc[c] = 0.0
+
+        X_np = dfc[self.feat_cols_].to_numpy(dtype=np.float32)
+        Xt = torch.from_numpy(self.vec.transform(X_np).astype(np.float32, copy=False)).to(self.device)
+
+        tid_t: Optional[Tensor] = None
+        mid_t: Optional[Tensor] = None
+
+        if isinstance(self.head, _RegressionHead) and bool(getattr(self.head, "include_ids", False)):
+            tcol = str(getattr(self, "teacher_id_col_", "teacher_id"))
+            mcol = str(getattr(self, "materia_id_col_", "materia_id"))
+
+            # UNK = último índice del vocab (por cómo se construye en entrenamiento)
+            t_vocab = max(1, int(getattr(self, "teacher_vocab_size_", 1) or 1))
+            m_vocab = max(1, int(getattr(self, "materia_vocab_size_", 1) or 1))
+            t_unk = max(0, t_vocab - 1)
+            m_unk = max(0, m_vocab - 1)
+
+            if tcol not in dfc.columns:
+                tid = np.full((len(dfc),), t_unk, dtype=np.int64)
+            else:
+                tid = pd.to_numeric(dfc[tcol], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
+                tid = np.where((tid < 0) | (tid >= t_vocab), t_unk, tid)
+
+            if mcol not in dfc.columns:
+                mid = np.full((len(dfc),), m_unk, dtype=np.int64)
+            else:
+                mid = pd.to_numeric(dfc[mcol], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
+                mid = np.where((mid < 0) | (mid >= m_vocab), m_unk, mid)
+
+            tid_t = torch.from_numpy(tid).to(self.device)
+            mid_t = torch.from_numpy(mid).to(self.device)
+
+        self.rbm.eval(); self.head.eval()
+        with torch.no_grad():
+            H = self.rbm.hidden_probs(Xt)
+            if isinstance(self.head, _RegressionHead) and bool(getattr(self.head, "include_ids", False)):
+                pred = self.head(H, tid_t, mid_t)  # type: ignore[arg-type]
+            else:
+                pred = self.head(H)
+                if pred.ndim > 1:
+                    pred = pred.squeeze(-1)
+
+        pred_np = pred.detach().cpu().numpy().astype(np.float32).reshape(-1)
+        scale = float(getattr(self, "target_scale_", 1.0) or 1.0)
+        out = pred_np * scale
+        # Clip defensivo al rango de entrenamiento
+        hi = float(scale) if float(scale) > 0 else 1.0
+        return np.clip(out, 0.0, hi)
 
     def predict_proba_df(self, df: pd.DataFrame) -> np.ndarray:
         X_np = self._df_to_X(df.copy())
@@ -1217,6 +1331,7 @@ class RBMGeneral:
         meta_path = os.path.join(in_dir, "meta.json")
         vec_path  = os.path.join(in_dir, "vectorizer.json")
 
+        meta: dict = {}
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as fh:
                 meta = json.load(fh)
@@ -1352,7 +1467,7 @@ class RBMGeneral:
                 threshold=float(get("accept_threshold", 0.8)),
                 max_calif=max_calif,
                 include_text_probs=include_text_probs,
-                include_text_embeds=include_text_embeds or any(c.startswith(self.text_embed_prefix_) for c in df.columns),
+                include_text_embeds=include_text_embeds,
                 text_embed_prefix=self.text_embed_prefix_,
             )
             self.feat_cols_ = list(feat_cols)

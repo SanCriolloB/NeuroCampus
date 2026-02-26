@@ -172,6 +172,19 @@ def test_entrenar_estado_and_promote_contract(client, artifacts_dir: Path, prepa
     )
     assert r404.status_code == 404
 
+    # P2.1: promote debe aceptar payload mínimo (run_id [+family])
+    r404_min = client.post(
+        "/modelos/champion/promote",
+        json={"run_id": "does_not_exist_123", "family": "sentiment_desempeno"},
+    )
+    assert r404_min.status_code == 404
+
+    r200_min = client.post(
+        "/modelos/champion/promote",
+        json={"run_id": run_id, "family": "sentiment_desempeno"},
+    )
+    assert r200_min.status_code == 200, r200_min.text
+
     # 200 happy path
     r200 = client.post(
         "/modelos/champion/promote",

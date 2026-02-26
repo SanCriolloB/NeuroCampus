@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+import os
 from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Query
@@ -60,6 +61,11 @@ from neurocampus.dashboard.queries import (
     load_processed,
 )
 from neurocampus.historico.manifest import load_manifest, list_periodos_from_manifest
+
+from neurocampus.dashboard.predictions_kpis import (
+    count_predicciones_total,
+    resolve_dataset_ids_from_period_filters,
+)
 
 
 router = APIRouter()
@@ -192,7 +198,36 @@ def dashboard_kpis(
     """KPIs básicos del Dashboard basados en histórico processed."""
     df = load_processed()
     df_f = apply_filters(df, _filters_from_query(periodo, periodo_from, periodo_to, docente, asignatura, programa))
-    return DashboardKPIs(**compute_kpis(df_f))
+    base = compute_kpis(df_f)
+
+    # KPI adicional: predicciones persistidas en artifacts/predictions.
+    # Regla: artifacts está en la carpeta del repo (./artifacts), salvo override por NC_ARTIFACTS_DIR.
+    artifacts_dir = Path(os.getenv("NC_ARTIFACTS_DIR", str(BASE_DIR / "artifacts")))
+
+    # Dataset ids a considerar según periodo o rango.
+    available_periodos = list_periodos_from_manifest()
+    if not available_periodos:
+        # Fallback defensivo si el manifest está vacío/corrupto.
+        try:
+            available_periodos = sorted(df["periodo"].dropna().astype(str).unique().tolist())
+        except Exception:
+            available_periodos = []
+
+    dataset_ids = resolve_dataset_ids_from_period_filters(
+        available_periodos=available_periodos,
+        periodo=periodo,
+        periodo_from=periodo_from,
+        periodo_to=periodo_to,
+    )
+
+    pred = count_predicciones_total(
+        artifacts_dir=artifacts_dir,
+        dataset_ids=dataset_ids,
+        docente=docente,
+        asignatura=asignatura,
+    )
+
+    return DashboardKPIs(predicciones=pred, **base)
 
 @router.get("/series", response_model=DashboardSeries)
 def dashboard_series(
@@ -294,7 +329,11 @@ def dashboard_wordcloud(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     items = [
-        DashboardWordcloudItem(text=str(r.get("text")), value=int(r.get("value") or 0))
+        DashboardWordcloudItem(
+            text=str(r.get("text")),
+            value=int(r.get("value") or 0),
+            sentiment=str(r.get("sentiment") or "neutral"),
+        )
         for r in (rows or [])
     ]
     return DashboardWordcloud(items=items)

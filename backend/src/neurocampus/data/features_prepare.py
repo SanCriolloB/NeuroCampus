@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import pandas as pd
+import numpy as np
 from neurocampus.data.score_total import ensure_score_columns, load_sidecar_score_meta
 
 
@@ -97,6 +98,146 @@ def _apply_score_bins(df: pd.DataFrame, score_col: str, cfg: FeaturePackConfig) 
         out[f"score_q_{q}"] = (out["score_q"] == q).astype(int)
 
     return out
+
+# ---------------------------------------------------------------------------
+# Text features (TF-IDF + LSA)
+# ---------------------------------------------------------------------------
+
+def _detect_text_col(df: pd.DataFrame, override: Optional[str] = None) -> Optional[str]:
+    """Detecta una columna de texto libre (comentarios/opiniones) para features TF-IDF.
+
+    El builder de feature-pack NO asume un nombre fijo de columna.
+    Esta función aplica una heurística conservadora basada en nombres comunes.
+
+    Parameters
+    ----------
+    df:
+        DataFrame de entrada (labeled/processed).
+    override:
+        Si se especifica y existe en df, se usa esta columna.
+
+    Returns
+    -------
+    Optional[str]
+        Nombre de la columna de texto, si se encuentra.
+    """
+    if override and override in df.columns:
+        return str(override)
+
+    # Nombres típicos en datasets académicos / encuestas.
+    candidates = [
+        'comentario', 'comentarios', 'opinion', 'opiniones', 'texto', 'texto_libre',
+        'respuesta', 'respuestas', 'review', 'reviews', 'feedback', 'observacion',
+        'observaciones', 'descripcion', 'detalle', 'nota', 'notas',
+    ]
+    return _pick_first(df, candidates)
+
+
+def _build_tfidf_lsa_features(
+    *,
+    text: pd.Series,
+    n_components: int = 64,
+    min_df: int = 2,
+    max_features: int = 20000,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, Dict[str, Any]]:
+    """Construye features TF-IDF + LSA (TruncatedSVD) de forma determinística.
+
+    El resultado son columnas numéricas estables:
+
+    - feat_t_1 .. feat_t_K
+
+    Donde K puede ser menor que n_components si el dataset es pequeño.
+
+    Notes
+    -----
+    - Esta transformación se aplica SOLO cuando el caller activa explícitamente
+      ``text_feats_mode='tfidf_lsa'``.
+    - El código está diseñado para no romper el build: si no hay texto suficiente
+      o no se puede construir el vocabulario, retorna un DataFrame vacío y un
+      meta explicativo en lugar de lanzar excepción.
+
+    Parameters
+    ----------
+    text:
+        Serie con texto libre. Se normaliza con fillna('').
+    n_components:
+        Número de componentes LSA deseados (default: 64).
+    min_df:
+        Frecuencia mínima de documento para incluir un token (default: 2).
+    max_features:
+        Límite superior del vocabulario TF-IDF (default: 20000).
+    random_state:
+        Semilla para reproducibilidad del SVD (default: 42).
+
+    Returns
+    -------
+    (pd.DataFrame, Dict[str, Any])
+        DataFrame con columnas feat_t_* y meta con estadísticas del build.
+    """
+    meta: Dict[str, Any] = {
+        'mode': 'tfidf_lsa',
+        'enabled': True,
+        'n_components_requested': int(n_components),
+        'min_df': int(min_df),
+        'max_features': int(max_features),
+    }
+
+    # Import tardío: el módulo se usa en jobs/routers, pero no queremos
+    # hacer hard-fail al importar el paquete si sklearn no está disponible.
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.decomposition import TruncatedSVD
+    except Exception as e:  # pragma: no cover
+        meta['enabled'] = False
+        meta['error'] = f'sklearn no disponible: {e}'
+        return pd.DataFrame(), meta
+
+    raw = text.fillna('').astype(str)
+    has_text = raw.str.strip().ne('')
+    meta['n_rows'] = int(len(raw))
+    meta['text_coverage'] = float(has_text.mean()) if len(raw) else 0.0
+
+    # Si hay muy poco texto, evitamos lanzar excepción: no aporta señal útil.
+    if int(has_text.sum()) < 2:
+        meta['enabled'] = False
+        meta['reason'] = 'texto insuficiente para TF-IDF (se requieren >=2 filas con texto)'
+        return pd.DataFrame(), meta
+
+    try:
+        vec = TfidfVectorizer(
+            min_df=min_df,
+            max_features=max_features,
+            strip_accents='unicode',
+            lowercase=True,
+        )
+        X = vec.fit_transform(raw.tolist())
+        vocab_size = int(len(getattr(vec, 'vocabulary_', {}) or {}))
+        meta['vocab_size'] = vocab_size
+        meta['n_tfidf_features'] = int(X.shape[1])
+        if X.shape[1] < 2 or X.shape[0] < 2:
+            meta['enabled'] = False
+            meta['reason'] = 'matriz TF-IDF demasiado pequeña para SVD'
+            return pd.DataFrame(), meta
+
+        # Ajuste seguro: SVD requiere k < min(n_samples, n_features).
+        k_max = int(min(X.shape[0] - 1, X.shape[1] - 1))
+        k = int(min(max(1, n_components), max(1, k_max)))
+        svd = TruncatedSVD(n_components=k, random_state=random_state)
+        Z = svd.fit_transform(X)
+        meta['n_components'] = int(k)
+        try:
+            meta['explained_variance_ratio_sum'] = float(np.sum(svd.explained_variance_ratio_))
+        except Exception:
+            pass
+
+        cols = [f'feat_t_{i}' for i in range(1, k + 1)]
+        out = pd.DataFrame(Z.astype('float32'), columns=cols)
+        return out, meta
+    except Exception as e:
+        meta['enabled'] = False
+        meta['error'] = str(e)
+        return pd.DataFrame(), meta
 
 # ---------------------------------------------------------------------------
 # Pair-level features (Ruta 2: score_docente)
@@ -292,6 +433,12 @@ def prepare_feature_pack(
     input_uri: str,
     output_dir: str,
     cfg: FeaturePackConfig = FeaturePackConfig(),
+    text_feats_mode: str = 'none',
+    text_col: Optional[str] = None,
+    text_n_components: int = 64,
+    text_min_df: int = 2,
+    text_max_features: int = 20000,
+    text_random_state: int = 42,
 ) -> Dict[str, str]:
     """
     Genera feature-pack desde un parquet/csv etiquetado.
@@ -302,6 +449,11 @@ def prepare_feature_pack(
         input_uri: ruta relativa (ej. 'data/labeled/2024-2_beto.parquet' o 'historico/unificado_labeled.parquet')
         output_dir: ruta relativa/absoluta (ej. 'artifacts/features/2024-2')
         cfg: bins estables.
+        text_feats_mode: "none" (default) o "tfidf_lsa" para generar feat_t_* desde texto libre.
+        text_col: Nombre de la columna de texto (si None, se intenta detectar por heurística).
+        text_n_components: Dimensionalidad máxima de LSA (solo aplica a tfidf_lsa).
+        text_min_df: min_df de TF-IDF (solo aplica a tfidf_lsa).
+        text_max_features: límite de vocabulario TF-IDF (solo aplica a tfidf_lsa).
 
     Returns:
         dict con rutas relativas a artefactos generados.
@@ -352,6 +504,57 @@ def prepare_feature_pack(
     df["materia_id"] = df[materia_col].fillna("").astype(str).map(lambda x: materia_index.get(str(x).strip(), -1))
 
     df = _apply_score_bins(df, score_col=score_col, cfg=cfg)
+
+    # -------------------------------------------------------------------
+    # Text feats (opcional): TF-IDF + LSA
+    # -------------------------------------------------------------------
+    # Por diseño, este feature-pack NO genera embeddings automáticamente a
+    # menos que se active de forma explícita. Esto evita costos inesperados
+    # en pipelines existentes y mantiene compatibilidad con flujos antiguos.
+
+    mode = str(text_feats_mode or 'none').strip().lower()
+    if mode not in ('none', 'tfidf_lsa'):
+        raise ValueError(f"text_feats_mode inválido: {text_feats_mode!r}. Use 'none' o 'tfidf_lsa'.")
+
+    text_meta: Dict[str, Any] = {
+        'mode': mode,
+        'enabled': False,
+        'source_col': None,
+        'n_components_requested': int(text_n_components),
+        'min_df': int(text_min_df),
+        'max_features': int(text_max_features),
+    }
+
+    # Si ya existen feat_t_* (por ejemplo, porque vienen del parquet labeled),
+    # no regeneramos para evitar inconsistencias.
+    has_existing_text_feats = any(str(c).startswith('feat_t_') for c in df.columns)
+
+    if mode == 'tfidf_lsa' and (not has_existing_text_feats):
+        detected_text_col = _detect_text_col(df, override=text_col)
+        text_meta['source_col'] = detected_text_col
+
+        if detected_text_col is not None:
+            feats_df, meta = _build_tfidf_lsa_features(
+                text=df[detected_text_col],
+                n_components=int(text_n_components),
+                min_df=int(text_min_df),
+                max_features=int(text_max_features),
+                random_state=int(text_random_state),
+            )
+            # Unir meta (manteniendo claves estables).
+            text_meta.update({k: v for k, v in (meta or {}).items() if k not in ('mode',)})
+
+            if len(feats_df.columns) > 0:
+                # Añadir has_text para usarlo a nivel pair-matrix (coverage).
+                if 'has_text' not in df.columns:
+                    raw = df[detected_text_col].fillna('').astype(str)
+                    df['has_text'] = raw.str.strip().ne('').astype(int)
+
+                # Alineación de índices: ambos vienen del mismo df, por lo que
+                # el join por posición es seguro.
+                df = pd.concat([df.reset_index(drop=True), feats_df.reset_index(drop=True)], axis=1)
+                text_meta['enabled'] = True
+                text_meta['n_text_features'] = int(len(feats_df.columns))
 
     text_feat_cols = [c for c in df.columns if c.startswith("feat_t_")]
 
@@ -453,6 +656,7 @@ def prepare_feature_pack(
                 "n_rows": int(len(train)),
                 "columns": train.columns.tolist(),
                 "text_feat_cols": text_feat_cols,
+                "text": text_meta,
                 "sentiment_cols": sentiment_cols,
                 "one_hot_cols": one_hot_cols,
                 "score_debug": score_debug,

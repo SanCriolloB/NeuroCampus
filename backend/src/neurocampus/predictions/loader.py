@@ -89,7 +89,13 @@ def _read_json_safe(path: Path) -> Dict[str, Any]:
 
 
 def _is_placeholder_model_bin(path: Path) -> bool:
-    """Detecta placeholder P2.1. En P2.2+ se reemplaza por dump real."""
+    """Detecta placeholder P2.1.
+
+    En P2.2+ el entrenamiento puede persistir el modelo real en ``<run_dir>/model``
+    (p.ej. ``rbm.pt``, ``head.pt``, ``meta.json``) y dejar ``model.bin`` como
+    placeholder por compatibilidad. En ese caso el bundle *sí* puede estar listo
+    para inferencia aunque ``model.bin`` sea placeholder.
+    """
     try:
         head = path.read_bytes()[:64]
     except FileNotFoundError:
@@ -113,10 +119,19 @@ def _load_predictor_by_run_id_uncached(run_id: str) -> LoadedPredictorBundle:
     if not bp.model_bin.exists():
         raise PredictorNotFoundError(f"model.bin no existe para run_id={run_id}")
 
+    # En P2.2+ el modelo real puede estar en <run_dir>/model/ aunque model.bin sea placeholder.
+    # Solo consideramos "no listo" si model.bin es placeholder *y* no existe un model_dir válido.
     if _is_placeholder_model_bin(bp.model_bin):
-        raise PredictorNotReadyError(
-            "model.bin es placeholder (P2.1). Implementa dump real por estrategia antes de inferir."
-        )
+        model_dir = (run_dir / "model").resolve()
+        meta_ok = (model_dir / "meta.json").exists() if model_dir.is_dir() else False
+        rbm_ok = any((model_dir / n).exists() for n in ("rbm.pt", "head.pt")) if model_dir.is_dir() else False
+        dbm_ok = ((model_dir / "dbm_state.npz").exists() and (model_dir / "ridge_head.npz").exists()) if model_dir.is_dir() else False
+        weights_ok = bool(rbm_ok or dbm_ok)
+        if not (model_dir.exists() and model_dir.is_dir() and meta_ok and weights_ok):
+            raise PredictorNotReadyError(
+                "model.bin es placeholder (P2.1) y no hay dump real en <run_dir>/model. "
+                "Implementa dump real por estrategia antes de inferir."
+            )
 
     predictor = _read_json_safe(bp.predictor_json)
     preprocess = _read_json_safe(bp.preprocess_json)

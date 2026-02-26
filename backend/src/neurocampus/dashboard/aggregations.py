@@ -733,17 +733,16 @@ def _pick_wordcloud_source_column(df: pd.DataFrame) -> Optional[str]:
 def wordcloud_terms(filters: DashboardFilters, limit: int = 80) -> List[Dict[str, Any]]:
     """Construye wordcloud (top términos) desde histórico labeled.
 
-    Parameters
-    ----------
-    filters:
-        Filtros estándar del dashboard.
-    limit:
-        Cantidad máxima de tokens a retornar (ordenados por frecuencia desc).
+    Retorna items con:
+    - text: token
+    - value: frecuencia
+    - sentiment: sentimiento dominante del token (positive|neutral|negative)
 
-    Returns
-    -------
-    list[dict]
-        Lista de items: ``{"text": <token>, "value": <freq>}``.
+    El sentimiento se determina por mayoría de ocurrencias del token en filas
+    etiquetadas como neg/neu/pos. La fuente de sentimiento es:
+    - labels: primera columna existente en `_SENTIMENT_LABEL_CANDIDATES`
+    - o probas: `p_neg,p_neu,p_pos` si no hay labels
+    - fallback: neutral si no hay columnas de sentimiento
     """
     df = load_labeled()
     df = apply_filters(df, filters)
@@ -755,20 +754,84 @@ def wordcloud_terms(filters: DashboardFilters, limit: int = 80) -> List[Dict[str
     if not src:
         return []
 
-    counter: Counter[str] = Counter()
-    for raw in df[src].dropna().tolist():
+    # -----------------------------
+    # Resolver sentimiento por fila
+    # -----------------------------
+    label_col = _first_existing_col(df, _SENTIMENT_LABEL_CANDIDATES)
+    use_proba = label_col is None and all(c in df.columns for c in _SENTIMENT_PROBA_COLS)
+
+    # labels_row quedará como Series con valores en {neg,neu,pos}
+    if label_col is not None:
+        labels_row = df[label_col].map(_normalize_sentiment_label).fillna("neu")
+    elif use_proba:
+        # Elegimos argmax de probas; si fila no tiene probas válidas -> neu
+        probs = df[list(_SENTIMENT_PROBA_COLS)].apply(pd.to_numeric, errors="coerce")
+        valid = probs.notna().any(axis=1)
+        labels_row = pd.Series(["neu"] * len(df), index=df.index)
+        if valid.any():
+            idx = probs[valid].values.argmax(axis=1)
+            labels_row.loc[valid] = [_SENTIMENT_ALPHABET[int(i)] for i in idx.tolist()]
+    else:
+        labels_row = pd.Series(["neu"] * len(df), index=df.index)
+
+    # -----------------------------
+    # Contar tokens total + por sentimiento
+    # -----------------------------
+    counter_total: Counter[str] = Counter()
+    counter_by = {
+        "neg": Counter(),
+        "neu": Counter(),
+        "pos": Counter(),
+    }
+
+    # Iteración fila a fila para poder asociar tokens con sentimiento de la fila
+    for raw, lab in zip(df[src].tolist(), labels_row.tolist()):
+        lab_norm = lab if lab in counter_by else "neu"
+
+        if raw is None:
+            continue
+
         for tok in _iter_wordcloud_tokens(raw):
-            t = tok.strip().lower()
+            t = str(tok).strip().lower()
             if len(t) < 3:
                 continue
             if t in _STOPWORDS:
                 continue
             if not _TOKEN_RE.match(t):
                 continue
-            counter[t] += 1
 
-    if not counter:
+            counter_total[t] += 1
+            counter_by[lab_norm][t] += 1
+
+    if not counter_total:
         return []
 
-    items = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[: max(1, int(limit))]
-    return [{"text": k, "value": int(v)} for k, v in items]
+    # Top tokens por frecuencia total
+    items = sorted(counter_total.items(), key=lambda kv: (-kv[1], kv[0]))[: max(1, int(limit))]
+
+    # Map neg/neu/pos -> positive/neutral/negative (lo que usa el frontend)
+    label_to_sentiment = {"neg": "negative", "neu": "neutral", "pos": "positive"}
+
+    out: List[Dict[str, Any]] = []
+    for token, freq in items:
+        neg = int(counter_by["neg"].get(token, 0))
+        neu = int(counter_by["neu"].get(token, 0))
+        pos = int(counter_by["pos"].get(token, 0))
+
+        # Dominante: mayor conteo; empate -> neutral por estabilidad visual
+        m = max(neg, neu, pos)
+        if m == 0:
+            dom = "neu"
+        else:
+            # prioridad neutral en empate
+            dom = "neu" if neu == m else ("pos" if pos == m else "neg")
+
+        out.append(
+            {
+                "text": token,
+                "value": int(freq),
+                "sentiment": label_to_sentiment.get(dom, "neutral"),
+            }
+        )
+
+    return out

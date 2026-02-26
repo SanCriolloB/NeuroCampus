@@ -43,6 +43,12 @@ def ensure_feature_pack(
     input_uri: str,
     output_dir: Optional[str] = None,
     force: bool = False,
+    text_feats_mode: str = 'none',
+    text_col: Optional[str] = None,
+    text_n_components: int = 64,
+    text_min_df: int = 2,
+    text_max_features: int = 20000,
+    text_random_state: int = 42,
 ) -> Dict[str, str]:
     """
     Asegura que exista el feature pack ``train_matrix.parquet`` para un dataset.
@@ -114,5 +120,11 @@ def ensure_feature_pack(
         dataset_id=ds,
         input_uri=str(input_uri),
         output_dir=str(out_dir),
+        text_feats_mode=text_feats_mode,
+        text_col=text_col,
+        text_n_components=int(text_n_components),
+        text_min_df=int(text_min_df),
+        text_max_features=int(text_max_features),
+        text_random_state=int(text_random_state),
     )
     return {str(k): str(v) for k, v in (artifacts or {}).items()}

@@ -61,7 +61,12 @@ from neurocampus.services.predictions_service import (
     load_predictions_preview,
 )
 from neurocampus.utils.model_context import fill_context
-from neurocampus.utils.paths import artifacts_dir, rel_artifact_path
+from neurocampus.utils.paths import (
+    artifacts_dir,
+    rel_artifact_path,
+    resolve_champion_json_candidates,
+    first_existing,
+)
 from neurocampus.utils.score_postprocess import (
     build_comparison,
     build_radar,
@@ -115,12 +120,13 @@ def _list_pair_datasets() -> List[str]:
 
 
 def _champion_exists(dataset_id: str) -> bool:
-    """Verifica si hay un champion score_docente para el dataset."""
-    try:
-        load_predictor_by_champion(dataset_id=dataset_id, family=_FAMILY, use_cache=False)
-        return True
-    except Exception:
-        return False
+    """Verifica si existe champion.json para score_docente en el dataset.
+
+    Nota: aquí validamos *existencia* (layout nuevo + legacy). La disponibilidad
+    para inferencia se valida en los endpoints (p.ej. /individual o /batch/run).
+    """
+    candidates = resolve_champion_json_candidates(dataset_id=dataset_id, family=_FAMILY)
+    return first_existing(candidates) is not None
 
 
 def _get_calif_means(row: pd.Series) -> List[float]:
@@ -147,40 +153,6 @@ def _get_cohorte_means(df: pd.DataFrame, materia_key: str) -> List[float]:
         else:
             result.append(0.0)
     return result
-    # Campos top-level del manifest
-    if ctx.get("dataset_id") is not None:
-        out["dataset_id"] = str(ctx["dataset_id"])
-    if ctx.get("model_name") is not None:
-        out["model_name"] = str(ctx["model_name"])
-    if ctx.get("task_type") is not None:
-        out["task_type"] = str(ctx["task_type"])
-    if ctx.get("input_level") is not None:
-        out["input_level"] = str(ctx["input_level"])
-
-    # target_col debe evitar null cuando sea razonable
-    if ctx.get("target_col") is not None:
-        out["target_col"] = str(ctx["target_col"])
-    if out.get("target_col") is None:
-        out["target_col"] = "target"
-
-    # Campos extra (family y otros)
-    extra = out.get("extra") if isinstance(out.get("extra"), dict) else {}
-    # limpiar nulls heredados del predictor.json para no romper UI
-    extra = {k: v for k, v in dict(extra).items() if v is not None}
-    if ctx.get("family") is not None:
-        extra["family"] = str(ctx["family"])
-    if ctx.get("data_source") is not None:
-        extra["data_source"] = str(ctx["data_source"])
-    else:
-        extra["data_source"] = str(extra.get("data_source") or "feature_pack")
-
-    for k in ("data_plan", "split_mode", "val_ratio", "target_mode"):
-        v = ctx.get(k)
-        if v is not None:
-            extra[k] = v
-
-    if extra:
-        out["extra"] = extra
 
 
 def _apply_ctx_to_manifest(predictor: dict, ctx: dict) -> dict:
@@ -439,14 +411,98 @@ def predict_individual(req: IndividualPredictionRequest) -> IndividualPrediction
 
     mask = (df_pair["teacher_key"] == teacher_key) & (df_pair["materia_key"] == materia_key)
     row_df = df_pair[mask]
+
+    # Si el par no existe en pair_matrix, hacemos inferencia en modo "cold_pair".
+    # Reglas:
+    # - teacher_key y materia_key deben existir en sus índices (teacher_index/materia_index).
+    # - Se imputan features numéricas usando promedios (docente → materia → global).
     if len(row_df) == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Par teacher_key='{teacher_key}' / materia_key='{materia_key}' "
-                f"no encontrado en dataset_id={ds}."
-            ),
+        feat_dir = artifacts_dir() / "features" / ds
+        t_idx_path = feat_dir / "teacher_index.json"
+        m_idx_path = feat_dir / "materia_index.json"
+
+        if not t_idx_path.exists() or not m_idx_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Índices teacher_index/materia_index no encontrados para dataset_id={ds}. "
+                    "Ejecuta feature-pack/prepare primero."
+                ),
+            )
+
+        teacher_index: Dict[str, int] = json.loads(t_idx_path.read_text(encoding="utf-8"))
+        materia_index: Dict[str, int] = json.loads(m_idx_path.read_text(encoding="utf-8"))
+
+        if teacher_key not in teacher_index:
+            raise HTTPException(
+                status_code=404,
+                detail=f"teacher_key='{teacher_key}' no existe en dataset_id={ds}.",
+            )
+        if materia_key not in materia_index:
+            raise HTTPException(
+                status_code=404,
+                detail=f"materia_key='{materia_key}' no existe en dataset_id={ds}.",
+            )
+
+        teacher_id = int(teacher_index[teacher_key])
+        materia_id = int(materia_index[materia_key])
+
+        teacher_rows = (
+            df_pair[df_pair["teacher_key"] == teacher_key]
+            if "teacher_key" in df_pair.columns
+            else df_pair.iloc[0:0]
         )
+        materia_rows = (
+            df_pair[df_pair["materia_key"] == materia_key]
+            if "materia_key" in df_pair.columns
+            else df_pair.iloc[0:0]
+        )
+
+        global_means = df_pair.mean(numeric_only=True).to_dict()
+        teacher_means = teacher_rows.mean(numeric_only=True).to_dict() if len(teacher_rows) > 0 else {}
+        materia_means = materia_rows.mean(numeric_only=True).to_dict() if len(materia_rows) > 0 else {}
+
+        n_docente = (
+            int(teacher_rows["n_docente"].iloc[0])
+            if len(teacher_rows) > 0 and "n_docente" in teacher_rows.columns
+            else 0
+        )
+        n_materia = (
+            int(materia_rows["n_materia"].iloc[0])
+            if len(materia_rows) > 0 and "n_materia" in materia_rows.columns
+            else 0
+        )
+
+        row_dict: Dict[str, Any] = {}
+        for col in df_pair.columns:
+            if col == "teacher_key":
+                row_dict[col] = teacher_key
+            elif col == "materia_key":
+                row_dict[col] = materia_key
+            elif col == "teacher_id":
+                row_dict[col] = teacher_id
+            elif col == "materia_id":
+                row_dict[col] = materia_id
+            elif col == "n_par":
+                row_dict[col] = 0
+            elif col == "n_docente":
+                row_dict[col] = n_docente
+            elif col == "n_materia":
+                row_dict[col] = n_materia
+            elif pd.api.types.is_numeric_dtype(df_pair[col]):
+                val = teacher_means.get(col, np.nan)
+                if pd.isna(val):
+                    val = materia_means.get(col, np.nan)
+                if pd.isna(val):
+                    val = global_means.get(col, np.nan)
+                if pd.isna(val):
+                    val = 0.0
+                row_dict[col] = float(val)
+            else:
+                # Columnas no numéricas (si existieran) se dejan vacías.
+                row_dict[col] = None
+
+        row_df = pd.DataFrame([row_dict], columns=df_pair.columns)
 
     row = row_df.iloc[0]
 
@@ -581,11 +637,14 @@ def batch_run(req: BatchRunRequest, bg: BackgroundTasks) -> BatchJobResponse:
     pair_path = artifacts_dir() / "features" / ds / "pair_matrix.parquet"
     if not pair_path.exists():
         raise HTTPException(status_code=404, detail=f"pair_matrix.parquet no existe para dataset_id={ds}.")
-    if not _champion_exists(ds):
-        raise HTTPException(
-            status_code=404,
-            detail=f"No hay champion score_docente para dataset_id={ds}.",
-        )
+
+    # Validar champion y readiness antes de crear job.
+    try:
+        _ = load_predictor_by_champion(dataset_id=ds, family=_FAMILY, use_cache=False)
+    except ChampionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PredictorNotReadyError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     job_id = str(uuid.uuid4())
     _PRED_ESTADOS[job_id] = {

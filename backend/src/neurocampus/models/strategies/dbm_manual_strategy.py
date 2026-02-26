@@ -287,8 +287,49 @@ class DBMManualPlantillaStrategy:
                 encoding="utf-8",
             )
 
+
+        # 3.5) Para regresión: persistir head supervisado (ridge) para inferencia en Predictions
+        #      El head se entrena sobre embeddings latentes del DBM y se guarda como:
+        #      - ridge_head.npz: w (bias + pesos) y l2.
+        if str(getattr(self, "task_type_", "")).lower() == "regression":
+            out_head = out_path / "ridge_head.npz"
+            if self.X_tr is None or self.y_tr is None:
+                raise RuntimeError(
+                    "DBMManualPlantillaStrategy.save: task_type=regression pero no hay X_tr/y_tr para persistir ridge_head.npz"
+                )
+
+            # Latentes (misma lógica que en métricas)
+            try:
+                Ztr = self.model.transform(self.X_tr)  # type: ignore[union-attr]
+                Ztr = np.asarray(Ztr, dtype=np.float32)
+            except Exception:
+                H1 = self.model.rbm_v_h1.transform(self.X_tr)  # type: ignore[union-attr]
+                try:
+                    Z2 = self.model.rbm_h1_h2.transform(H1)  # type: ignore[union-attr]
+                    Ztr = np.asarray(Z2, dtype=np.float32)
+                except Exception:
+                    Ztr = np.asarray(H1, dtype=np.float32)
+
+            # Ridge cerrado: (A^T A + l2 I)w = A^T y
+            l2 = float(getattr(self, "ridge_l2_", 1e-3) or 1e-3)
+            ytr = np.asarray(self.y_tr, dtype=np.float32).reshape(-1, 1)  # y escalada 0..1
+
+            A_tr = np.concatenate([np.ones((Ztr.shape[0], 1), dtype=np.float32), Ztr], axis=1)
+            I = np.eye(A_tr.shape[1], dtype=np.float32)
+            I[0, 0] = 0.0  # no regularizar bias
+
+            w = np.linalg.solve((A_tr.T @ A_tr) + (l2 * I), (A_tr.T @ ytr)).reshape(-1).astype(np.float32)
+
+            np.savez_compressed(
+                out_head,
+                w=w,
+                l2=np.float32(l2),
+                schema_version=np.int32(1),
+            )
         # 4) Validación fuerte: si falta algo, el job debe fallar (no dejar runs corruptos)
         required = {"dbm_state.npz", "meta.json"}
+        if str(getattr(self, "task_type_", "")).lower() == "regression":
+            required.add("ridge_head.npz")
         present = {p.name for p in out_path.iterdir() if p.is_file()}
         missing = [f for f in sorted(required) if f not in present]
         if missing:

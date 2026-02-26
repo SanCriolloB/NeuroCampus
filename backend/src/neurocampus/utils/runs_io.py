@@ -134,6 +134,40 @@ def _slug(text: Any) -> str:
 slug = _slug
 
 
+# ---------------------------------------------------------------------------
+# Deployability (Modelos ↔ Predictions)
+# ---------------------------------------------------------------------------
+#
+# Regla de producto:
+# - El champion GLOBAL (dataset/family) es el que consume la pestaña Predictions.
+# - Si un modelo no es "deployable" para Predictions, NO debe convertirse en
+#   champion global, para evitar romper inferencia.
+#
+# Nota:
+# - Aún se permite champion POR MODELO (auditoría) aunque el modelo no sea deployable.
+# - Esto mantiene el mejor run por estrategia sin afectar al producto.
+
+_DEPLOYABLE_DEFAULT: set[str] = {"rbm_general", "rbm_restringida"}
+
+# Actualmente, `score_docente` requiere un predictor de score implementado.
+# Con P2.2 (predict_score_df en RBMGeneral), ambos RBM son deployable.
+_DEPLOYABLE_BY_FAMILY: dict[str, set[str]] = {
+    "score_docente": {"dbm_manual", "rbm_general", "rbm_restringida"},
+    "sentiment_desempeno": {"rbm_general", "rbm_restringida"},
+}
+
+
+def deployable_models_for_family(family: Optional[str]) -> set[str]:
+    fam = _slug(family or "")
+    return set(_DEPLOYABLE_BY_FAMILY.get(fam) or _DEPLOYABLE_DEFAULT)
+
+
+def is_deployable_for_predictions(model_name: str, family: Optional[str]) -> bool:
+    """True si el modelo puede usarse como champion global consumido por Predictions."""
+    m = _slug(model_name)
+    return m in deployable_models_for_family(family)
+
+
 def _norm_str(x: Any) -> Optional[str]:
     if x is None:
         return None
@@ -832,12 +866,15 @@ def _build_champion_payload(
     ts = promoted_at or now_utc_iso()
     tier, score_val = _champion_score(metrics or {})
 
+    deployable_for_predictions = is_deployable_for_predictions(model_name, family)
+
     payload: Dict[str, Any] = {
         "schema_version": CHAMPION_SCHEMA_VERSION,
         "family": str(family),
         "dataset_id": str(dataset_id),
         "model_name": str(model_name),
         "source_run_id": str(source_run_id),
+        "deployable_for_predictions": bool(deployable_for_predictions),
         # Compat: algunos consumers esperan created_at
         "created_at": ts,
         "promoted_at": ts,
@@ -885,6 +922,34 @@ def load_dataset_champion(dataset_id: str, *, family: Optional[str] = None) -> O
     if not champ:
         return None
 
+    # Si el champion global no es deployable, intentamos devolver el mejor champion
+    # deployable (por modelo) para no romper Predictions.
+    try:
+        fam = _norm_str(family or champ.get("family"))
+        mn = str(champ.get("model_name") or champ.get("model") or "")
+        if fam and mn and (not is_deployable_for_predictions(mn, fam)):
+            ds_dir = _champions_ds_dir(dataset_id, family=fam)
+            best_payload: Optional[Dict[str, Any]] = None
+            best_score = (-999, float("-inf"))
+
+            for m in sorted(deployable_models_for_family(fam)):
+                mp = ds_dir / _slug(m) / "champion.json"
+                payload_m = _try_read_json(mp)
+                if not isinstance(payload_m, dict) or not payload_m:
+                    continue
+                score_m = _champion_score((payload_m.get("metrics") or {}))
+                if score_m > best_score:
+                    best_score = score_m
+                    best_payload = payload_m
+
+            if best_payload:
+                best_payload = dict(best_payload)
+                best_payload["fallback_from_non_deployable"] = True
+                champ = best_payload
+    except Exception:
+        # Nunca romper el loader por este hardening.
+        pass
+
     champ = _ensure_source_run_id(champ)
 
     # Hidratar metrics si el champion es liviano
@@ -921,6 +986,8 @@ def maybe_update_champion(
     req = _extract_req(metrics)
     fam = (family or metrics.get("family") or req.get("family"))
     fam = _norm_str(fam)
+
+    deployable_for_predictions = is_deployable_for_predictions(model_name, fam)
 
     ds_dir = _ensure_champions_ds_dir(dataset_id, family=fam)
     model_dir = ensure_dir(ds_dir / _slug(model_name))
@@ -975,7 +1042,10 @@ def maybe_update_champion(
         else (-1, float("-inf"))
     )
 
-    promoted_ds = bool(promoted_model) and ((current_ds is None) or (new_score > old_ds_score))
+    # Champion GLOBAL sólo si el modelo es deployable para Predictions.
+    promoted_ds = bool(promoted_model) and bool(deployable_for_predictions) and (
+        (current_ds is None) or (new_score > old_ds_score)
+    )
 
     if promoted_ds:
         # Reusamos el payload del modelo si ya lo construimos, o lo reconstruimos
@@ -1030,6 +1100,7 @@ def maybe_update_champion(
     return {
         "promoted": bool(promoted_ds),
         "promoted_model": bool(promoted_model),
+        "deployable_for_predictions": bool(deployable_for_predictions),
         "old_score": old_ds_score,
         "new_score": new_score,
         "old_model_score": old_model_score,
@@ -1067,6 +1138,15 @@ def promote_run_to_champion(
 
     inferred_model = _norm_str(model_name or metrics.get("model_name") or req.get("modelo") or "model")
     inferred_model = inferred_model or "model"
+
+    # Seguridad de producto: evitar romper Predictions.
+    if not is_deployable_for_predictions(inferred_model, inferred_family):
+        allowed = sorted(deployable_models_for_family(inferred_family))
+        raise ValueError(
+            "El modelo no es deployable para Predictions y no puede ser champion global. "
+            f"family={inferred_family!r}, model_name={inferred_model!r}. "
+            f"Modelos permitidos para champion global en esta family: {allowed}"
+        )
 
     ds_dir = _ensure_champions_ds_dir(dataset_id, family=inferred_family)
     dst_dir = ensure_dir(ds_dir / _slug(inferred_model))

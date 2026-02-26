@@ -31,7 +31,7 @@ interface ChampionSubTabProps {
 // Regla de producto: Predictions consume el champion GLOBAL (dataset + family).
 // Para evitar romper inferencia, filtramos/promovemos sólo runs "deployable".
 const DEPLOYABLE_BY_FAMILY: Record<Family, Set<string>> = {
-  score_docente: new Set(['rbm_general','rbm_restringida']),
+  score_docente: new Set(['dbm_manual', 'rbm_general', 'rbm_restringida']),
   sentiment_desempeno: new Set(['rbm_general', 'rbm_restringida']),
 };
 

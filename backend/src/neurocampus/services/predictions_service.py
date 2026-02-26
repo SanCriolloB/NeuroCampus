@@ -123,6 +123,86 @@ def _load_model_from_model_dir(*, model_name: str, model_dir: Path) -> Any:
     """
 
     name = str(model_name or "").lower()
+
+if "dbm" in name:
+    # DBMManual (regresión) usa dbm_state.npz + ridge_head.npz (head ridge sobre latentes)
+    from neurocampus.models.dbm_manual import DBMManual  # lazy import
+
+    meta_path = (model_dir / "meta.json").resolve()
+    head_path = (model_dir / "ridge_head.npz").resolve()
+
+    if not meta_path.exists():
+        raise FileNotFoundError(f"DBM: meta.json no existe en {model_dir}")
+    if not (model_dir / "dbm_state.npz").exists():
+        raise FileNotFoundError(f"DBM: dbm_state.npz no existe en {model_dir}")
+    if not head_path.exists():
+        raise FileNotFoundError(
+            "DBM: ridge_head.npz no existe. "
+            "Re-entrena/guarda el modelo DBM con head de regresión persistido."
+        )
+
+    with open(meta_path, encoding="utf-8") as fh:
+        meta = json.load(fh)
+
+    arrays = np.load(head_path)
+    w = np.asarray(arrays["w"], dtype=np.float32).reshape(-1)
+
+    dbm = DBMManual.load(str(model_dir))
+
+    class _DBMRegressionInference:
+        """Wrapper liviano para inferencia de score (0..target_scale)."""
+
+        task_type = "regression"
+
+        def __init__(self, dbm_model: Any, meta: Dict[str, Any], w: np.ndarray):
+            self._dbm = dbm_model
+            self._meta = meta or {}
+            self._w = np.asarray(w, dtype=np.float32).reshape(-1)
+            self._feat_cols = list(self._meta.get("feat_cols_") or self._meta.get("feat_cols") or [])
+            self._target_scale = float(self._meta.get("target_scale", 50.0) or 50.0)
+
+        def _latent(self, X: np.ndarray) -> np.ndarray:
+            # Intentar usar API de DBMManual; si no, fallback a transforms encadenadas.
+            try:
+                Z = self._dbm.transform(X)
+                return np.asarray(Z, dtype=np.float32)
+            except Exception:
+                H1 = self._dbm.rbm_v_h1.transform(X)
+                try:
+                    Z2 = self._dbm.rbm_h1_h2.transform(H1)
+                    return np.asarray(Z2, dtype=np.float32)
+                except Exception:
+                    return np.asarray(H1, dtype=np.float32)
+
+        def predict_score_df(self, df: pd.DataFrame) -> np.ndarray:
+            # Alinear features al orden del entrenamiento
+            if self._feat_cols:
+                Xdf = df.reindex(columns=self._feat_cols, fill_value=0.0)
+            else:
+                Xdf = df.select_dtypes(include=[np.number])
+
+            X = (
+                Xdf.replace([np.inf, -np.inf], np.nan)
+                   .fillna(0.0)
+                   .to_numpy(dtype=np.float32)
+            )
+            Z = self._latent(X)
+            A = np.concatenate([np.ones((Z.shape[0], 1), dtype=np.float32), Z], axis=1)
+
+            # Ajuste defensivo: si cambió la dimensión del head, recortar o pad con ceros.
+            if A.shape[1] != self._w.shape[0]:
+                if A.shape[1] > self._w.shape[0]:
+                    A = A[:, : self._w.shape[0]]
+                else:
+                    pad = np.zeros((A.shape[0], self._w.shape[0] - A.shape[1]), dtype=np.float32)
+                    A = np.concatenate([A, pad], axis=1)
+
+            pred01 = (A @ self._w.reshape(-1, 1)).reshape(-1).astype(np.float32)
+            pred = pred01 * float(self._target_scale)
+            pred = np.clip(pred, 0.0, float(self._target_scale))
+            return pred
+
+    return _DBMRegressionInference(dbm, meta, w)
     if "restring" in name:
         from neurocampus.models.strategies.modelo_rbm_restringida import RBMRestringida  # lazy import
 

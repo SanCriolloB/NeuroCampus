@@ -319,14 +319,98 @@ def predict_individual(req: IndividualPredictionRequest) -> IndividualPrediction
 
     mask = (df_pair["teacher_key"] == teacher_key) & (df_pair["materia_key"] == materia_key)
     row_df = df_pair[mask]
+
+    # Si el par no existe en pair_matrix, hacemos inferencia en modo "cold_pair".
+    # Reglas:
+    # - teacher_key y materia_key deben existir en sus índices (teacher_index/materia_index).
+    # - Se imputan features numéricas usando promedios (docente → materia → global).
     if len(row_df) == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Par teacher_key='{teacher_key}' / materia_key='{materia_key}' "
-                f"no encontrado en dataset_id={ds}."
-            ),
+        feat_dir = artifacts_dir() / "features" / ds
+        t_idx_path = feat_dir / "teacher_index.json"
+        m_idx_path = feat_dir / "materia_index.json"
+
+        if not t_idx_path.exists() or not m_idx_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Índices teacher_index/materia_index no encontrados para dataset_id={ds}. "
+                    "Ejecuta feature-pack/prepare primero."
+                ),
+            )
+
+        teacher_index: Dict[str, int] = json.loads(t_idx_path.read_text(encoding="utf-8"))
+        materia_index: Dict[str, int] = json.loads(m_idx_path.read_text(encoding="utf-8"))
+
+        if teacher_key not in teacher_index:
+            raise HTTPException(
+                status_code=404,
+                detail=f"teacher_key='{teacher_key}' no existe en dataset_id={ds}.",
+            )
+        if materia_key not in materia_index:
+            raise HTTPException(
+                status_code=404,
+                detail=f"materia_key='{materia_key}' no existe en dataset_id={ds}.",
+            )
+
+        teacher_id = int(teacher_index[teacher_key])
+        materia_id = int(materia_index[materia_key])
+
+        teacher_rows = (
+            df_pair[df_pair["teacher_key"] == teacher_key]
+            if "teacher_key" in df_pair.columns
+            else df_pair.iloc[0:0]
         )
+        materia_rows = (
+            df_pair[df_pair["materia_key"] == materia_key]
+            if "materia_key" in df_pair.columns
+            else df_pair.iloc[0:0]
+        )
+
+        global_means = df_pair.mean(numeric_only=True).to_dict()
+        teacher_means = teacher_rows.mean(numeric_only=True).to_dict() if len(teacher_rows) > 0 else {}
+        materia_means = materia_rows.mean(numeric_only=True).to_dict() if len(materia_rows) > 0 else {}
+
+        n_docente = (
+            int(teacher_rows["n_docente"].iloc[0])
+            if len(teacher_rows) > 0 and "n_docente" in teacher_rows.columns
+            else 0
+        )
+        n_materia = (
+            int(materia_rows["n_materia"].iloc[0])
+            if len(materia_rows) > 0 and "n_materia" in materia_rows.columns
+            else 0
+        )
+
+        row_dict: Dict[str, Any] = {}
+        for col in df_pair.columns:
+            if col == "teacher_key":
+                row_dict[col] = teacher_key
+            elif col == "materia_key":
+                row_dict[col] = materia_key
+            elif col == "teacher_id":
+                row_dict[col] = teacher_id
+            elif col == "materia_id":
+                row_dict[col] = materia_id
+            elif col == "n_par":
+                row_dict[col] = 0
+            elif col == "n_docente":
+                row_dict[col] = n_docente
+            elif col == "n_materia":
+                row_dict[col] = n_materia
+            elif pd.api.types.is_numeric_dtype(df_pair[col]):
+                val = teacher_means.get(col, np.nan)
+                if pd.isna(val):
+                    val = materia_means.get(col, np.nan)
+                if pd.isna(val):
+                    val = global_means.get(col, np.nan)
+                if pd.isna(val):
+                    val = 0.0
+                row_dict[col] = float(val)
+            else:
+                # Columnas no numéricas (si existieran) se dejan vacías.
+                row_dict[col] = None
+
+        row_df = pd.DataFrame([row_dict], columns=df_pair.columns)
 
     row = row_df.iloc[0]
 

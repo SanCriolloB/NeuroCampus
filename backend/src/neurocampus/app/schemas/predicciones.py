@@ -317,3 +317,29 @@ class BatchJobResponse(BaseModel):
     champion_run_id: Optional[str] = Field(default=None, description="Run ID del champion usado.")
     error: Optional[str] = Field(default=None, description="Mensaje de error (si status='failed').")
 
+
+class PredictionRunInfoResponse(BaseModel):
+    """Metadatos de un run persistido de predicción (batch).
+
+    Este schema está pensado para poblar el bloque **Historial** de la pestaña
+    Predicciones, permitiendo reabrir el preview o descargar el parquet
+    asociado a un run anterior.
+    """
+
+    pred_run_id: str = Field(description="Identificador del run (ej. 'pred_20260226_153012').")
+    dataset_id: str = Field(description="Dataset asociado.")
+    family: str = Field(description="Familia del modelo (en esta pestaña: score_docente).")
+
+    created_at: Optional[str] = Field(default=None, description="Timestamp ISO (UTC) de creación.")
+    n_pairs: int = Field(default=0, description="Número de pares predichos en el run.")
+
+    champion_run_id: Optional[str] = Field(default=None, description="Run ID del champion usado.")
+    model_name: Optional[str] = Field(default=None, description="Nombre lógico del modelo (si se registró).")
+
+    predictions_uri: Optional[str] = Field(
+        default=None,
+        description="Ruta lógica a predictions.parquet para preview/descarga.",
+    )
+
+    model_config = ConfigDict(protected_namespaces=())
+

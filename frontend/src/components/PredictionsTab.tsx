@@ -8,11 +8,13 @@ import {
   getBatchJob,
   getOutputsPreview,
   getArtifactDownloadUrl,
+  listPredictionRuns,
   type DatasetInfo,
   type TeacherInfo,
   type MateriaInfo,
   type IndividualPredictionResponse,
   type BatchJobStatus,
+  type PredictionRunInfo,
 } from '../services/predicciones';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Card } from './ui/card';
@@ -21,10 +23,11 @@ import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Badge } from './ui/badge';
-import { TrendingUp, AlertTriangle, CheckCircle, Search, Filter } from 'lucide-react';
+import { TrendingUp, AlertTriangle, CheckCircle, Search } from 'lucide-react';
 import { motion } from 'motion/react';
+import { useAppFilters, setAppFilters, getAppFilters } from '../state/appFilters.store';
 
-// Teacher and subject data - simulating database
+// --- Pestaña Predicciones (docente–materia) ---
 
 export function PredictionsTab() {
   // --- Modo ---
@@ -42,6 +45,9 @@ export function PredictionsTab() {
   const [teacherSearch, setTeacherSearch] = useState('');
   const [subjectSearch, setSubjectSearch] = useState('');
 
+  // --- Filtros globales (sincroniza dataset entre pestañas) ---
+  const activeDatasetId = useAppFilters((s) => s.activeDatasetId);
+
   // --- Resultado individual ---
   const [predResult, setPredResult] = useState<IndividualPredictionResponse | null>(null);
   const [showResults, setShowResults] = useState(false);
@@ -55,7 +61,21 @@ export function PredictionsTab() {
   const [batchRows, setBatchRows] = useState<any[]>([]);
   const [predictionsUri, setPredictionsUri] = useState<string | null>(null);
   const [riskFilter, setRiskFilter] = useState('all');
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);  const gaugePercent = predResult ? Math.round((predResult.score_total_pred / 50) * 100) : 0;
+  const [runs, setRuns] = useState<PredictionRunInfo[]>([]);
+  const [isLoadingRuns, setIsLoadingRuns] = useState(false);
+  const [runsError, setRunsError] = useState<string | null>(null);
+
+  // --- Vista previa (paginación) ---
+  const PREVIEW_LIMIT = 200;
+  const [previewOffset, setPreviewOffset] = useState(0);
+  const [previewHasMore, setPreviewHasMore] = useState(false);
+  const [isLoadingPreviewMore, setIsLoadingPreviewMore] = useState(false);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // --- Cálculos de presentación (derivados del resultado individual) ---
+  const predictedScore = predResult ? Number(predResult.score_total_pred) : null;
+  const gaugePercent = predictedScore != null ? Math.round((predictedScore / 50) * 100) : 0;
+  const scoreDisplay = predictedScore != null ? predictedScore.toFixed(2) : '—';
   const confidenceDisplay = predResult ? `${Math.round(predResult.confidence * 100)}%` : '—';
   const radarData = predResult?.radar ?? [];
   const comparisonData = predResult?.comparison ?? [];
@@ -66,26 +86,155 @@ export function PredictionsTab() {
   const batchMedium = batchRows.filter((r) => r.risk === 'medium').length;
   const batchHigh = batchRows.filter((r) => r.risk === 'high').length;
 
-  // Cargar datasets al montar
+  // Cargar datasets al montar (respetando el dataset activo global si existe)
   useEffect(() => {
     listDatasets()
       .then((ds) => {
         setDatasets(ds);
-        if (ds.length > 0) setSelectedDataset(ds[ds.length - 1].dataset_id);
+
+        if (ds.length === 0) return;
+
+        // Leer el dataset activo *actual* (evita carreras si otra pestaña lo cambia mientras carga)
+        const globalDatasetId = getAppFilters().activeDatasetId;
+
+        const preferred =
+          globalDatasetId && ds.some((d) => d.dataset_id === globalDatasetId)
+            ? globalDatasetId
+            : ds[ds.length - 1].dataset_id;
+
+        setSelectedDataset(preferred);
+        setAppFilters({ activeDatasetId: preferred });
       })
       .catch(() => setDatasets([]));
   }, []);
 
-  // Cargar teachers y materias al cambiar dataset
+  // Sincronizar cambios de dataset desde otras pestañas (store global)
   useEffect(() => {
-    if (!selectedDataset) return;
-    listTeachers(selectedDataset).then(setTeachers).catch(() => setTeachers([]));
-    listMaterias(selectedDataset).then(setMaterias).catch(() => setMaterias([]));
+    if (!activeDatasetId) return;
+    if (activeDatasetId === selectedDataset) return;
+    if (!datasets.some((d) => d.dataset_id === activeDatasetId)) return;
+
+    setSelectedDataset(activeDatasetId);
+  }, [activeDatasetId, datasets, selectedDataset]);
+
+  // Cargar docentes y materias al cambiar dataset
+  useEffect(() => {
+    // Detener polling activo (si existía) al cambiar de dataset
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    // Reset de estados dependientes del dataset
     setSelectedTeacher('');
     setSelectedMateria('');
+    setTeacherSearch('');
+    setSubjectSearch('');
     setPredResult(null);
     setShowResults(false);
+    setPredError(null);
+
+    setShowBatchResults(false);
+    setBatchStatus(null);
+    // Si había un polling activo de un job anterior, detenerlo
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    setBatchError(null);
+    setBatchRows([]);
+    setPredictionsUri(null);
+    setRiskFilter('all');
+
+    setPreviewOffset(0);
+    setPreviewHasMore(false);
+
+    setRuns([]);
+    setRunsError(null);
+
+    if (!selectedDataset) return;
+
+    // Cargar listas para los selectores
+    listTeachers(selectedDataset).then(setTeachers).catch(() => setTeachers([]));
+    listMaterias(selectedDataset).then(setMaterias).catch(() => setMaterias([]));
+
+    // Cargar historial de ejecuciones para el dataset
+    setIsLoadingRuns(true);
+    listPredictionRuns(selectedDataset)
+      .then(setRuns)
+      .catch((e: any) => {
+        const detail =
+          e?.response?.data?.detail ?? e?.message ?? 'Error al cargar el historial de ejecuciones';
+        setRunsError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+        setRuns([]);
+      })
+      .finally(() => setIsLoadingRuns(false));
   }, [selectedDataset]);
+
+  const handleLoadMorePreview = useCallback(async () => {
+    if (!predictionsUri || !previewHasMore || isLoadingPreviewMore) return;
+
+    setIsLoadingPreviewMore(true);
+    try {
+      const preview = await getOutputsPreview({
+        predictions_uri: predictionsUri,
+        limit: PREVIEW_LIMIT,
+        offset: previewOffset,
+      });
+
+      const newRows = preview.rows ?? [];
+      setBatchRows((prev) => [...prev, ...newRows]);
+      setPreviewOffset((prev) => prev + newRows.length);
+      setPreviewHasMore(newRows.length === PREVIEW_LIMIT);
+    } catch (e: any) {
+      const detail =
+        e?.response?.data?.detail ?? e?.message ?? 'Error al cargar más filas de la vista previa';
+      setBatchError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    } finally {
+      setIsLoadingPreviewMore(false);
+    }
+  }, [predictionsUri, previewHasMore, isLoadingPreviewMore, previewOffset]);
+
+  const handleOpenRunPreview = useCallback(
+    async (run: PredictionRunInfo) => {
+      if (!run.predictions_uri) return;
+
+      // Mostrar el bloque de resultados del batch usando el parquet histórico
+      // Si había un polling activo de un job anterior, detenerlo
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    setBatchError(null);
+      setShowBatchResults(true);
+      setBatchRows([]);
+      setPredictionsUri(run.predictions_uri);
+      setRiskFilter('all');
+      setPreviewOffset(0);
+      setPreviewHasMore(false);
+
+      try {
+        const preview = await getOutputsPreview({
+          predictions_uri: run.predictions_uri,
+          limit: PREVIEW_LIMIT,
+          offset: 0,
+        });
+
+        const rows = preview.rows ?? [];
+        setBatchRows(rows);
+        setPreviewOffset(rows.length);
+        setPreviewHasMore(rows.length === PREVIEW_LIMIT);
+      } catch (e: any) {
+        const detail =
+          e?.response?.data?.detail ?? e?.message ?? 'Error al abrir la vista previa del run';
+        setBatchError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      }
+    },
+    []
+  );
+
 
   // Limpiar polling al desmontar
   useEffect(() => {
@@ -109,6 +258,20 @@ export function PredictionsTab() {
     return materias.filter((m) => m.materia_key.toLowerCase().includes(search));
   }, [subjectSearch, materias]);
 
+
+  const handleDatasetChange = useCallback((datasetId: string) => {
+    setSelectedDataset(datasetId);
+    setAppFilters({ activeDatasetId: datasetId });
+  }, []);
+
+  const formatTimestamp = (iso: string | null | undefined): string => {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString('es-CO');
+    } catch {
+      return String(iso);
+    }
+  };
 
   const filteredBatchResults = useMemo(() => {
     if (riskFilter === 'all') return batchRows;
@@ -143,10 +306,18 @@ export function PredictionsTab() {
   const handleGenerateBatch = useCallback(async () => {
     if (!selectedDataset) return;
 
+    // Si había un polling activo de un job anterior, detenerlo
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
     setBatchError(null);
     setShowBatchResults(false);
     setBatchRows([]);
     setPredictionsUri(null);
+    setPreviewOffset(0);
+    setPreviewHasMore(false);
 
     try {
       const job = await runBatch(selectedDataset);
@@ -167,11 +338,14 @@ export function PredictionsTab() {
 
               const preview = await getOutputsPreview({
                 predictions_uri: status.predictions_uri,
-                limit: 500,
+                limit: PREVIEW_LIMIT,
                 offset: 0,
               });
 
-              setBatchRows(preview.rows ?? []);
+              const rows = preview.rows ?? [];
+              setBatchRows(rows);
+              setPreviewOffset(rows.length);
+              setPreviewHasMore(rows.length === PREVIEW_LIMIT);
             }
 
             setShowBatchResults(true);
@@ -189,7 +363,6 @@ export function PredictionsTab() {
       setBatchError(typeof detail === 'string' ? detail : JSON.stringify(detail));
     }
   }, [selectedDataset]);
-
 
   const getRiskColor = (risk: string) => {
     switch (risk) {
@@ -232,14 +405,14 @@ export function PredictionsTab() {
         transition={{ duration: 0.3 }}
       >
         <h2 className="text-white mb-2">Predicciones</h2>
-        <p className="text-gray-400">Sistema de Predicción de Rendimiento Docente</p>
+        <p className="text-gray-400">Sistema de predicción del desempeño docente</p>
       </motion.div>
 
       {/* Tabs */}
       <Tabs value={predictionMode} onValueChange={(v) => setPredictionMode(v as 'individual' | 'batch')}>
         <TabsList className="bg-[#1a1f2e] border border-gray-800">
-          <TabsTrigger value="individual">Predicción Individual</TabsTrigger>
-          <TabsTrigger value="batch">Predicción por Lote</TabsTrigger>
+          <TabsTrigger value="individual">Predicción individual</TabsTrigger>
+          <TabsTrigger value="batch">Predicción por lote</TabsTrigger>
         </TabsList>
 
         {/* 3.1 Individual Prediction */}
@@ -253,12 +426,12 @@ export function PredictionsTab() {
               transition={{ duration: 0.4 }}
             >
               <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                <h3 className="text-white mb-4">Seleccionar Docente y Asignatura</h3>
+                <h3 className="text-white mb-4">Seleccionar docente y asignatura</h3>
                 <div className="space-y-4">
                   {/* Dataset */}
                   <div>
-                    <label className="block text-sm text-gray-400 mb-2">Dataset</label>
-                    <Select value={selectedDataset} onValueChange={setSelectedDataset}>
+                    <label className="block text-sm text-gray-400 mb-2">Conjunto de datos</label>
+                    <Select value={selectedDataset} onValueChange={handleDatasetChange}>
                       <SelectTrigger className="bg-[#0f1419] border-gray-700">
                         <SelectValue />
                       </SelectTrigger>
@@ -271,7 +444,7 @@ export function PredictionsTab() {
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-gray-500 mt-1">
-                      Seleccione un dataset previamente cargado en la pestaña Datos
+                      Seleccione un conjunto de datos previamente cargado en la pestaña Datos
                     </p>
                   </div>
 
@@ -330,10 +503,10 @@ export function PredictionsTab() {
               </Card>
 
               <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                <h3 className="text-white mb-4">Información Seleccionada</h3>
+                <h3 className="text-white mb-4">Información seleccionada</h3>
                 <div className="space-y-3">
                   <div>
-                    <p className="text-sm text-gray-400">Dataset</p>
+                    <p className="text-sm text-gray-400">Conjunto de datos</p>
                     <p className="text-white">{selectedDataset || '—'}</p>
                   </div>
                   <div>
@@ -353,7 +526,7 @@ export function PredictionsTab() {
                     </p>
                   </div>
                   <div className="pt-2 border-t border-gray-700">
-                    <p className="text-sm text-gray-400">Score histórico (par)</p>
+                    <p className="text-sm text-gray-400">Puntaje histórico (par)</p>
                     <p className="text-cyan-400 text-2xl">
                       {showResults && predResult ? predResult.historical.mean_score : '—'}
                     </p>
@@ -388,18 +561,18 @@ export function PredictionsTab() {
                     transition={{ duration: 0.5 }}
                   >
                     <Card className="bg-gradient-to-r from-blue-600/20 to-cyan-600/20 border-blue-600/50 p-6">
-                      <h3 className="text-white mb-4">Resultado de Predicción</h3>
+                      <h3 className="text-white mb-4">Resultado de predicción</h3>
                       <div className="grid grid-cols-2 gap-6">
                         <div>
-                          <p className="text-gray-300 mb-2">Probabilidad de Alto Rendimiento</p>
+                          <p className="text-gray-300 mb-2">Puntaje estimado (0–50)</p>
                           <div className="flex items-end gap-2">
-                            <span className="text-5xl text-white">{gaugePercent}%</span>
+                            <span className="text-5xl text-white">{scoreDisplay}</span>
                             <span className="text-gray-400 mb-2">Confianza: {confidenceDisplay}</span>
                           </div>
                         </div>
                         <div className="flex items-center justify-center">
                           <Badge className={`${getRiskColor(predRisk)} px-6 py-3 text-lg`}>
-                            {predRisk === 'low' ? 'BAJO' : predRisk === 'medium' ? 'MODERADO' : 'ALTO'} RIESGO
+                            {predRisk === 'low' ? 'Riesgo bajo' : predRisk === 'medium' ? 'Riesgo medio' : 'Riesgo alto'}
                           </Badge>
                         </div>
                       </div>
@@ -419,9 +592,9 @@ export function PredictionsTab() {
                           />
                         </div>
                         <div className="flex justify-between mt-2 text-sm text-gray-400">
-                          <span>0%</span>
-                          <span>50%</span>
-                          <span>100%</span>
+                          <span>0</span>
+                          <span>25</span>
+                          <span>50</span>
                         </div>
                       </div>
 
@@ -532,11 +705,11 @@ export function PredictionsTab() {
         <TabsContent value="batch" className="mt-6 space-y-6">
           {/* Dataset and Model Selection */}
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-            <h3 className="text-white mb-4">Seleccionar Dataset</h3>
+            <h3 className="text-white mb-4">Seleccionar conjunto de datos</h3>
             <div className="grid grid-cols-3 gap-6">
               <div className="col-span-2">
-                <label className="block text-sm text-gray-400 mb-2">Dataset</label>
-                <Select value={selectedDataset} onValueChange={setSelectedDataset}>
+                <label className="block text-sm text-gray-400 mb-2">Conjunto de datos</label>
+                <Select value={selectedDataset} onValueChange={handleDatasetChange}>
                   <SelectTrigger className="bg-[#0f1419] border-gray-700">
                     <SelectValue />
                   </SelectTrigger>
@@ -549,11 +722,11 @@ export function PredictionsTab() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-gray-500 mt-1">
-                  Seleccione un dataset previamente cargado en la pestaña Datos
+                  Seleccione un conjunto de datos previamente cargado en la pestaña Datos
                 </p>
               </div>
               <div>
-                <p className="text-sm text-gray-400">Champion automático</p>
+                <p className="text-sm text-gray-400">Modelo campeón (automático)</p>
                 <p className="text-white text-sm">{batchStatus?.champion_run_id ?? '—'}</p>
               </div>
             </div>
@@ -562,8 +735,64 @@ export function PredictionsTab() {
               className="w-full bg-blue-600 hover:bg-blue-700 mt-4"
             >
               <TrendingUp className="w-4 h-4 mr-2" />
-              Generar Predicciones del Lote
+              Generar predicciones del lote
             </Button>
+          {/* Historial de ejecuciones */}
+          <Card className="bg-[#1a1f2e] border-gray-800 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-white">Historial de ejecuciones</h3>
+              {isLoadingRuns ? (
+                <span className="text-sm text-gray-400">Cargando…</span>
+              ) : null}
+            </div>
+
+            {runsError ? (
+              <div className="p-3 rounded border border-red-500 bg-red-500/10 text-red-400 text-sm">
+                {runsError}
+              </div>
+            ) : runs.length === 0 ? (
+              <p className="text-sm text-gray-500">No hay ejecuciones previas para este conjunto de datos.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-800">
+                      <th className="text-left text-gray-400 text-sm py-2 pr-4">Fecha</th>
+                      <th className="text-left text-gray-400 text-sm py-2 pr-4">Pares</th>
+                      <th className="text-left text-gray-400 text-sm py-2 pr-4">Modelo</th>
+                      <th className="text-left text-gray-400 text-sm py-2 pr-4">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {runs.slice(0, 10).map((r) => (
+                      <tr key={r.pred_run_id} className="border-b border-gray-800/50">
+                        <td className="text-gray-300 text-sm py-2 pr-4">{formatTimestamp(r.created_at)}</td>
+                        <td className="text-gray-300 text-sm py-2 pr-4">{r.n_pairs ?? '—'}</td>
+                        <td className="text-gray-300 text-sm py-2 pr-4">{r.model_name ?? r.champion_run_id ?? '—'}</td>
+                        <td className="text-gray-300 text-sm py-2 pr-4">
+                          <div className="flex gap-2 flex-wrap">
+                            <Button
+                              className="bg-gray-700 hover:bg-gray-600"
+                              onClick={() => handleOpenRunPreview(r)}
+                              disabled={!r.predictions_uri}
+                            >
+                              Ver vista previa
+                            </Button>
+                            {r.predictions_uri ? (
+                              <a href={getArtifactDownloadUrl(r.predictions_uri)} download>
+                                <Button className="bg-blue-600 hover:bg-blue-700">Descargar</Button>
+                              </a>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
           </Card>
 
           {batchStatus && batchStatus.status === 'running' && (
@@ -596,11 +825,11 @@ export function PredictionsTab() {
                 transition={{ duration: 0.4 }}
               >
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                  <p className="text-gray-400 text-sm mb-2">Registros Procesados</p>
+                  <p className="text-gray-400 text-sm mb-2">Pares procesados</p>
                   <p className="text-white text-3xl">{batchTotal}</p>
                 </Card>
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                  <p className="text-gray-400 text-sm mb-2">Alto Rendimiento</p>
+                  <p className="text-gray-400 text-sm mb-2">Riesgo bajo</p>
                   <p className="text-green-400 text-3xl">
                     {batchLow}
                   </p>
@@ -618,7 +847,7 @@ export function PredictionsTab() {
                   </p>
                 </Card>
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                  <p className="text-gray-400 text-sm mb-2">En Riesgo</p>
+                  <p className="text-gray-400 text-sm mb-2">Riesgo alto</p>
                   <p className="text-red-400 text-3xl">
                     {batchHigh}
                   </p>
@@ -635,7 +864,7 @@ export function PredictionsTab() {
                 transition={{ duration: 0.5, delay: 0.1 }}
               >
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                  <h3 className="text-white mb-4">Distribución de Riesgo por Materia</h3>
+                  <h3 className="text-white mb-4">Distribución de riesgo por materia</h3>
                   <ResponsiveContainer width="100%" height={300}>
                     <BarChart
                       data={materias.slice(0, 8).map((m) => {
@@ -671,7 +900,7 @@ export function PredictionsTab() {
                 transition={{ duration: 0.5, delay: 0.2 }}
               >
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-                  <h3 className="text-white mb-4">Mapa de Calor: Score (% del máximo)</h3>
+                  <h3 className="text-white mb-4">Mapa de calor: puntaje (% del máximo)</h3>
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead>
@@ -717,7 +946,7 @@ export function PredictionsTab() {
               >
                 <Card className="bg-[#1a1f2e] border-gray-800 p-6">
                   <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-white">Tabla de Predicciones</h3>
+                    <h3 className="text-white">Tabla de predicciones</h3>
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge 
                         className={`cursor-pointer ${riskFilter === 'all' ? 'bg-blue-600' : 'bg-gray-700'}`}
@@ -745,7 +974,7 @@ export function PredictionsTab() {
                       </Badge>
                       {predictionsUri && (
                         <a href={getArtifactDownloadUrl(predictionsUri)} download>
-                          <Button className="bg-blue-600 hover:bg-blue-700">Descargar Predicciones</Button>
+                          <Button className="bg-blue-600 hover:bg-blue-700">Descargar predicciones</Button>
                         </a>
                       )}
                     </div>
@@ -756,7 +985,7 @@ export function PredictionsTab() {
                         <tr className="border-b border-gray-800">
                           <th className="text-left text-gray-400 text-sm py-3 px-4">Docente</th>
                           <th className="text-left text-gray-400 text-sm py-3 px-4">Materia</th>
-                          <th className="text-left text-gray-400 text-sm py-3 px-4">Score (0–50)</th>
+                          <th className="text-left text-gray-400 text-sm py-3 px-4">Puntaje (0–50)</th>
                           <th className="text-left text-gray-400 text-sm py-3 px-4">Confianza</th>
                           <th className="text-left text-gray-400 text-sm py-3 px-4">Nivel de Riesgo</th>
                         </tr>
@@ -785,6 +1014,23 @@ export function PredictionsTab() {
                         })}
                       </tbody>
                     </table>
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-xs text-gray-500">
+                      Mostrando {batchRows.length} fila(s)
+                    </div>
+                    <div className="flex gap-2">
+                      {previewHasMore && predictionsUri ? (
+                        <Button
+                          className="bg-gray-700 hover:bg-gray-600"
+                          onClick={handleLoadMorePreview}
+                          disabled={isLoadingPreviewMore}
+                        >
+                          {isLoadingPreviewMore ? 'Cargando…' : 'Cargar más'}
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
                 </Card>
               </motion.div>

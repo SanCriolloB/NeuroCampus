@@ -8,8 +8,14 @@ Layout de artifacts
 Este módulo define y centraliza el layout para artefactos de predicción:
 
     artifacts/predictions/<dataset_id>/score_docente/<pred_run_id>/
-        predicciones.parquet
+        predictions.parquet
         meta.json
+
+Compatibilidad
+--------------
+En versiones previas, el archivo parquet podía llamarse ``predicciones.parquet``.
+Al resolver un run, se intenta primero ``predictions.parquet`` y luego el
+nombre legacy.
 
 Convención de ``pred_run_id``
 ------------------------------
@@ -118,28 +124,39 @@ def list_pred_runs(dataset_id: str) -> List[Dict[str, Any]]:
 
 
 def resolve_pred_artifact(pred_run_id: str, dataset_id: str) -> Path:
-    """Resuelve la ruta absoluta del ``predicciones.parquet`` de un run.
+    """Resuelve la ruta absoluta del parquet de un run.
 
     Args:
         pred_run_id: Identificador del run (ej. ``"pred_20250315_102233"``).
         dataset_id: Dataset al que pertenece el run.
 
     Returns:
-        Ruta absoluta al archivo ``predicciones.parquet``.
+        Ruta absoluta al archivo parquet del run.
+
+    Notes
+    -----
+    - Primero se intenta ``predictions.parquet`` (nombre canónico).
+    - Si no existe, se intenta ``predicciones.parquet`` por compatibilidad.
 
     Raises:
-        FileNotFoundError: Si el parquet no existe para ese ``dataset_id`` y ``pred_run_id``.
+        FileNotFoundError: Si no existe ningún parquet para ese run.
     """
-    p = (
+    base = (
         artifacts_dir()
         / "predictions"
         / str(dataset_id)
         / _FAMILY_SEGMENT
         / str(pred_run_id)
-        / "predicciones.parquet"
     )
-    if not p.exists():
-        raise FileNotFoundError(
-            f"No existe predicciones.parquet para dataset_id={dataset_id} pred_run_id={pred_run_id}"
-        )
-    return p
+
+    p = base / "predictions.parquet"
+    if p.exists():
+        return p
+
+    legacy = base / "predicciones.parquet"
+    if legacy.exists():
+        return legacy
+
+    raise FileNotFoundError(
+        f"No existe predictions.parquet (ni predicciones.parquet) para dataset_id={dataset_id} pred_run_id={pred_run_id}"
+    )

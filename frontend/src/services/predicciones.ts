@@ -118,6 +118,20 @@ export type PredictionsPreviewResponse = {
   note: string;
 };
 
+export type PredictionRunInfo = {
+  pred_run_id: string;
+  dataset_id: string;
+  family: string;
+
+  created_at: string | null;
+  n_pairs: number;
+
+  champion_run_id: string | null;
+  model_name: string | null;
+
+  predictions_uri: string | null;
+};
+
 // ---------------------------------------------------------------------------
 // Funciones de API
 // ---------------------------------------------------------------------------
@@ -133,6 +147,11 @@ export const listTeachers = (dataset_id: string): Promise<TeacherInfo[]> =>
 export const listMaterias = (dataset_id: string): Promise<MateriaInfo[]> =>
   api
     .get<MateriaInfo[]>(`/predicciones/materias${qs({ dataset_id })}`)
+    .then((r) => r.data);
+
+export const listPredictionRuns = (dataset_id: string): Promise<PredictionRunInfo[]> =>
+  api
+    .get<PredictionRunInfo[]>(`/predicciones/runs${qs({ dataset_id })}`)
     .then((r) => r.data);
 
 export const predictIndividual = (payload: {

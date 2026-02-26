@@ -265,7 +265,7 @@ export function ChampionSubTab({
               {/* Extra info from run */}
               <div className="flex flex-wrap gap-2">
                 <BundleStatusBadge status={champRun.bundle_status} />
-                <WarmStartBadge warmed={champRun.warm_started} from={champRun.warm_start_from} result={champRun.warm_start_result} />
+                <WarmStartBadge warmed={champRun.warm_started} resolved={champRun.warm_start_resolved ?? Boolean(champRun.warm_start_path)} from={champRun.warm_start_from} result={champRun.warm_start_result} reason={champRun.warm_start_reason} />
                 <TextFeaturesBadge count={champRun.n_feat_text} />
                 {isDeployableForPredictions(champRun.model_name, family) ? (
                   <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30 text-xs">

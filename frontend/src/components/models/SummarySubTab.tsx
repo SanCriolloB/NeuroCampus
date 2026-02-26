@@ -169,7 +169,7 @@ export function SummarySubTab({ family, datasetId, onNavigateToRun, onUsePredict
                   <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/40 text-xs capitalize">
                     {lastRun.model_name.replace(/_/g, ' ')}
                   </Badge>
-                  <WarmStartBadge warmed={lastRun.warm_started} from={lastRun.warm_start_from} result={lastRun.warm_start_result} />
+                  <WarmStartBadge warmed={lastRun.warm_started} resolved={lastRun.warm_start_resolved ?? Boolean(lastRun.warm_start_path)} from={lastRun.warm_start_from} result={lastRun.warm_start_result} reason={lastRun.warm_start_reason} />
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">Run ID</p>

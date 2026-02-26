@@ -327,7 +327,7 @@ export function SweepSubTab({
                         </td>
                         <td className="py-2 px-3 text-white">{c.primary_metric_value.toFixed(4)}</td>
                         <td className="py-2 px-3">
-                          <WarmStartBadge warmed={c.warm_started} from={c.warm_start_from} result={c.warm_start_result} />
+                          <WarmStartBadge warmed={c.warm_started} resolved={c.warm_start_resolved ?? Boolean(c.warm_start_path)} from={c.warm_start_from} result={c.warm_start_result} reason={c.warm_start_reason} />
                         </td>
                         <td className="py-2 px-3">
                           <TextFeaturesBadge count={c.n_feat_text} />

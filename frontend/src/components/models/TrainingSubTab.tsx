@@ -268,12 +268,11 @@ export function TrainingSubTab({
       // Asegurar paridad visual: dataset_id se mantiene como ID UI seleccionado.
       const finalRun: RunRecord = {
         ...runRecord,
+        // Paridad visual: dataset_id se mantiene como ID UI seleccionado.
         dataset_id: datasetId,
         family,
-        model_name: modelo,
-        warm_started: warmStart,
-        warm_start_from: warmStart ? warmStartFrom : 'none',
-        warm_start_source_run_id: warmStart && warmStartFrom === 'run_id' ? warmStartRunId : null,
+        // Importante: NO pisar warm-start con la intención del usuario;
+        // la fuente de verdad es lo que reporta el backend (warm_started/warm_start_resolved/reason).
         seed,
         epochs,
       };

@@ -12,20 +12,46 @@ import type { BundleStatus, WarmStartFrom, RunStatus } from './mockData';
 // ---------- Warm Start Badge ----------
 export function WarmStartBadge({
   warmed,
+  resolved,
   from,
   result,
+  reason,
 }: {
+  /** True si se aplicó realmente (cargó pesos). */
   warmed: boolean;
+  /** True si se resolvió un directorio base (aunque se omitiera por mismatch). */
+  resolved?: boolean;
   from: WarmStartFrom;
   result: 'ok' | 'skipped' | 'error' | null;
+  /** Motivo cuando se omite (feature_cols_mismatch, task_type_mismatch, etc). */
+  reason?: string | null;
 }) {
-  if (!warmed) {
+  const tooltip = reason ? `Motivo: ${reason}` : undefined;
+
+  // No se solicitó warm-start ni se resolvió nada
+  if (!warmed && !resolved) {
     return (
       <Badge className="bg-gray-700/60 text-gray-400 border-none gap-1 text-xs">
         No WS
       </Badge>
     );
   }
+
+  // Se resolvió un path, pero NO se aplicó
+  if (!warmed && resolved) {
+    return (
+      <Badge
+        className="bg-sky-500/15 text-sky-300 border-sky-500/30 gap-1 text-xs"
+        title={tooltip}
+      >
+        <Flame className="w-3 h-3" />
+        WS:{from === 'champion' ? 'Champ' : from === 'run_id' ? 'Run' : '—'}
+        <span className="opacity-70">(resuelto)</span>
+      </Badge>
+    );
+  }
+
+  // Warm-start aplicado
   const color =
     result === 'ok'
       ? 'bg-green-500/20 text-green-400 border-green-500/40'
@@ -34,9 +60,9 @@ export function WarmStartBadge({
       : 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40';
 
   return (
-    <Badge className={`${color} gap-1 text-xs`}>
+    <Badge className={`${color} gap-1 text-xs`} title={tooltip}>
       <Flame className="w-3 h-3" />
-      WS:{from === 'champion' ? 'Champ' : 'Run'}
+      WS:{from === 'champion' ? 'Champ' : from === 'run_id' ? 'Run' : '—'}
       {result && <span className="opacity-70">({result})</span>}
     </Badge>
   );

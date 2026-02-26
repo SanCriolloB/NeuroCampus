@@ -82,6 +82,10 @@ export interface RunRecord {
   warm_start_source_run_id: string | null;
   warm_start_path: string | null;
   warm_start_result: 'ok' | 'skipped' | 'error' | null;
+  /** True si se resolvió un directorio base para warm-start (aunque no se haya aplicado). */
+  warm_start_resolved?: boolean;
+  /** Motivo si el warm-start fue omitido (mismatch/shape/etc). */
+  warm_start_reason?: string | null;
   n_feat_total: number;
   n_feat_text: number;
   text_feat_cols: string[];
@@ -270,6 +274,8 @@ function buildRun(
     warm_start_source_run_id: overrides.warm_start_source_run_id ?? null,
     warm_start_path: overrides.warm_start_path ?? null,
     warm_start_result: overrides.warm_start_result ?? null,
+    warm_start_resolved: overrides.warm_start_resolved ?? Boolean(overrides.warm_start_path),
+    warm_start_reason: overrides.warm_start_reason ?? null,
     n_feat_total: overrides.n_feat_total ?? (45 + nText),
     n_feat_text: nText,
     text_feat_cols: TEXT_FEAT_COLS.slice(0, nText),

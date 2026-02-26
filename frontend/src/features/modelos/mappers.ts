@@ -65,6 +65,64 @@ export function normalizeFamily(family: unknown): Family {
   return "sentiment_desempeno";
 }
 
+/** Normaliza warm_start_from a un conjunto cerrado. */
+function normalizeWarmStartFrom(value: unknown): "none" | "champion" | "run_id" {
+  const v = typeof value === "string" ? value : "";
+  if (v === "champion" || v === "run_id" || v === "none") return v;
+  return "none";
+}
+
+/**
+ * Extrae señales de warm-start desde el dict de métricas del backend.
+ *
+ * Convención (backend P2 Parte 2/3):
+ * - warm_start_resolved: bool
+ * - warm_started: bool (aplicado realmente)
+ * - warm_start_from, warm_start_source_run_id, warm_start_path
+ * - warm_start: { warm_start: 'ok'|'skipped'|'error', reason?: str }
+ */
+function parseWarmStartForUI(metrics: Record<string, unknown> | null | undefined): {
+  warm_started: boolean;
+  warm_start_resolved: boolean;
+  warm_start_from: "none" | "champion" | "run_id";
+  warm_start_source_run_id: string | null;
+  warm_start_path: string | null;
+  warm_start_result: "ok" | "skipped" | "error" | null;
+  warm_start_reason: string | null;
+} {
+  const m = metrics ?? {};
+
+  const warm_start_path = toStringOrNull(m["warm_start_path"]);
+  const resolvedRaw = m["warm_start_resolved"];
+  const warm_start_resolved = typeof resolvedRaw === "boolean" ? resolvedRaw : Boolean(warm_start_path);
+
+  const warm_start_from = normalizeWarmStartFrom(m["warm_start_from"]);
+  const warm_start_source_run_id = toStringOrNull(m["warm_start_source_run_id"]);
+
+  let warm_start_result: "ok" | "skipped" | "error" | null = null;
+  let warm_start_reason: string | null = null;
+
+  const wsObj = (m as any)["warm_start"];
+  if (wsObj && typeof wsObj === "object") {
+    const r = String((wsObj as any)["warm_start"] ?? "").toLowerCase();
+    if (r === "ok" || r === "skipped" || r === "error") warm_start_result = r as any;
+    warm_start_reason = toStringOrNull((wsObj as any)["reason"]);
+  }
+
+  const startedRaw = m["warm_started"];
+  const warm_started = typeof startedRaw === "boolean" ? startedRaw : warm_start_result === "ok";
+
+  return {
+    warm_started,
+    warm_start_resolved,
+    warm_start_from,
+    warm_start_source_run_id,
+    warm_start_path,
+    warm_start_result,
+    warm_start_reason,
+  };
+}
+
 /**
  * Determina el status del bundle con heurística:
  * - Si el backend provee `artifact_path` y el run está completed => "complete".
@@ -181,6 +239,8 @@ export function mapRunSummaryToRunRecord(summary: RunSummaryDto): RunRecord {
 
   const createdAt = summary.created_at ?? new Date(0).toISOString();
 
+  const ws = parseWarmStartForUI(summary.metrics);
+
   return {
     run_id: summary.run_id,
     dataset_id: summary.dataset_id ?? "unknown",
@@ -209,12 +269,14 @@ export function mapRunSummaryToRunRecord(summary: RunSummaryDto): RunRecord {
       "model/": false,
     },
 
-    // Warm-start (placeholder)
-    warm_started: false,
-    warm_start_from: "none",
-    warm_start_source_run_id: null,
-    warm_start_path: null,
-    warm_start_result: null,
+    // Warm-start (desde métricas; trazabilidad P2)
+    warm_started: ws.warm_started,
+    warm_start_resolved: ws.warm_start_resolved,
+    warm_start_from: ws.warm_start_from,
+    warm_start_source_run_id: ws.warm_start_source_run_id,
+    warm_start_path: ws.warm_start_path,
+    warm_start_result: ws.warm_start_result,
+    warm_start_reason: ws.warm_start_reason,
 
     // Features (placeholder)
     n_feat_total: 0,
@@ -274,6 +336,8 @@ export function mergeRunDetails(record: RunRecord, details: RunDetailsDto): RunR
 
   const epochsFromSeries = epochsData.length ? Math.max(...epochsData.map((p) => p.epoch)) : record.epochs;
 
+  const ws = parseWarmStartForUI(details.metrics ?? record.metrics);
+
 
   return {
     ...record,
@@ -293,6 +357,14 @@ export function mergeRunDetails(record: RunRecord, details: RunDetailsDto): RunR
 
     bundle_status: bundleStatus,
     bundle_checklist: bundleChecklist,
+
+    warm_started: ws.warm_started,
+    warm_start_resolved: ws.warm_start_resolved,
+    warm_start_from: ws.warm_start_from,
+    warm_start_source_run_id: ws.warm_start_source_run_id,
+    warm_start_path: ws.warm_start_path,
+    warm_start_result: ws.warm_start_result,
+    warm_start_reason: ws.warm_start_reason,
   };
 }
 

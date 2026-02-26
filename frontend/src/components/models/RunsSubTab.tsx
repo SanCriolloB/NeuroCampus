@@ -254,7 +254,7 @@ export function RunsSubTab({
                     <BundleStatusBadge status={run.bundle_status} />
                   </td>
                   <td className="py-2.5 px-4">
-                    <WarmStartBadge warmed={run.warm_started} from={run.warm_start_from} result={run.warm_start_result} />
+                    <WarmStartBadge warmed={run.warm_started} resolved={run.warm_start_resolved ?? Boolean(run.warm_start_path)} from={run.warm_start_from} result={run.warm_start_result} reason={run.warm_start_reason} />
                   </td>
                   <td className="py-2.5 px-4">
                     <TextFeaturesBadge count={run.n_feat_text} />
@@ -440,7 +440,7 @@ function RunDetail({
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div>
             <p className="text-xs text-gray-400">warm_started</p>
-            <WarmStartBadge warmed={run.warm_started} from={run.warm_start_from} result={run.warm_start_result} />
+            <WarmStartBadge warmed={run.warm_started} resolved={run.warm_start_resolved ?? Boolean(run.warm_start_path)} from={run.warm_start_from} result={run.warm_start_result} reason={run.warm_start_reason} />
           </div>
           <div>
             <p className="text-xs text-gray-400">warm_start_from</p>

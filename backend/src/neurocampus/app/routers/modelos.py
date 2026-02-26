@@ -3575,38 +3575,32 @@ def get_champion(
     dataset_id: Optional[str] = None,
     dataset: Optional[str] = None,
     periodo: Optional[str] = None,
-    model_name: str = "rbm_restringida",
+    model_name: Optional[str] = None,
     family: Optional[str] = None,
 ):
     ds = dataset_id or dataset or periodo
     if not ds:
         raise HTTPException(status_code=400, detail="dataset_id (o dataset/periodo) es requerido")
 
-    # 1) Cargar champion (usa wrapper si existe y acepta kwargs)
+    # 1) Cargar champion
+    # Nota:
+    # - `model_name` SOLO debe filtrar cuando el usuario lo especifica explícitamente.
+    # - Si no se pasa `model_name`, devolvemos el champion global (por dataset + family) sin filtrar.
     try:
-        champ = _call_with_accepted_kwargs(
-            load_current_champion,
-            dataset_id=str(ds),
-            model_name=model_name,
-            family=family,
-        )
-        # P2.3 FIX: El fallback anterior llamaba a ``load_dataset_champion``
-        # sin filtrar por ``model_name``, lo que provocaba que al pedir
-        # el champion de "rbm_general" se devolviera "rbm_restringida"
-        # (o viceversa).  Ahora solo se usa el fallback cuando el motivo
-        # del None NO es el filtro de model_name (i.e. cuando simplemente
-        # no existe champion), y se re-filtra tras obtener el resultado.
+        _req_model = (model_name or "").strip() or None
+
+        _kwargs: Dict[str, Any] = {"dataset_id": str(ds), "family": family}
+        if _req_model:
+            _kwargs["model_name"] = _req_model
+
+        champ = _call_with_accepted_kwargs(load_current_champion, **_kwargs)
+
+        # Fallback legacy: cargar champion por dataset (sin filtrar) y re-filtrar solo si el usuario pidió model_name
         if champ is None:
-            champ = _call_with_accepted_kwargs(
-                load_dataset_champion,
-                dataset_id=str(ds),
-                family=family,
-            )
-            # Re-filtrar por model_name: si el champion encontrado no coincide
-            # con el modelo solicitado, descartar para evitar cruce de modelos.
-            if champ is not None and model_name:
+            champ = _call_with_accepted_kwargs(load_dataset_champion, dataset_id=str(ds), family=family)
+            if champ is not None and _req_model:
                 _champ_mn = (champ.get("model_name") or champ.get("model") or "").strip().lower()
-                _req_mn = model_name.strip().lower()
+                _req_mn = _req_model.strip().lower()
                 if _champ_mn and _champ_mn != _req_mn:
                     champ = None
     except FileNotFoundError as e:
@@ -3663,7 +3657,9 @@ def get_champion(
     # Best-effort: leer predictor.json desde la carpeta del champion (si existe)
     predictor_manifest = None
     try:
-        champ_dir = Path(str(champ.get("path") or "")).expanduser().resolve()
+        champ_ref = str(champ.get("path") or "").strip()
+        champ_ref = _strip_localfs(champ_ref)
+        champ_dir = _abs_path(champ_ref) if champ_ref else (ARTIFACTS_DIR / "champions").resolve()
         pj = champ_dir / "predictor.json"
         if pj.exists():
             predictor_manifest = json.loads(pj.read_text(encoding="utf-8"))

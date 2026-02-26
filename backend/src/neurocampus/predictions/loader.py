@@ -124,7 +124,9 @@ def _load_predictor_by_run_id_uncached(run_id: str) -> LoadedPredictorBundle:
     if _is_placeholder_model_bin(bp.model_bin):
         model_dir = (run_dir / "model").resolve()
         meta_ok = (model_dir / "meta.json").exists() if model_dir.is_dir() else False
-        weights_ok = any((model_dir / n).exists() for n in ("rbm.pt", "head.pt")) if model_dir.is_dir() else False
+        rbm_ok = any((model_dir / n).exists() for n in ("rbm.pt", "head.pt")) if model_dir.is_dir() else False
+        dbm_ok = ((model_dir / "dbm_state.npz").exists() and (model_dir / "ridge_head.npz").exists()) if model_dir.is_dir() else False
+        weights_ok = bool(rbm_ok or dbm_ok)
         if not (model_dir.exists() and model_dir.is_dir() and meta_ok and weights_ok):
             raise PredictorNotReadyError(
                 "model.bin es placeholder (P2.1) y no hay dump real en <run_dir>/model. "

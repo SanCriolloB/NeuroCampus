@@ -5,6 +5,7 @@ import {
   Cell,
   Tooltip,
   ResponsiveContainer,
+  LabelList
 } from "recharts";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
@@ -36,11 +37,11 @@ import {
 } from "@/features/datos/mappers";
 
 const DEFAULT_SAMPLE_DATA: UiPreviewRow[] = [
-  { id: 1, teacher: "Dr. García", subject: "Calculus I", rating: 4.5, comment: "Excellent methodology" },
-  { id: 2, teacher: "Prof. Martínez", subject: "Physics II", rating: 4.2, comment: "Clear explanations" },
-  { id: 3, teacher: "Dr. López", subject: "Programming", rating: 4.7, comment: "Very helpful" },
-  { id: 4, teacher: "Prof. Rodríguez", subject: "Chemistry", rating: 3.8, comment: "Good class" },
-  { id: 5, teacher: "Dr. Fernández", subject: "Mathematics", rating: 4.0, comment: "Well organized" },
+  { id: 1, teacher: "Dr. García", subject: "Calculo I", rating: 4.5, comment: "Excelente metodología" },
+  { id: 2, teacher: "Prof. Martínez", subject: "Física II", rating: 4.2, comment: "Explicaciones claras" },
+  { id: 3, teacher: "Dr. López", subject: "Programación", rating: 4.7, comment: "Muy útil" },
+  { id: 4, teacher: "Prof. Rodríguez", subject: "Química", rating: 3.8, comment: "Buena clase" },
+  { id: 5, teacher: "Dr. Fernández", subject: "Matemáticas", rating: 4.0, comment: "Bien organizado" },
 ];
 
 const COLORS = {
@@ -224,7 +225,7 @@ export function DataTab() {
     setErrorMsg(null);
 
     if (!file) {
-      setErrorMsg("Select a file first.");
+      setErrorMsg("Primero seleccione un archivo.");
       return;
     }
 
@@ -240,7 +241,7 @@ export function DataTab() {
         Array.isArray(v.issues) && v.issues.some((i) => i.level === "error");
 
       if (v.ok === false || hasSevere) {
-        setErrorMsg("Validation failed. Please check the dataset format.");
+        setErrorMsg("La validación ha fallado. Por favor, compruebe el formato del Dataset");
         setIsProcessing(false);
         return;
       }
@@ -299,7 +300,7 @@ export function DataTab() {
       // 5) Refrescar resumen
       await resumen.refetch();
     } catch (e) {
-      setErrorMsg((e as Error)?.message ?? "Processing failed.");
+      setErrorMsg((e as Error)?.message ?? "Error en el procesamiento.");
     } finally {
       setIsProcessing(false);
     }
@@ -309,7 +310,7 @@ export function DataTab() {
     setErrorMsg(null);
 
     if (!datasetForQueries) {
-      setErrorMsg("Load a dataset first.");
+      setErrorMsg("Cargue primero un Dataset");
       return;
     }
 
@@ -317,7 +318,7 @@ export function DataTab() {
       const job = await jobsApi.launchDataUnify({ mode });
       setUnifyJobId(job.id);
     } catch (e) {
-      setErrorMsg((e as Error)?.message ?? "Unify job failed.");
+      setErrorMsg((e as Error)?.message ?? "Error al unificar el Job.");
     }
   }
 
@@ -325,7 +326,7 @@ export function DataTab() {
     setErrorMsg(null);
 
     if (!datasetForQueries) {
-      setErrorMsg("Load a dataset first.");
+      setErrorMsg("Cargue primero un Dataset.");
       return;
     }
 
@@ -335,17 +336,23 @@ export function DataTab() {
       });
       setFeaturesJobId(job.id);
     } catch (e) {
-      setErrorMsg((e as Error)?.message ?? "Feature-pack job failed.");
+      setErrorMsg((e as Error)?.message ?? "Error al ejecutar el Job del Paquete de características");
     }
   }
 
+
+  const SENTIMENT_LABELS: Record<string, string> = {
+    positive: "Positivo",
+    negative: "Negativo",
+    neutral: "Neutral",
+  };
 
   return (
     <div className="p-8 space-y-6">
       {/* Header */}
       <div>
-        <h2 className="text-white mb-2">Data</h2>
-        <p className="text-gray-400">Data Ingestion and Analysis</p>
+        <h2 className="text-white mb-2">Datos</h2>
+        <p className="text-gray-400">Ingesta de datos y análisis</p>
       </div>
 
       <div className="grid grid-cols-3 gap-6">
@@ -353,11 +360,11 @@ export function DataTab() {
         <div className="space-y-6">
           {/* Upload Section */}
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-            <h3 className="text-white mb-4">Dataset Upload</h3>
+            <h3 className="text-white mb-4">Carga del Dataset</h3>
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-2">Select File</label>
+                <label className="block text-sm text-gray-400 mb-2">Seleccionar archivo</label>
 
                 <input
                   ref={fileInputRef}
@@ -381,14 +388,14 @@ export function DataTab() {
                   }}
                 >
                   <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                  <p className="text-gray-400">Click to upload or drag and drop</p>
+                  <p className="text-gray-400">Haga clic para cargar o arrastrar y soltar</p>
                   <p className="text-gray-500 text-sm mt-1">CSV, XLSX (Max 10MB)</p>
                   {file && <p className="text-gray-300 text-sm mt-2">{file.name}</p>}
                 </div>
               </div>
 
               <div>
-                <label className="block text-sm text-gray-400 mb-2">Dataset Name</label>
+                <label className="block text-sm text-gray-400 mb-2">Nombre del Dataset</label>
                 <Input
                   placeholder="e.g., Evaluations_2025_1"
                   className="bg-[#0f1419] border-gray-700"
@@ -398,7 +405,7 @@ export function DataTab() {
               </div>
 
               <div>
-                <label className="block text-sm text-gray-400 mb-2">Semester</label>
+                <label className="block text-sm text-gray-400 mb-2">Semestre</label>
                 <Select value={activePeriodo} onValueChange={handlePeriodoChange}>
                   <SelectTrigger className="bg-[#0f1419] border-gray-700">
                     <SelectValue />
@@ -420,7 +427,7 @@ export function DataTab() {
                     checked={applyPreprocessing}
                     onCheckedChange={(checked) => setApplyPreprocessing(checked as boolean)}
                   />
-                  <label className="text-sm text-gray-400">Apply preprocessing</label>
+                  <label className="text-sm text-gray-400">Aplica pre-procesamiento</label>
                 </div>
 
                 <div className="flex items-center space-x-2">
@@ -428,7 +435,7 @@ export function DataTab() {
                     checked={runSentiment}
                     onCheckedChange={(checked) => setRunSentiment(checked as boolean)}
                   />
-                  <label className="text-sm text-gray-400">Run sentiment analysis (BETO)</label>
+                  <label className="text-sm text-gray-400">Correr análisis de sentimientos (BETO)</label>
                 </div>
 
                 {/* Opciones BETO (solo si está activo) */}
@@ -440,7 +447,7 @@ export function DataTab() {
                         onCheckedChange={(checked) => setGenerateTfidf(checked as boolean)}
                       />
                       <label className="text-sm text-gray-400">
-                        Generate TF-IDF+LSA embeddings (64)
+                        Generar embedings TF-IDF+LSA (64)
                       </label>
                     </div>
 
@@ -450,7 +457,7 @@ export function DataTab() {
                         onCheckedChange={(checked) => setEmptyAsNoText(checked as boolean)}
                       />
                       <label className="text-sm text-gray-400">
-                        Treat empty comments as NO_TEXT
+                        Tratar los comentarios vacíos como SIN_TEXTO
                       </label>
                     </div>
 
@@ -460,7 +467,7 @@ export function DataTab() {
                         onCheckedChange={(checked) => setForcePreprocessing(checked as boolean)}
                       />
                       <label className="text-sm text-gray-400">
-                        Force rebuild processed dataset (data/processed)
+                        Forzar la reconstrucción del conjunto de datos procesados (datos/procesado)
                       </label>
                     </div>
                   </div>
@@ -505,10 +512,10 @@ export function DataTab() {
           </Card>
           {/* Data Artifacts (Unify + Feature-pack) */}
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-            <h3 className="text-white mb-4">Data Artifacts</h3>
+            <h3 className="text-white mb-4">Artefactos de datos</h3>
 
             {!datasetForQueries ? (
-              <p className="text-sm text-gray-400">Load a dataset to enable artifact generation.</p>
+              <p className="text-sm text-gray-400">Cargue un conjunto de datos para habilitar la generación de artefactos.</p>
             ) : (
               <div className="space-y-4">
                 {/* BETO meta (si existe) */}
@@ -519,7 +526,7 @@ export function DataTab() {
                     <p className="text-gray-300">
                       Status:{" "}
                       <span className="text-white">
-                        {betoJob.job?.status ?? "not started"}
+                        {betoJob.job?.status ?? "sin iniciar"}
                       </span>
                     </p>
 
@@ -560,7 +567,7 @@ export function DataTab() {
 
                 {/* Unificación */}
                 <div className="space-y-2">
-                  <p className="text-gray-400 text-sm">Unification (historico/*)</p>
+                  <p className="text-gray-400 text-sm">Unificación (historico/*)</p>
 
                   <div className="grid grid-cols-2 gap-3">
                     <Button
@@ -568,7 +575,7 @@ export function DataTab() {
                       onClick={() => void handleRunUnify("acumulado")}
                       disabled={unifyJob.job?.status === "running"}
                     >
-                      Unify History
+                      Unificar histórico
                     </Button>
 
                     <Button
@@ -581,7 +588,7 @@ export function DataTab() {
                   </div>
 
                   {unifyJob.job?.status === "running" && (
-                    <p className="text-sm text-gray-400">Running unification…</p>
+                    <p className="text-sm text-gray-400">Corriendo unificación…</p>
                   )}
                   {unifyJob.job?.status === "failed" && (
                     <p className="text-sm text-red-400">
@@ -597,14 +604,14 @@ export function DataTab() {
 
                 {/* Feature-pack */}
                 <div className="space-y-2">
-                  <p className="text-gray-400 text-sm">Feature-pack (artifacts/features/*)</p>
+                  <p className="text-gray-400 text-sm">Paquete de carácteristicas (artifacts/features/*)</p>
 
                   <Button
                     className="w-full bg-blue-600 hover:bg-blue-700"
                     onClick={() => void handlePrepareFeatures()}
                     disabled={featuresJob.job?.status === "running"}
                   >
-                    Prepare Feature Pack
+                    Preparar Paquete de Características
                   </Button>
 
                   {featuresJob.job?.status === "running" && (
@@ -631,25 +638,25 @@ export function DataTab() {
         <div className="col-span-2 space-y-6">
           {/* Dataset Summary */}
           <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-            <h3 className="text-white mb-4">Dataset Summary</h3>
+            <h3 className="text-white mb-4">Resumen del Dataset</h3>
 
             {dataLoaded ? (
               <div className="grid grid-cols-3 gap-4 mb-6">
                 <div className="bg-[#0f1419] p-4 rounded-lg">
-                  <p className="text-gray-400 text-sm">Total Rows</p>
+                  <p className="text-gray-400 text-sm">Total de Filas</p>
                   <p className="text-white text-2xl mt-1">{Number(kpiRows).toLocaleString()}</p>
                 </div>
                 <div className="bg-[#0f1419] p-4 rounded-lg">
-                  <p className="text-gray-400 text-sm">Columns</p>
+                  <p className="text-gray-400 text-sm">Columnas</p>
                   <p className="text-white text-2xl mt-1">{Number(kpiCols).toLocaleString()}</p>
                 </div>
                 <div className="bg-[#0f1419] p-4 rounded-lg">
-                  <p className="text-gray-400 text-sm">Teachers</p>
+                  <p className="text-gray-400 text-sm">Docentes</p>
                   <p className="text-white text-2xl mt-1">{Number(kpiTeachers).toLocaleString()}</p>
                 </div>
               </div>
             ) : (
-              <div className="text-gray-400 text-sm">Upload a dataset to see summary.</div>
+              <div className="text-gray-400 text-sm">Sube un Dataset para ver el resumen.</div>
             )}
 
             {/* Data Table Preview */}
@@ -659,10 +666,10 @@ export function DataTab() {
                   <thead>
                     <tr className="text-gray-400 border-b border-gray-800">
                       <th className="text-left py-3 px-4">ID</th>
-                      <th className="text-left py-3 px-4">Teacher</th>
-                      <th className="text-left py-3 px-4">Subject</th>
-                      <th className="text-left py-3 px-4">Rating</th>
-                      <th className="text-left py-3 px-4">Comment</th>
+                      <th className="text-left py-3 px-4">Docente</th>
+                      <th className="text-left py-3 px-4">Materia</th>
+                      <th className="text-left py-3 px-4">Calificación</th>
+                      <th className="text-left py-3 px-4">Comentario</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -686,19 +693,24 @@ export function DataTab() {
       {/* Sentiment Analysis Section */}
       {dataLoaded && runSentiment && (
         <div>
-          <h3 className="text-white mb-4">Sentiment Analysis with BETO</h3>
+          <h3 className="text-white mb-4">Análisis de Sentimientos con BETO</h3>
           <div className="grid grid-cols-3 gap-6">
             {/* Sentiment Distribution */}
             <Card className="bg-[#1a1f2e] border-gray-800 p-6">
-              <h4 className="text-white mb-4">Polarity Distribution</h4>
+              <h4 className="text-white mb-4">Distribución de polaridad</h4>
               <ResponsiveContainer width="100%" height={250}>
-                <PieChart>
+                <div style={{ width: "100%", height: "100%", overflow: "hidden" }}>
+                  <PieChart width={300} height={250}>
                   <Pie
                     data={sentimentDistribution}
                     cx="50%"
                     cy="50%"
                     labelLine={false}
-                    label={({ name, percentage }: any) => `${name}: ${percentage}%`}
+                    label={({ name, percentage }: any) => {
+                      const key = String(name ?? "").toLowerCase();
+                      const label = SENTIMENT_LABELS[key] ?? name;
+                      return `${label}: ${percentage}%`;
+                    }}
                     outerRadius={80}
                     fill="#8884d8"
                     dataKey="value"
@@ -711,15 +723,27 @@ export function DataTab() {
                     ))}
                   </Pie>
                   <Tooltip
-                    contentStyle={{ backgroundColor: "#1a1f2e", border: "1px solid #374151" }}
+                    contentStyle={{
+                      backgroundColor: "#1a1f2e",
+                      border: "1px solid #374151",
+                      color: "#ffffff",
+                    }}
+                    itemStyle={{ color: "#ffffff" }}
+                    labelStyle={{ color: "#ffffff" }}
+                    formatter={(value: any, name: any) => {
+                      const key = String(name ?? "").toLowerCase();
+                      const label = SENTIMENT_LABELS[key] ?? name;
+                      return [value, label];
+                    }}
                   />
-                </PieChart>
+                  </PieChart>
+                </div>
               </ResponsiveContainer>
             </Card>
 
             {/* Sentiment by Teacher */}
             <TeacherSentimentChart
-              title="Sentiment Distribution by Teacher"
+              title="Distribución de Sentimientos por docente"
               data={sentimentByTeacher}
               isLoading={Boolean(
                 runSentiment &&
@@ -733,12 +757,12 @@ export function DataTab() {
           {/* Errores no intrusivos (sin romper layout) */}
           {sentimientos.error && (
             <p className="text-sm text-gray-400 mt-3">
-              Sentiments endpoint not available yet: {sentimientos.error}
+              El punto final de Sentimientos aún no está disponible: {sentimientos.error}
             </p>
           )}
           {resumen.error && (
             <p className="text-sm text-gray-400 mt-1">
-              Summary endpoint not available yet: {resumen.error}
+              El punto final de Resumen aún no está disponible: {resumen.error}
             </p>
           )}
         </div>

@@ -421,8 +421,8 @@ export function PredictionsTab() {
       {/* Tabs */}
       <Tabs value={predictionMode} onValueChange={(v) => setPredictionMode(v as 'individual' | 'batch')}>
         <TabsList className="bg-[#1a1f2e] border border-gray-800">
-          <TabsTrigger value="individual">Predicción individual</TabsTrigger>
-          <TabsTrigger value="batch">Predicción por lote</TabsTrigger>
+          <TabsTrigger value="individual" className="text-gray">Predicción individual</TabsTrigger>
+          <TabsTrigger value="batch" className="text-gray">Predicción por lote</TabsTrigger>
         </TabsList>
 
         {/* 3.1 Individual Prediction */}

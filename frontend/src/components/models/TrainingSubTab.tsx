@@ -419,11 +419,11 @@ export function TrainingSubTab({
           className="border-gray-600 text-gray-300 hover:bg-gray-700 gap-2"
         >
           <Package className="w-4 h-4" />
-          {featurePackStatus === 'preparing' ? 'Preparando...' : featurePackStatus === 'ready' ? '✓ Feature-Pack Listo' : 'Preparar Feature-Pack'}
+          {featurePackStatus === 'preparing' ? 'Preparando...' : featurePackStatus === 'ready' ? '✓ Paquete de características Listo' : 'Preparar Paquete de características'}
         </Button>
         {featurePackStatus === 'ready' && (
           <Badge className="bg-green-500/20 text-green-400 border-green-500/40 self-center">
-            <CheckCircle2 className="w-3 h-3 mr-1" /> Feature-pack listo
+            <CheckCircle2 className="w-3 h-3 mr-1" /> Paquete de características listo
           </Badge>
         )}
       </div>
@@ -449,7 +449,7 @@ export function TrainingSubTab({
 
           {/* Epochs */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Epochs</label>
+            <label className="block text-xs text-gray-400 mb-1">Épocas</label>
             <Input
               type="number"
               value={epochs}
@@ -462,7 +462,7 @@ export function TrainingSubTab({
 
           {/* Seed */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Seed</label>
+            <label className="block text-xs text-gray-400 mb-1">Semilla</label>
             <Input
               type="number"
               value={seed}
@@ -480,7 +480,7 @@ export function TrainingSubTab({
             onCheckedChange={(v) => setAutoPrepare(!!v)}
           />
           <label htmlFor="auto-prepare" className="text-sm text-gray-300 cursor-pointer">
-            auto_prepare (preparar feature-pack automáticamente)
+            Preparar Paquete de características automáticamente
           </label>
         </div>
 
@@ -509,14 +509,14 @@ export function TrainingSubTab({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                    <SelectItem value="champion">Champion</SelectItem>
+                    <SelectItem value="champion">Campeón</SelectItem>
                     <SelectItem value="run_id">Run ID específico</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               {warmStartFrom === 'run_id' && (
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1">warm_start_run_id</label>
+                  <label className="block text-xs text-gray-400 mb-1">warm_start_id_de_ejecución</label>
                   <Input
                     value={warmStartRunId}
                     onChange={e => setWarmStartRunId(e.target.value)}
@@ -524,7 +524,7 @@ export function TrainingSubTab({
                     className="bg-[#0f1419] border-gray-700 h-9 text-sm"
                   />
                   {!warmStartValid && (
-                    <p className="text-xs text-red-400 mt-1">Run ID es requerido para warm start por run.</p>
+                    <p className="text-xs text-red-400 mt-1">ID de ejecución es requerido para warm start por run.</p>
                   )}
                 </div>
               )}
@@ -538,7 +538,7 @@ export function TrainingSubTab({
           onClick={() => setShowAdvanced(!showAdvanced)}
         >
           {showAdvanced ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          Avanzado (hparams_overrides)
+          Avanzado (hiperparámetros)
         </button>
         {showAdvanced && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
@@ -599,7 +599,7 @@ export function TrainingSubTab({
               <div className="space-y-4">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div>
-                    <p className="text-xs text-gray-400">Run ID</p>
+                    <p className="text-xs text-gray-400">ID de ejecución</p>
                     <p className="text-cyan-400 text-sm font-mono">{trainedRun.run_id}</p>
                   </div>
                   <div>
@@ -622,21 +622,21 @@ export function TrainingSubTab({
                     className="border-gray-600 text-gray-300 hover:bg-gray-700 gap-1 text-xs"
                     onClick={() => onNavigateToRun(trainedRun.run_id)}
                   >
-                    <Eye className="w-3 h-3" /> Abrir Run
+                    <Eye className="w-3 h-3" /> Abrir Ejecución
                   </Button>
                   <Button
                     size="sm"
                     className="bg-yellow-600 hover:bg-yellow-700 gap-1 text-xs"
                     onClick={() => void handlePromoteChampion()}
                   >
-                    <Award className="w-3 h-3" /> Promover a Champion
+                    <Award className="w-3 h-3" /> Promover a Campeón
                   </Button>
                   <Button
                     size="sm"
                     className="bg-cyan-600 hover:bg-cyan-700 gap-1 text-xs"
                     onClick={() => onUsePredictions(trainedRun.run_id)}
                   >
-                    <ExternalLink className="w-3 h-3" /> Usar en Predictions
+                    <ExternalLink className="w-3 h-3" /> Usar en Predicciones
                   </Button>
                 </div>
               </div>

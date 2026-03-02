@@ -494,13 +494,13 @@ const dashboardData = useMemo(() => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <h2 className="text-white mb-2">Dashboard</h2>
+        <h2 className="text-white mb-2">Tablero</h2>
         <p className="text-gray-400">Diagnóstico General de la Institución</p>
         {loading && <p className="text-gray-500 text-xs">Cargando datos del histórico…</p>}
         {error && <p className="text-red-400 text-xs">Error: {error}</p>}
         {dashStatus && (!dashStatus.ready_processed || !dashStatus.ready_labeled) && (
           <p className="text-amber-400 text-xs">
-            Histórico en actualización… processed: {dashStatus.ready_processed ? "OK" : "pendiente"} · labeled:{" "}
+            Histórico en actualización… procesado: {dashStatus.ready_processed ? "OK" : "pendiente"} · labeled:{" "}
             {dashStatus.ready_labeled ? "OK" : "pendiente"}
           </p>
         )}

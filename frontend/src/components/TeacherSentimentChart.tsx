@@ -407,9 +407,9 @@ export default function TeacherSentimentChart({
             />
             <Tooltip content={<CustomTooltip />} />
             <Legend />
-            <Bar dataKey={posKey} stackId="a" fill={COLORS.positive} name="Positive" />
+            <Bar dataKey={posKey} stackId="a" fill={COLORS.positive} name="Positivo" />
             <Bar dataKey={neuKey} stackId="a" fill={COLORS.neutral} name="Neutral" />
-            <Bar dataKey={negKey} stackId="a" fill={COLORS.negative} name="Negative" />
+            <Bar dataKey={negKey} stackId="a" fill={COLORS.negative} name="Negativo" />
           </BarChart>
         </ResponsiveContainer>
       )}

@@ -59,15 +59,15 @@ export function ModelsTab() {
   };
 
   return (
-    <div className="p-6 lg:p-8 space-y-5 min-h-full">
+    <div className="p-8 lg:p-8 space-y-6 min-h-full">
       {/* Page Header */}
       <motion.div
-        initial={{ opacity: 0, y: -10 }}
+        initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <h2 className="text-white mb-1">Modelos</h2>
-        <p className="text-gray-400 text-sm">
+        <h2 className="text-white mb-2">Modelos</h2>
+        <p className="text-gray-400">
           Entrenamiento, comparación y gestión de Redes de Boltzmann
         </p>
       </motion.div>
@@ -84,14 +84,14 @@ export function ModelsTab() {
 
       {/* Sub-Tabs */}
       <Tabs value={activeSubTab} onValueChange={handleSubTabChange}>
-        <TabsList className="bg-[#1a1f2e] border border-gray-800 flex-wrap h-auto gap-0.5 p-1">
-          <TabsTrigger value="resumen" className="text-xs px-3 py-1.5">Resumen</TabsTrigger>
-          <TabsTrigger value="entrenamiento" className="text-xs px-3 py-1.5">Entrenamiento</TabsTrigger>
-          <TabsTrigger value="runs" className="text-xs px-3 py-1.5">Runs</TabsTrigger>
-          <TabsTrigger value="champion" className="text-xs px-3 py-1.5">Champion</TabsTrigger>
-          <TabsTrigger value="sweep" className="text-xs px-3 py-1.5">Sweep</TabsTrigger>
-          <TabsTrigger value="bundle" className="text-xs px-3 py-1.5">Bundle / Artefactos</TabsTrigger>
-          <TabsTrigger value="diagnostico" className="text-xs px-3 py-1.5">Diagnóstico</TabsTrigger>
+        <TabsList className="bg-[#1a1f2e] border border-blue-800 flex-wrap h-auto gap-0.5 p-1">
+          <TabsTrigger value="resumen" className="text-xs px-3 py-1.5 text-gray">Resumen</TabsTrigger>
+          <TabsTrigger value="entrenamiento" className="text-xs px-3 py-1.5 text-gray">Entrenamiento</TabsTrigger>
+          <TabsTrigger value="runs" className="text-xs px-3 py-1.5 text-gray">Ejecuciones</TabsTrigger>
+          <TabsTrigger value="champion" className="text-xs px-3 py-1.5 text-gray">Campeón</TabsTrigger>
+          <TabsTrigger value="sweep" className="text-xs px-3 py-1.5 text-gray">Sweep</TabsTrigger>
+          <TabsTrigger value="bundle" className="text-xs px-3 py-1.5 text-gray">Artefactos</TabsTrigger>
+          <TabsTrigger value="diagnostico" className="text-xs px-3 py-1.5 text-gray">Diagnóstico</TabsTrigger>
         </TabsList>
 
         <TabsContent value="resumen" className="mt-5">

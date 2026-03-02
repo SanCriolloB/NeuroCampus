@@ -170,7 +170,7 @@ export function ModelContextHeader({
       const key = `${family}__${datasetId}`;
       const champ = MOCK_CHAMPIONS[key];
       if (!champ) {
-        setResolveError('404: No existe champion para este dataset/family.');
+        setResolveError('404: No existe campeón para este dataset/familia.');
         onResolve(null);
         return;
       }
@@ -230,21 +230,21 @@ export function ModelContextHeader({
 
         {/* Family */}
         <div className="min-w-[180px]">
-          <label className="block text-xs text-gray-400 mb-1">Family</label>
+          <label className="block text-xs text-gray-400 mb-1">Familia</label>
           <Select value={family} onValueChange={(v) => onFamilyChange(v as Family)}>
             <SelectTrigger className="bg-[#0f1419] border-gray-700 h-9 text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="bg-[#1a1f2e] border-gray-700">
-              <SelectItem value="sentiment_desempeno">Sentiment Desempeño</SelectItem>
-              <SelectItem value="score_docente">Score Docente</SelectItem>
+              <SelectItem value="sentiment_desempeno">Desempeño por Sentimiento</SelectItem>
+              <SelectItem value="score_docente">Calificación Docente</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
         {/* Data Source (read-only derived) */}
         <div className="min-w-[130px]">
-          <label className="block text-xs text-gray-400 mb-1">Data Source</label>
+          <label className="block text-xs text-gray-400 mb-1">Fuente de Datos</label>
           <div className="bg-[#0f1419] border border-gray-700 rounded-md h-9 px-3 flex items-center text-sm text-gray-300">
             {fc.dataSource}
           </div>
@@ -262,14 +262,14 @@ export function ModelContextHeader({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-[#1a1f2e] border-gray-700">
-                <SelectItem value="champion">Champion</SelectItem>
-                <SelectItem value="run_id">Run ID</SelectItem>
+                <SelectItem value="champion">Campeón</SelectItem>
+                <SelectItem value="run_id">ID de ejecución</SelectItem>
               </SelectContent>
             </Select>
           </div>
           {resolveSource === 'run_id' && (
             <div className="flex-1">
-              <label className="block text-xs text-gray-400 mb-1">Run ID</label>
+              <label className="block text-xs text-gray-400 mb-1">ID de ejecución</label>
               <Input
                 value={resolveRunId}
                 onChange={e => setResolveRunId(e.target.value)}
@@ -291,9 +291,9 @@ export function ModelContextHeader({
 
       {/* Indicator chips */}
       <div className="flex flex-wrap items-center gap-2 mt-3">
-        <MetricChip label="task_type" value={fc.taskType} />
-        <MetricChip label="input_level" value={fc.inputLevel} />
-        <MetricChip label="primary_metric" value={fc.primaryMetric} mode={fc.metricMode} />
+        <MetricChip label="Tipo de tarea" value={fc.taskType} />
+        <MetricChip label="Nivel de entrada" value={fc.inputLevel} />
+        <MetricChip label="Métrica principal" value={fc.primaryMetric} mode={fc.metricMode} />
         {resolvedModel && (
           <>
             <MetricChip label="bundle_version" value={MOCK_RUNS.find(r => r.run_id === resolvedModel.resolved_run_id)?.bundle_version ?? '—'} />

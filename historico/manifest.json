@@ -1,7 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-02-26T15:13:25.300282+00:00",
-  "updated_at": "2026-02-20T21:23:08.088055+00:00",
+  "updated_at": "2026-02-26T19:37:40.677360+00:00",
   "periodos_disponibles": [
     "2024-1",
     "2024-2",
@@ -10,8 +9,7 @@
   ],
   "modes": {
     "acumulado": {
-      "updated_at": "2026-02-26T15:13:21.810023+00:00",
-      "updated_at": "2026-02-20T21:23:03.334235+00:00",
+      "updated_at": "2026-02-26T19:37:36.925752+00:00",
       "paths": {
         "parquet": "historico/unificado.parquet"
       },
@@ -25,7 +23,7 @@
       ]
     },
     "acumulado_labeled": {
-      "updated_at": "2026-02-26T15:13:25.300282+00:00",
+      "updated_at": "2026-02-26T19:37:40.677360+00:00",
       "paths": {
         "parquet": "historico/unificado_labeled.parquet"
       },

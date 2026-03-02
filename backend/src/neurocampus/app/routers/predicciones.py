@@ -17,6 +17,7 @@ automáticamente por ``dataset_id``.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 import logging
 import os
 import re
@@ -63,6 +64,7 @@ from neurocampus.services.predictions_service import (
 from neurocampus.utils.model_context import fill_context
 from neurocampus.utils.paths import (
     artifacts_dir,
+    abs_artifact_path,
     rel_artifact_path,
     resolve_champion_json_candidates,
     first_existing,
@@ -291,6 +293,148 @@ def list_runs(dataset_id: str) -> List[PredictionRunInfoResponse]:
     return out
 
 
+
+
+# ---------------------------------------------------------------------------
+# Soporte: nombres legibles para docentes/materias
+# ---------------------------------------------------------------------------
+
+
+def _find_col(columns: list[str], candidates: list[str]) -> Optional[str]:
+    """Encuentra una columna por nombre (case-insensitive).
+
+    Esta función permite soportar datasets con variantes de nombres de columna
+    (p.ej. `Nombre_Docente` vs `nombre_docente`).
+
+    Args:
+        columns: Lista de columnas disponibles.
+        candidates: Lista de nombres candidatos (preferencia en orden).
+
+    Returns:
+        El nombre real de la columna si existe; en caso contrario, ``None``.
+    """
+    lut = {c.lower(): c for c in columns}
+    for c in candidates:
+        hit = lut.get(str(c).lower())
+        if hit:
+            return hit
+    return None
+
+
+@lru_cache(maxsize=64)
+def _load_entity_name_maps(dataset_id: str) -> tuple[Dict[str, str], Dict[str, str]]:
+    """Carga mappings ``{key -> nombre}`` para docente y materia.
+
+    Los endpoints `/predicciones/teachers` y `/predicciones/materias` devuelven
+    `*_key` y `*_id`. Como los índices del feature-pack suelen mapear `key -> id`
+    (sin nombres), este helper intenta construir un mapping leyendo el dataset
+    de origen apuntado por `input_uri` en `artifacts/features/<dataset_id>/meta.json`.
+
+    Si no se encuentran columnas de nombre o no es posible leer el origen,
+    se retorna mapping vacío y el caller hace fallback a la key.
+
+    Args:
+        dataset_id: Identificador del dataset (ej. `2025-1`).
+
+    Returns:
+        (teacher_map, materia_map)
+    """
+    feat_dir = artifacts_dir() / 'features' / str(dataset_id)
+    meta_path = feat_dir / 'meta.json'
+    if not meta_path.exists():
+        return {}, {}
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}, {}
+
+    input_uri = str(meta.get('input_uri') or '').strip()
+    if not input_uri:
+        return {}, {}
+
+    src_path = abs_artifact_path(input_uri)
+    if not src_path.exists():
+        return {}, {}
+
+    teacher_col_hint = str(meta.get('teacher_col') or '').strip()
+    materia_col_hint = str(meta.get('materia_col') or '').strip()
+    if not teacher_col_hint or not materia_col_hint:
+        return {}, {}
+
+    teacher_name_candidates = [
+        'nombre_docente',
+        'nombre_profesor',
+        'docente_nombre',
+        'teacher_name',
+        'docente',
+        'profesor',
+        'teacher',
+    ]
+    materia_name_candidates = [
+        'nombre_materia',
+        'materia_nombre',
+        'subject_name',
+        'materia',
+        'asignatura',
+        'subject',
+    ]
+
+    # Obtener columnas (sin cargar todo el dataset cuando sea posible)
+    try:
+        if src_path.suffix.lower() == '.parquet':
+            import pyarrow.parquet as pq
+
+            cols = list(pq.ParquetFile(src_path).schema.names)
+        elif src_path.suffix.lower() == '.csv':
+            cols = list(pd.read_csv(src_path, nrows=0).columns)
+        else:
+            return {}, {}
+    except Exception:
+        return {}, {}
+
+    teacher_col = _find_col(cols, [teacher_col_hint]) or teacher_col_hint
+    materia_col = _find_col(cols, [materia_col_hint]) or materia_col_hint
+
+    tname_col = _find_col(cols, teacher_name_candidates)
+    mname_col = _find_col(cols, materia_name_candidates)
+    if not tname_col and not mname_col:
+        return {}, {}
+
+    usecols = [c for c in [teacher_col, tname_col, materia_col, mname_col] if c]
+    usecols = list(dict.fromkeys(usecols))
+
+    try:
+        if src_path.suffix.lower() == '.parquet':
+            df = pd.read_parquet(src_path, columns=usecols)
+        else:
+            df = pd.read_csv(src_path, usecols=usecols)
+    except Exception:
+        return {}, {}
+
+    teacher_map: Dict[str, str] = {}
+    materia_map: Dict[str, str] = {}
+
+    if tname_col and (teacher_col in df.columns) and (tname_col in df.columns):
+        tmp = df[[teacher_col, tname_col]].copy()
+        tmp[teacher_col] = tmp[teacher_col].astype(str).str.strip()
+        tmp[tname_col] = tmp[tname_col].astype(str).str.strip()
+        tmp = tmp[(tmp[teacher_col] != '') & (tmp[tname_col] != '')]
+        if len(tmp) > 0:
+            vc = tmp.groupby(teacher_col)[tname_col].apply(lambda s: s.value_counts().idxmax())
+            teacher_map = {str(k): str(v) for k, v in vc.to_dict().items()}
+
+    if mname_col and (materia_col in df.columns) and (mname_col in df.columns):
+        tmp = df[[materia_col, mname_col]].copy()
+        tmp[materia_col] = tmp[materia_col].astype(str).str.strip()
+        tmp[mname_col] = tmp[mname_col].astype(str).str.strip()
+        tmp = tmp[(tmp[materia_col] != '') & (tmp[mname_col] != '')]
+        if len(tmp) > 0:
+            vc = tmp.groupby(materia_col)[mname_col].apply(lambda s: s.value_counts().idxmax())
+            materia_map = {str(k): str(v) for k, v in vc.to_dict().items()}
+
+    return teacher_map, materia_map
+
 @router.get(
     "/teachers",
 
@@ -326,9 +470,12 @@ def list_teachers(dataset_id: str) -> List[TeacherInfoResponse]:
         except Exception:
             pass
 
+    teacher_map, _ = _load_entity_name_maps(str(dataset_id))
+
     return [
         TeacherInfoResponse(
             teacher_key=key,
+            teacher_name=(teacher_map.get(key) or key),
             teacher_id=tid,
             n_encuestas=int(counts.get(key, 0)),
         )
@@ -370,9 +517,12 @@ def list_materias(dataset_id: str) -> List[MateriaInfoResponse]:
         except Exception:
             pass
 
+    _, materia_map = _load_entity_name_maps(str(dataset_id))
+
     return [
         MateriaInfoResponse(
             materia_key=key,
+            materia_name=(materia_map.get(key) or key),
             materia_id=mid,
             n_encuestas=int(counts.get(key, 0)),
         )

@@ -28,6 +28,8 @@ export type DatasetInfo = {
 /** Información de un docente disponible en el dataset. */
 export type TeacherInfo = {
   teacher_key: string;
+  /** Nombre legible del docente (si está disponible en el backend). */
+  teacher_name?: string | null;
   teacher_id: number;
   n_encuestas: number;
 };
@@ -35,6 +37,8 @@ export type TeacherInfo = {
 /** Información de una materia disponible en el dataset. */
 export type MateriaInfo = {
   materia_key: string;
+  /** Nombre legible de la materia (si está disponible en el backend). */
+  materia_name?: string | null;
   materia_id: number;
   n_encuestas: number;
 };

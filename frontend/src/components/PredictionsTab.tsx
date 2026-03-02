@@ -248,14 +248,24 @@ export function PredictionsTab() {
   const filteredTeachers = useMemo(() => {
     if (!teacherSearch) return teachers;
     const search = teacherSearch.toLowerCase();
-    return teachers.filter((t) => t.teacher_key.toLowerCase().includes(search));
+
+    return teachers.filter((t) => {
+      const name = String(t.teacher_name ?? '').toLowerCase();
+      const key = String(t.teacher_key ?? '').toLowerCase();
+      return (name && name.includes(search)) || key.includes(search);
+    });
   }, [teacherSearch, teachers]);
 
   // Filter subjects by search and selected teacher
-  const filteredSubjects = useMemo(() => {
+  const filteredMaterias = useMemo(() => {
     if (!subjectSearch) return materias;
     const search = subjectSearch.toLowerCase();
-    return materias.filter((m) => m.materia_key.toLowerCase().includes(search));
+
+    return materias.filter((m) => {
+      const name = String(m.materia_name ?? '').toLowerCase();
+      const key = String(m.materia_key ?? '').toLowerCase();
+      return (name && name.includes(search)) || key.includes(search);
+    });
   }, [subjectSearch, materias]);
 
 
@@ -467,7 +477,9 @@ export function PredictionsTab() {
                       <SelectContent className="bg-[#1a1f2e] border-gray-700 max-h-[300px]">
                         {filteredTeachers.map((t) => (
                           <SelectItem key={t.teacher_key} value={t.teacher_key}>
-                            {t.teacher_key}
+                            {t.teacher_name && t.teacher_name !== t.teacher_key
+                              ? `${t.teacher_name} (${t.teacher_key})`
+                              : (t.teacher_name ?? t.teacher_key)}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -491,9 +503,11 @@ export function PredictionsTab() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent className="bg-[#1a1f2e] border-gray-700 max-h-[300px]">
-                        {filteredSubjects.map((m) => (
+                        {filteredMaterias.map((m) => (
                           <SelectItem key={m.materia_key} value={m.materia_key}>
-                            {m.materia_key}
+                            {m.materia_name && m.materia_name !== m.materia_key
+                              ? `${m.materia_name} (${m.materia_key})`
+                              : (m.materia_name ?? m.materia_key)}
                           </SelectItem>
                         ))}
                       </SelectContent>

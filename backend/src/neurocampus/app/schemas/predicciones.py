@@ -201,6 +201,10 @@ class TeacherInfoResponse(BaseModel):
     """Información de un docente disponible en el dataset."""
 
     teacher_key: str = Field(description="Clave normalizada del docente (cedula o nombre).")
+    teacher_name: Optional[str] = Field(
+        default=None,
+        description="Nombre legible del docente. Si no existe en el origen, puede ser igual a teacher_key.",
+    )
     teacher_id: int = Field(description="Índice numérico asignado en teacher_index.json.")
     n_encuestas: int = Field(default=0, description="Total de encuestas del docente en el dataset.")
 
@@ -209,6 +213,10 @@ class MateriaInfoResponse(BaseModel):
     """Información de una materia disponible en el dataset."""
 
     materia_key: str = Field(description="Clave normalizada de la materia (código).")
+    materia_name: Optional[str] = Field(
+        default=None,
+        description="Nombre legible de la materia. Si no existe en el origen, puede ser igual a materia_key.",
+    )
     materia_id: int = Field(description="Índice numérico asignado en materia_index.json.")
     n_encuestas: int = Field(default=0, description="Total de encuestas de la materia en el dataset.")
 

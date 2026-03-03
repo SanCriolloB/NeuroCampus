@@ -494,7 +494,7 @@ const dashboardData = useMemo(() => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <h2 className="text-white mb-2">Tablero</h2>
+        <h2 className="text-white mb-2">Dashboard</h2>
         <p className="text-gray-400">Diagnóstico General de la Institución</p>
         {loading && <p className="text-gray-500 text-xs">Cargando datos del histórico…</p>}
         {error && <p className="text-red-400 text-xs">Error: {error}</p>}

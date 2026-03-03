@@ -10,7 +10,7 @@ type NavItem = {
 };
 
 const navItems: NavItem[] = [
-  { to: "/dashboard", label: "Tablero", Icon: Home, end: true },
+  { to: "/dashboard", label: "Dashboard", Icon: Home, end: true },
   { to: "/datos", label: "Datos", Icon: Database },
   { to: "/models", label: "Modelos", Icon: Network },
   { to: "/prediction", label: "Predicciones", Icon: TrendingUp },
